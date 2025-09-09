@@ -2,6 +2,19 @@
 _Generated: 2025-09-09 12:11 UTC_  
 _Target submission: **2025-09-20**_
 
+<img width="1024" height="1024" alt="68918e5a-d9e4-47bc-b84b-6905ee7cbfe0" src="https://github.com/user-attachments/assets/285cf26f-5464-4b6c-8e04-4eb9cabc802f" />
+<img width="1024" height="1536" alt="image" src="https://github.com/user-attachments/assets/0c43f27e-117a-4d8f-9d1c-6e4fdb67ed25" />
+<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/fb87457e-8740-4691-8fa9-ac08b64edf1d" />
+<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/64329679-1804-41ba-8371-6eb1f14512b0" />
+<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/d9ebafcd-c2aa-4cac-a54d-dbf8ce5fa589" />
+<img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/13f9167c-8568-4157-bc8f-b9128e0dd0b1" />
+
+
+
+
+
+
+
 ## 1) Goal & Success Criteria
 - ส่งเดโม **ทำงานครบฟังก์ชัน**: ลงทะเบียน → โหวต → พิมพ์/ตัด (หรือตรา) → ตกกล่อง → นับ → ขึ้นสกอร์บอร์ดเรียลไทม์
 - **ความปลอดภัย**: token ใช้ครั้งเดียว, ยืนยันตกกล่องด้วย IR (และถ้ามี Loadcell), ลิงก์ **TX-only** ไป ESP32/ODROID

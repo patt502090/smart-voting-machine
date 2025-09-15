@@ -1,182 +1,206 @@
 /*
-  LCD 20x4 (I2C HW-061) — Beautiful UI with CGRAM icons
-  - หน้า Welcome (กรอบ+ไอคอน), หน้า Vote (กล่องไฮไลต์+ลูกศร), หน้า Confirm (ติ๊กถูก)
-  - ใช้ร่วมกับ Keypad_I2C ได้ (บัส I2C ร่วม LCD/PCF8574)
-  - แนบตัวอย่าง "แบนเนอร์ไทย" สลับ CGRAM สำหรับคำไทยสั้น ๆ
+  UNO + LCD 20x4 I2C (HW-061) + Keypad 4x4 via PCF8574 + OLED SSD1306 I2C
+  - OLED (U8g2) แสดงข้อความ "ไทย" ครบถ้วน (UTF-8)
+  - LCD ใช้แสดงเลข/กรอบ/กล่องไฮไลต์ (ไม่ต้องพึ่งฟอนต์ไทย)
 
-  Wiring (UNO):
-    SDA=A4, SCL=A5, 5V, GND → ไปทั้ง LCD + PCF8574 (keypad)
+  I2C bus: A4=SDA, A5=SCL → LCD(0x27/0x3F) + KEYPAD(0x20) + OLED(0x3C)
 */
 
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
+#include <Keypad.h>
+#include <Keypad_I2C.h>
+#include <U8g2lib.h>
 
-// ---- LCD address & size ----
-#define LCD_ADDR 0x27      // ถ้าไม่เจอ เปลี่ยนเป็น 0x3F
+// ===== ปรับตามผลสแกนจริง =====
+#define LCD_ADDR     0x27     // ถ้าไม่ขึ้น ลอง 0x3F
+#define KEYPAD_ADDR  0x20     // PCF8574 keypad (คุณสแกนเจอ 0x20 แล้ว)
+#define OLED_RESET   U8X8_PIN_NONE
+
 LiquidCrystal_I2C lcd(LCD_ADDR, 20, 4);
+// OLED SSD1306 128x64 I2C (addr ส่วนใหญ่ 0x3C)
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, OLED_RESET);
 
-// ================== CGRAM SET: ICONS (กรอบ/เส้น/ลูกศร/ติ๊ก) ==================
-/* index 0..7 */
-byte I_TL[8]  = {B11111,B11111,B11111,B11111,B11111,B11111,B11111,B11111}; // จะทับด้วยมุมจริง
-byte I_TR[8]  = {B11111,B11111,B11111,B11111,B11111,B11111,B11111,B11111};
-byte I_BL[8]  = {B11111,B11111,B11111,B11111,B11111,B11111,B11111,B11111};
-byte I_BR[8]  = {B11111,B11111,B11111,B11111,B11111,B11111,B11111,B11111};
-byte I_H[8]   = {B11111,B00000,B00000,B00000,B00000,B00000,B00000,B11111}; // เส้นนอนหนา
-byte I_V[8]   = {B10001,B10001,B10001,B10001,B10001,B10001,B10001,B10001}; // เส้นตั้ง
-byte I_AR[8]  = {B00100,B00110,B00111,B11111,B00111,B00110,B00100,B00000}; // ลูกศร ▶
-byte I_CHK[8] = {B00000,B00001,B00011,B10110,B11100,B01000,B00000,B00000}; // ✓
+// ===== Keypad map 4x4 =====
+const byte ROWS = 4, COLS = 4;
+char keys[ROWS][COLS] = {
+  {'1','2','3','A'},
+  {'4','5','6','B'},
+  {'7','8','9','C'},
+  {'*','0','#','D'}
+};
+byte rowPins[ROWS] = {0,1,2,3};
+byte colPins[COLS] = {4,5,6,7};
+Keypad_I2C kpd( makeKeymap(keys), rowPins, colPins, ROWS, COLS, KEYPAD_ADDR );
 
-/* มุมโค้งเบา ๆ */
-byte I_TL2[8] = {B11100,B10000,B10000,B10000,B10000,B10000,B10000,B10000};
-byte I_TR2[8] = {B00111,B00001,B00001,B00001,B00001,B00001,B00001,B00001};
-byte I_BL2[8] = {B10000,B10000,B10000,B10000,B10000,B10000,B10000,B11100};
-byte I_BR2[8] = {B00001,B00001,B00001,B00001,B00001,B00001,B00001,B00111};
+// ===== สถานะหลัก =====
+enum Page { PAGE_WELCOME, PAGE_VOTE, PAGE_CONFIRM };
+Page page = PAGE_WELCOME;
+int  currentChoice = -1;   // -1=ยังไม่เลือก, 0=งดออกเสียง, 1..9=ผู้สมัคร
+unsigned long tWelcome = 0;
 
-// โหลดชุดไอคอนลง CGRAM
-void loadIconSet(){
-  lcd.createChar(0, I_TL2);
-  lcd.createChar(1, I_TR2);
-  lcd.createChar(2, I_BL2);
-  lcd.createChar(3, I_BR2);
-  lcd.createChar(4, I_H);
-  lcd.createChar(5, I_V);
-  lcd.createChar(6, I_AR);
-  lcd.createChar(7, I_CHK);
+// ---------- OLED: ฟังก์ชันไทย ----------
+void oledHeader() {
+  u8g2.setFont(u8g2_font_unifont_t_symbols); // ครอบคลุมไทย (ขนาดกำลังดี)
+  u8g2.setFontDirection(0);
 }
 
-// วาดกรอบเต็มจอ (ใช้ไอคอนมุม/เส้น)
-void drawFrame(){
+void oledIdle(){
+  u8g2.clearBuffer();
+  oledHeader();
+  u8g2.drawUTF8(0, 16, "เลือกหมายเลขผู้สมัคร");
+  u8g2.drawUTF8(0, 36, "0 = งดออกเสียง");
+  u8g2.drawUTF8(0, 56, "# = ยืนยัน    * = ลบ");
+  u8g2.sendBuffer();
+}
+
+void oledChoice(){
+  u8g2.clearBuffer();
+  oledHeader();
+  if(currentChoice < 0){
+    u8g2.drawUTF8(0, 24, "ยังไม่ได้เลือก");
+    u8g2.drawUTF8(0, 48, "กดตัวเลข 0..9");
+  }else if(currentChoice == 0){
+    u8g2.drawUTF8(0, 24, "คุณเลือก: งดออกเสียง");
+    u8g2.drawUTF8(0, 48, "กด # เพื่อยืนยัน  * เพื่อลบ");
+  }else{
+    char buf[32];
+    snprintf(buf, sizeof(buf), "คุณเลือกหมายเลข: %d", currentChoice);
+    u8g2.drawUTF8(0, 24, buf);
+    u8g2.drawUTF8(0, 48, "กด # เพื่อยืนยัน  * เพื่อลบ");
+  }
+  u8g2.sendBuffer();
+}
+
+void oledConfirmed(){
+  u8g2.clearBuffer();
+  oledHeader();
+  if(currentChoice == 0) u8g2.drawUTF8(0, 28, "ยืนยัน: งดออกเสียง");
+  else {
+    char buf[32]; snprintf(buf, sizeof(buf), "ยืนยัน: หมายเลข %d", currentChoice);
+    u8g2.drawUTF8(0, 28, buf);
+  }
+  u8g2.drawUTF8(0, 56, "บันทึกแล้ว! ขอบคุณครับ");
+  u8g2.sendBuffer();
+}
+
+// ---------- LCD: กล่อง/กรอบ/เลข (ไม่ใช้ฟอนต์ไทย) ----------
+byte TL[8]={B11100,B10000,B10000,B10000,B10000,B10000,B10000,B10000};
+byte TR[8]={B00111,B00001,B00001,B00001,B00001,B00001,B00001,B00001};
+byte BL[8]={B10000,B10000,B10000,B10000,B10000,B10000,B10000,B11100};
+byte BR[8]={B00001,B00001,B00001,B00001,B00001,B00001,B00001,B00111};
+byte H [8]={B11111,B00000,B00000,B00000,B00000,B00000,B00000,B11111};
+byte V [8]={B10001,B10001,B10001,B10001,B10001,B10001,B10001,B10001};
+
+void lcdLoadIcons(){
+  lcd.createChar(0, TL); lcd.createChar(1, TR);
+  lcd.createChar(2, BL); lcd.createChar(3, BR);
+  lcd.createChar(4, H ); lcd.createChar(5, V );
+}
+
+void lcdDrawFrame(){
   lcd.clear();
-  // มุม
   lcd.setCursor(0,0);  lcd.write((byte)0);
   lcd.setCursor(19,0); lcd.write((byte)1);
   lcd.setCursor(0,3);  lcd.write((byte)2);
   lcd.setCursor(19,3); lcd.write((byte)3);
-  // ด้านบน/ล่าง
   for(int x=1;x<19;x++){ lcd.setCursor(x,0); lcd.write((byte)4); }
   for(int x=1;x<19;x++){ lcd.setCursor(x,3); lcd.write((byte)4); }
-  // ด้านซ้าย/ขวา
   for(int y=1;y<3;y++){ lcd.setCursor(0,y);  lcd.write((byte)5); }
   for(int y=1;y<3;y++){ lcd.setCursor(19,y); lcd.write((byte)5); }
 }
 
-// ================== (OPTION) CGRAM SET: THAI BANNER (ตัวอย่าง) ==================
-// ใส่ชุด 7 อักษรไทย + 1 ไอคอน เพื่อแสดงคำไทยสั้น ๆ บนแถวเดียว (จำกัด 8 ช่อง CGRAM)
-byte TH0[8] = {B00001,B01110,B10001,B00101,B01011,B10001,B00000,B00000}; // ส (ตัวอย่าง)
-byte TH1[8] = {B01000,B01110,B00000,B01110,B01010,B00010,B00110,B00110}; // วั
-byte TH2[8] = {B01101,B11111,B00000,B01110,B10001,B11101,B10101,B11101}; // ดี
-byte TH3[8] = {B01101,B11111,B00001,B11001,B01001,B01001,B01001,B01111}; // ปี
-byte TH4[8] = {B01100,B11010,B10110,B01010,B00010,B00010,B00010,B00001}; // ใ
-byte TH5[8] = {B00000,B00000,B11011,B01011,B01010,B01101,B01001,B00000}; // ห
-byte TH6[8] = {B00001,B00001,B11001,B11001,B01001,B11101,B11011,B00000}; // ม่
-byte HEART[8]={B00000,B01010,B11111,B11111,B11111,B01110,B00100,B00000}; // หัวใจ
-
-void loadThaiSet(){
-  lcd.createChar(0, TH0);
-  lcd.createChar(1, TH1);
-  lcd.createChar(2, TH2);
-  lcd.createChar(3, TH3);
-  lcd.createChar(4, TH4);
-  lcd.createChar(5, TH5);
-  lcd.createChar(6, TH6);
-  lcd.createChar(7, HEART);
-}
-
-// ตัวอย่างแบนเนอร์ไทย (หน้า Welcome) — ใช้ 8 CGRAM
-void drawThaiBanner(){
-  lcd.clear();
-  lcd.setCursor(0,0); lcd.write((byte)7); // ♥ ซ้าย
-  // "สวัสดีปีใหม่" (ตัวอย่าง — เปลี่ยนคำได้ตามต้องการ แต่จำกัด 8 ช่อง)
-  lcd.setCursor(3,0); lcd.write((byte)0);
-  lcd.setCursor(4,0); lcd.write((byte)1);
-  lcd.setCursor(5,0); lcd.write((byte)0);
-  lcd.setCursor(6,0); lcd.write((byte)2);
-  lcd.setCursor(7,0); lcd.write((byte)3);
-  lcd.setCursor(8,0); lcd.write((byte)4);
-  lcd.setCursor(9,0); lcd.write((byte)5);
-  lcd.setCursor(10,0);lcd.write((byte)6);
-  lcd.setCursor(19,0);lcd.write((byte)7); // ♥ ขวา
-
-  lcd.setCursor(2,2); lcd.print("SMART VOTE READY");
-}
-
-// ================== UI PAGES ==================
-enum Page {WELCOME, VOTE, CONFIRM};
-Page page = WELCOME;
-int  currentChoice = -1; // -1=none, 0=Abstain, 1..9
-
-// วาดเมนูเลือกให้ดูโปร (ใช้เฟรม + ลูกศร + กล่องเน้น)
-void drawVoteUI(){
-  loadIconSet();
-  drawFrame();
-  lcd.setCursor(2,1); lcd.print("Select: 0=Abstain");
-  lcd.setCursor(2,2); lcd.print("#=Confirm  *=Clear");
+void lcdVoteUI(){
+  lcdLoadIcons();
+  lcdDrawFrame();
+  // บรรทัดบนโชว์ "Choice" แบบเลข/กล่อง
+  lcd.setCursor(2,1); lcd.print("Choice:");
   if(currentChoice < 0){
-    lcd.setCursor(2,0); lcd.print("Choose 1..9");
-  }else if(currentChoice==0){
-    lcd.setCursor(2,0); lcd.print("Choice: Abstain  ");
+    lcd.setCursor(10,1); lcd.print("--");
+  }else if(currentChoice == 0){
+    lcd.setCursor(10,1); lcd.print("00"); // ใช้ 00 เป็นสัญลักษณ์งด
   }else{
-    // ไฮไลต์ด้วยกล่องหยาบ ๆ
-    lcd.setCursor(2,0); lcd.print("Choice:");
     // กล่อง [ n ]
-    lcd.setCursor(10,0); lcd.write((byte)0); // TL
+    lcd.setCursor(10,0); lcd.write((byte)0);
     for(int x=11;x<=13;x++){ lcd.setCursor(x,0); lcd.write((byte)4); }
-    lcd.setCursor(14,0); lcd.write((byte)1); // TR
+    lcd.setCursor(14,0); lcd.write((byte)1);
     lcd.setCursor(10,1); lcd.write((byte)5);
     lcd.setCursor(12,1); lcd.print(currentChoice);
     lcd.setCursor(14,1); lcd.write((byte)5);
-    lcd.setCursor(10,2); lcd.write((byte)2); // BL
+    lcd.setCursor(10,2); lcd.write((byte)2);
     for(int x=11;x<=13;x++){ lcd.setCursor(x,2); lcd.write((byte)4); }
-    lcd.setCursor(14,2); lcd.write((byte)3); // BR
+    lcd.setCursor(14,2); lcd.write((byte)3);
   }
-  // ลูกศรชี้บรรทัดคำสั่ง
-  lcd.setCursor(1,2); lcd.write((byte)6);
+  // คำสั่งย่อ (อังกฤษ) — ข้อจำกัดของ LCD
+  lcd.setCursor(2,2); lcd.print("#=OK  *=CLR  0=ABST");
 }
 
-// หน้ายืนยัน
-void drawConfirm(){
-  loadIconSet();
-  drawFrame();
-  lcd.setCursor(2,1); lcd.print("Confirmed:");
-  if(currentChoice==0) lcd.setCursor(13,1), lcd.print("Abstain");
-  else                 lcd.setCursor(13,1), lcd.print(currentChoice);
-
-  // ติ๊กถูกใหญ่ (ซ้าย/ขวา)
-  lcd.setCursor(1,2);  lcd.write((byte)7);
-  lcd.setCursor(18,2); lcd.write((byte)7);
-
-  lcd.setCursor(5,3); lcd.print("Saved! Thank you");
+void lcdConfirm(){
+  lcdLoadIcons();
+  lcdDrawFrame();
+  lcd.setCursor(2,1); lcd.print("Saved:");
+  if(currentChoice==0) { lcd.setCursor(9,1); lcd.print("ABST"); }
+  else { lcd.setCursor(9,1); lcd.print(currentChoice); }
+  lcd.setCursor(5,2); lcd.print("Thank you");
 }
 
-// ================== DEMO FLOW ==================
-unsigned long t0=0;
+// ---------- Hook: เรียกเมื่อยืนยัน (#) ----------
+void onConfirmVote(int choice){
+  Serial.print("CF:"); Serial.println(choice);  // ส่งออก Serial ไว้ซิงก์ขั้นต่อไป
+}
 
+// ================== SETUP / LOOP ==================
 void setup(){
-  Wire.begin();
-  lcd.init();
-  lcd.backlight();
+  Wire.begin();           // UNO: SDA=A4, SCL=A5
   Serial.begin(115200);
 
-  // หน้า Welcome แบบไทย (แบนเนอร์ไทย 1–2 วินาที)
-  loadThaiSet();
-  drawThaiBanner();
-  t0 = millis();
+  // LCD
+  lcd.init(); lcd.backlight();
+
+  // OLED
+  u8g2.begin();
+
+  // Welcome (OLED ไทยเต็ม)
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_unifont_t_symbols);
+  u8g2.drawUTF8(0, 24, "ระบบลงคะแนนพร้อมใช้งาน");
+  u8g2.drawUTF8(0, 48, "กดตัวเลขเพื่อเริ่ม");
+  u8g2.sendBuffer();
+
+  // LCD โชว์กรอบรอเลือก
+  lcdVoteUI();
+
+  // Keypad_I2C
+  kpd.begin( makeKeymap(keys) );
+  kpd.setDebounceTime(25);
+  kpd.setHoldTime(500);
+
+  page = PAGE_VOTE;
 }
 
 void loop(){
-  if(page==WELCOME){
-    if(millis()-t0 > 1500){
-      page = VOTE;
+  char k = kpd.getKey();
+  if(k){
+    if(k>='0' && k<='9'){
+      currentChoice = k - '0';
+      lcdVoteUI();
+      oledChoice();
+    } else if(k=='*'){
       currentChoice = -1;
-      drawVoteUI();
+      lcdVoteUI();
+      oledChoice();
+    } else if(k=='#'){
+      if(currentChoice >= 0){
+        onConfirmVote(currentChoice);
+        page = PAGE_CONFIRM;
+        lcdConfirm();
+        oledConfirmed();
+        delay(1200);
+        currentChoice = -1;
+        page = PAGE_VOTE;
+        lcdVoteUI();
+        oledIdle();
+      }
     }
-  }
-  // ตัวอย่างเดโม่: อ่านปุ่มจาก Serial Monitor เพื่อสลับหน้า (เพราะยังไม่ผูก keypad ที่นี่)
-  // พิมพ์ 0..9 แล้วกด Enter เพื่อพรีวิว, พิมพ์ # เพื่อคอนเฟิร์ม, * เพื่อล้าง
-  if(Serial.available()){
-    char c = Serial.read();
-    if(c>='0' && c<='9'){ currentChoice = c-'0'; drawVoteUI(); }
-    else if(c=='*'){ currentChoice = -1; drawVoteUI(); }
-    else if(c=='#' && currentChoice>=0){ page=CONFIRM; drawConfirm(); delay(1200); page=VOTE; currentChoice=-1; drawVoteUI(); }
   }
 }

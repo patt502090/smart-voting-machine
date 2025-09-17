@@ -59,7 +59,7 @@ void setup() {
   Serial.begin(115200);           
   mySerial.begin(115200, SERIAL_8N1, 16, 17); 
     // Debug console
-  Serial.begin(115200);
+
 
   Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
   // You can also specify server:
@@ -77,7 +77,7 @@ void loop() {
   }
   mySerial.println("Hello from ESP32");
   delay(1000);
-  Blynk.run();
-  timer.run();
+  //Blynk.run();
+  //timer.run();
 }
 

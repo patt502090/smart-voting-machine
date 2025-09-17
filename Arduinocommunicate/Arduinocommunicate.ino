@@ -1,7 +1,7 @@
 #include <SoftwareSerial.h>
 
 // กำหนด RX, TX ของ SoftwareSerial
-SoftwareSerial mySerial(8, 9); // RX, TX
+SoftwareSerial mySerial(8, 7); // RX, TX
 
 void setup() {
   Serial.begin(9600);       // Serial Monitor
@@ -16,6 +16,6 @@ void loop() {
   }
 
   // ส่งข้อมูลไป ESP32
-  mySerial.println("Hello from Arduino");
+  //mySerial.println("Hello from Arduino");
   delay(1000);
 }

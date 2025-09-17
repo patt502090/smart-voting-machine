@@ -17,7 +17,12 @@ except Exception:
 # ---------------- base ----------------
 st.set_page_config(page_title="Smart Voting", page_icon="🗳️", layout="wide")
 
-ASSET_DIR = os.path.join(os.path.dirname(__file__), "assets")
+# Support either `assets/` or `asset/` folders seamlessly
+_here = os.path.dirname(__file__)
+_assets_primary = os.path.join(_here, "assets")
+_assets_fallback = os.path.join(_here, "asset")
+ASSET_DIR = _assets_primary if os.path.isdir(_assets_primary) else _assets_fallback
+
 CANDIDATE_NAMES = [
     "Abstain",
     "Candidate 1","Candidate 2","Candidate 3",
@@ -41,47 +46,58 @@ PALETTE = [
 st.markdown("""
 <style>
 #MainMenu{visibility:hidden} header, footer{visibility:hidden}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
 :root{
-  --bg: #0b1020; --fg:#e5e7eb; --muted:#a5b4fc40;
-  --card:#0f172a; --border:rgba(148,163,184,.22);
-  --hi:#3b82f6; --hi2:#06b6d4; --ok:#22c55e; --ng:#ef4444;
+  --bg:#0b0f1a; --fg:#e7e9ee; --muted:#94a3b84d;
+  --card:#0e1320; --card-2:#0c111c; --border:rgba(148,163,184,.18);
+  --hi:#5b8cff; --hi2:#4dd5d3; --ok:#22c55e; --ng:#ef4444;
 }
 html, body, [data-testid="stAppViewContainer"]{
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
   background:
-    radial-gradient(1100px 700px at 10% 0%, rgba(59,130,246,.08), transparent),
-    radial-gradient(900px 600px at 100% 10%, rgba(6,182,212,.06), transparent),
-    linear-gradient(180deg, #0b1020 0%, #0a0f1a 100%);
+    radial-gradient(1200px 700px at 12% -10%, rgba(91,140,255,.08), transparent),
+    radial-gradient(1000px 600px at 100% 0%, rgba(77,213,211,.08), transparent),
+    linear-gradient(180deg, #0b0f1a 0%, #0a0e17 100%);
   color:var(--fg);
 }
 .hero{
   padding:16px 20px; border:1px solid var(--border); border-radius:16px;
-  background:linear-gradient(135deg, rgba(59,130,246,.14), rgba(6,182,212,.10));
-  box-shadow:0 10px 34px rgba(2,6,23,.45);
+  background:linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.01));
+  backdrop-filter: blur(6px);
 }
-.status{display:flex;gap:12px;flex-wrap:wrap;color:#94a3b8}
-.dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:6px}
-.ok{background:var(--ok);box-shadow:0 0 10px var(--ok)}
-.ng{background:var(--ng);box-shadow:0 0 10px var(--ng)}
+.status{display:flex;gap:12px;flex-wrap:wrap;color:#a3adc2;align-items:center}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px}
+.ok{background:var(--ok);box-shadow:0 0 0 3px rgba(34,197,94,.20)}
+.ng{background:var(--ng);box-shadow:0 0 0 3px rgba(239,68,68,.18)}
 .metric{
-  background:linear-gradient(180deg, rgba(59,130,246,.10), rgba(6,182,212,.08));
-  border:1px solid var(--border); border-radius:14px; text-align:center;
-  padding:12px 16px; color:#e2e8f0;
+  background:linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.01));
+  border:1px solid var(--border); border-radius:16px; text-align:center;
+  padding:18px 20px; color:#e5e9f2;
 }
-.metric .label{color:#94a3b8;font-size:.9rem}
-.metric .value{font-size:2.2rem;font-weight:900}
+.metric .label{color:#9aa3b2;font-size:.85rem;letter-spacing:.02em}
+.metric .value{font-size:2.6rem;font-weight:800;letter-spacing:-.02em}
 .legend-card{
   display:flex; gap:12px; align-items:center;
-  border:1px solid var(--border); border-radius:14px; padding:8px 10px;
+  border:1px solid var(--border); border-radius:14px; padding:10px 12px;
   background:var(--card);
+  transition: transform .15s ease, background .15s ease, border-color .15s ease;
 }
+.legend-card:hover{ transform: translateY(-2px); background:var(--card-2); border-color:rgba(148,163,184,.28); }
 .legend-chip{width:10px;height:10px;border-radius:50%;}
 .legend-name{font-weight:700}
 .legend-count{margin-left:auto;font-weight:800;color:#c7d2fe}
 .logbox{
-  border:1px solid var(--border); background:var(--card);
-  border-radius:14px; padding:10px 12px; font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
+  border:1px solid var(--border); background:linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.01));
+  border-radius:14px; padding:12px 14px; font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
   color:#cbd5e1; height:270px; overflow:auto; white-space:pre-wrap;
 }
+[data-testid="stSidebar"]{border-right:1px solid var(--border)}
+[data-testid="stSidebar"] .stSelectbox, [data-testid="stSidebar"] .stSlider, [data-testid="stSidebar"] .stCheckbox{color:#e7e9ee}
+[data-testid="stSidebar"] section{gap:8px}
+[data-testid="stSidebar"] .stButton>button{width:100%; border-radius:10px; background:#141a29; border:1px solid var(--border)}
+/* Altair chart tooltip tweaks */
+.vega-embed .vega-actions{display:none}
 </style>
 """, unsafe_allow_html=True)
 
@@ -294,14 +310,38 @@ df = pd.DataFrame({
 if sort_desc:
     df = df.sort_values("count", ascending=False).reset_index(drop=True)
 
-chart = alt.Chart(df).mark_bar(cornerRadiusTopLeft=6, cornerRadiusTopRight=6).encode(
-    x=alt.X('candidate:N', sort=None, axis=alt.Axis(labelAngle=0, labelColor="#cbd5e1", title=None)),
-    y=alt.Y('count:Q', axis=alt.Axis(grid=True, labelColor="#cbd5e1", title=None)),
-    color=alt.Color('candidate:N', scale=alt.Scale(domain=df["candidate"].tolist(), range=df["color"].tolist()), legend=None),
-    tooltip=['candidate:N','count:Q']
-).properties(height=380)
+chart = (
+    alt.Chart(df, background='transparent')
+      .mark_bar(cornerRadiusTopLeft=8, cornerRadiusTopRight=8)
+      .encode(
+          x=alt.X('candidate:N', sort=None,
+                   axis=alt.Axis(
+                       labelAngle=0,
+                       labelColor="#cbd5e1",
+                       labelFont="Inter",
+                       title=None,
+                   )),
+          y=alt.Y('count:Q',
+                   axis=alt.Axis(
+                       grid=True,
+                       gridOpacity=0.08,
+                       tickColor="#2b3447",
+                       labelColor="#cbd5e1",
+                       labelFont="Inter",
+                       title=None,
+                   )),
+          color=alt.Color('candidate:N',
+                          scale=alt.Scale(domain=df["candidate"].tolist(), range=df["color"].tolist()),
+                          legend=None),
+          tooltip=[alt.Tooltip('candidate:N', title='Candidate'), alt.Tooltip('count:Q', title='Votes')]
+      )
+      .properties(height=380)
+      .configure_view(stroke=None)
+)
 
-labels = chart.mark_text(dy=-8, color='#e2e8f0', fontSize=14, fontWeight='bold').encode(text='count:Q')
+labels = chart.mark_text(dy=-8, color='#e2e8f0', fontSize=14, fontWeight='bold').encode(
+    text=alt.condition(alt.datum.count > 0, 'count:Q', alt.value(''))
+)
 
 left, right = st.columns([1.8,1])
 with left:

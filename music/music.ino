@@ -18,14 +18,16 @@ void setup() {
   Serial.println("test");
   tmrpcm.setVolume(5);
   tmrpcm.quality(1); 
-  //tmrpcm.play("test.wav"); //the sound file "1" will play each time the arduino powers up, or is reset
+  tmrpcm.play("sawadh.wav"); //the sound file "1" will play each time the arduino powers up, or is reset
 }
 
 void loop() {
 
+
+
   if (Serial.available()) {
     x = Serial.read();
-
+ String msg = Serial.readStringUntil('\n');Serial.println("From ESP32: " + msg);
     if (x == '1') {  //ถ้า SerialMonitor ส่งค่า 1 มาให้ Arduino ให้ทำคำสั่งใน if นี้
 
       tmrpcm.play("1.wav");
@@ -37,10 +39,10 @@ void loop() {
       tmrpcm.play("sound/sawadh.wav");  //เล่นไฟล์เสียง 2.wav
     }
     if (x == '3') {
-      tmrpcm.play("sound/confirm.wav");  //เล่นไฟล์เสียง 3.wav
+      tmrpcm.play("c.wav");  //เล่นไฟล์เสียง 3.wav
     }
     if (x == '4') {
-      tmrpcm.play("sound/readrfid.wav");  //เล่นไฟล์เสียง 4.wav
+      tmrpcm.play("re.wav");  //เล่นไฟล์เสียง 4.wav
     }
     if (x == '5') {
       //tmrpcm.play("sound/sawa.wav");  //เล่นไฟล์เสียง 4.wav
@@ -49,7 +51,7 @@ void loop() {
       //tmrpcm.play("sound/sawadlow.wav"); //เล่นไฟล์เสียง 6.wav
     }
     if (x == '7') {
-      tmrpcm.play("sound/noreg.wav");  //เล่นไฟล์เสียง 5.wav
+      tmrpcm.play("n.wav");  //เล่นไฟล์เสียง 5.wav
     }
     if (x == '8') {
       tmrpcm.play("sound/choose.wav");  //เล่นไฟล์เสียง 6.wav9

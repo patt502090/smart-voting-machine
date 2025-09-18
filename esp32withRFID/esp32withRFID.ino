@@ -43,8 +43,8 @@ const unsigned long debounceDelay = 200;  // หน่วงเวลา 200 ม
 // กำหนด pin ใหม่
 const int buzzerPin = 12;   // ย้ายการเชื่อมต่อ Buzzer ไปยังพิน 6
 const int servoPin = 7;     // ย้ายการเชื่อมต่อ Servo Motor ไปยังพิน 7
-const int switchPin4 = 33;  // ย้ายการเชื่อมต่อสวิตช์ไปยังพิน 4
-const int switchPin2 = 32;  // ย้ายการเชื่อมต่อสวิตช์ไปยังพิน 2
+const int switchPin33 = 33;  // ย้ายการเชื่อมต่อสวิตช์ไปยังพิน 4
+const int switchPin32 = 32;  // ย้ายการเชื่อมต่อสวิตช์ไปยังพิน 2
 const int ledPin = 13;      // กำหนดให้ LED เชื่อมต่อที่พิน 3
 
 void setup() {
@@ -53,15 +53,15 @@ void setup() {
   Serial.begin(115200);  // เริ่มต้นการสื่อสารอนุกรม (Serial) ด้วยบอดเรต 9600 สำหรับการดีบัก
   //mySerial.begin(9600);  // เริ่มต้นการสื่อสารอนุกรมเสมือน (SoftwareSerial) ด้วยบอดเรต 9600 เพื่อสื่อสารกับอุปกรณ์ภายนอก (เช่น โค้ดหรือบอร์ดอื่น)
   EEPROM.begin(EEPROM_SIZE);
-  mySerial.begin(115200, SERIAL_8N1, 16, 17);
+  mySerial.begin(9600, SERIAL_8N1, 16, 17);
 
   SPI.begin();      // เริ่มต้นการทำงานของ SPI เพื่อใช้ในการสื่อสารกับโมดูล RFID
   rfid.PCD_Init();  // เริ่มต้นการทำงานของโมดูล RFID (MFRC522)
 
   pinMode(buzzerPin, OUTPUT);         // กำหนดให้ขา buzzerPin ทำหน้าที่ส่งออก (OUTPUT) สำหรับการควบคุมเสียงเตือน
-  pinMode(switchPin2, INPUT_PULLUP);  // กำหนดให้ขา switchPin เป็นอินพุตพร้อมเปิดตัวต้านทานภายใน (INPUT_PULLUP) เพื่อใช้กับสวิตช์
+  pinMode(switchPin33, INPUT_PULLUP);  // กำหนดให้ขา switchPin เป็นอินพุตพร้อมเปิดตัวต้านทานภายใน (INPUT_PULLUP) เพื่อใช้กับสวิตช์
   pinMode(ledPin, OUTPUT);            // กำหนดให้ขา ledPin ทำหน้าที่ส่งออก (OUTPUT) สำหรับควบคุม LED
-  pinMode(switchPin4, INPUT_PULLUP);  // กำหนดให้ขา switchPin เป็นอินพุตพร้อมเปิดตัวต้านทานภายใน (INPUT_PULLUP) เพื่อใช้กับสวิตช์
+  pinMode(switchPin32, INPUT_PULLUP);  // กำหนดให้ขา switchPin เป็นอินพุตพร้อมเปิดตัวต้านทานภายใน (INPUT_PULLUP) เพื่อใช้กับสวิตช์
 
 
   // ตั้งค่า LED เริ่มต้นเป็น "ปิด"
@@ -72,10 +72,11 @@ void setup() {
 }
 
 void loop() {
-  int switchDel = digitalRead(switchPin4);  // อ่านค่าจากสวิตช์เพื่อดูว่ามีการกดสวิตช์หรือไม่
-  int switchReg = digitalRead(switchPin2);  // อ่านค่าจากสวิตช์เพื่อดูว่ามีการกดสวิตช์หรือไม่
+  int switchDel = digitalRead(switchPin32);  // อ่านค่าจากสวิตช์เพื่อดูว่ามีการกดสวิตช์หรือไม่
+  int switchReg = digitalRead(switchPin33);  // อ่านค่าจากสวิตช์เพื่อดูว่ามีการกดสวิตช์หรือไม่
   Serial.println(switchDel);
   if (switchReg == LOW) {
+    mySerial.println("regis");  
     Serial.println("reg");
     registerCard();
 
@@ -88,14 +89,14 @@ void loop() {
  
   if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {  // ถ้ามีการ์ดใหม่เข้ามาและอ่านข้อมูลการ์ดได้
                                       
-    mySerial.println("Scanning");                                           // แสดงข้อความ "Scanning" บนจอ LCD
+    mySerial.println("S");                                           // แสดงข้อความ "Scanning" บนจอ LCD
     Serial.print("NUID tag is :");                                   // แสดงข้อความเริ่มต้นใน Serial Monitor
     String ID = "";                                                  // ประกาศตัวแปรเพื่อเก็บ ID ของการ์ด
     for (byte i = 0; i < rfid.uid.size; i++) {                       // วนลูปเพื่ออ่าน UID ของการ์ด
                                                    // แสดงจุดบนจอ LCD เพื่อแสดงการทำงาน
       ID.concat(String(rfid.uid.uidByte[i] < 0x10 ? "0" : ""));      // เพิ่มศูนย์หน้าถ้าค่าต่ำกว่า 16 (0x10)
       ID.concat(String(rfid.uid.uidByte[i], HEX));                   // แปลงค่า UID เป็นเลขฐาน 16 และเพิ่มเข้าไปใน ID
-      delay(10);                                                     // หน่วงเวลา 300 มิลลิวินาทีเพื่อให้การแสดงผลชัดเจน
+      delay(1000);                                                     // หน่วงเวลา 300 มิลลิวินาทีเพื่อให้การแสดงผลชัดเจน
     }
     ID.toUpperCase();  // เปลี่ยน ID ให้เป็นตัวพิมพ์ใหญ่
 
@@ -107,7 +108,7 @@ void loop() {
       Serial.println("found");     // ถ้าการ์ดถูกลงทะเบียน ให้เรียกฟังก์ชัน activateMotor() เพื่อเปิดประตู
     } else {                       // ถ้าการ์ดไม่ถูกลงทะเบียน
       
-      mySerial.println("Wrong card!");    // แสดงข้อความ "Wrong card!" บนจอ LCD
+      mySerial.println("W");    // แสดงข้อความ "Wrong card!" บนจอ LCD
       tone(buzzerPin, 1000, 200);  // ส่งเสียงเตือนครั้งที่ 1
       digitalWrite(ledPin, HIGH);  // เปิด LED เพื่อแสดงสถานะ
       delay(300);                  // รอ 300 มิลลิวินาที

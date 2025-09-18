@@ -82,6 +82,11 @@ _Target submission: **2025-09-20**_
 - ไฟตก/รีเซ็ต → ใช้ Diode‑OR + SuperCap ที่ 5V logic / ปรับโค้ดให้ resume ได้จากสถานะล่าสุด
 - เซ็นเซอร์รำคาญแสง → กั้นฉาก/ท่อแสง, ใช้ modulation 38 kHz + demod IR
 
+
+
+LINK
+https://simple-circuit.com/esp8266-nodemcu-ili9341-tft-display/
+
 ## 9) เช็กลิสต์ส่งงาน
 - วิดีโอเดโม 60–90 วิ + รูปฮาร์ดแวร์/ผังเดินสาย
 - รายงาน (PDF/MD) สั้น ๆ + ลิงก์ซอร์สโค้ด

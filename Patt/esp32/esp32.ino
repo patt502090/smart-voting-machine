@@ -41,7 +41,7 @@ const char* NAME[10] = {
 // ใช้รูปจากลิงก์ (ขอแบบสี่เหลี่ยม) — แก้ให้เป็นของจริงได้เลย
 // ทดลอง: ใช้ placeholder สีต่าง ๆ จาก dummyimage.com
 const char* PHOTO[10] = {
-  "https://i.ytimg.com/vi/7LGg5AfL3H4/maxresdefault.jpg",
+  "https://mercyinvestmentservices.org/wp-content/uploads/AdobeStock_70618933-scaled.jpeg",
   "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e9/Field_Marshal_Plaek_Phibunsongkhram.jpg/330px-Field_Marshal_Plaek_Phibunsongkhram.jpg",
   "https://upload.wikimedia.org/wikipedia/commons/thumb/6/64/Anutin_Charnvirakul_in_September_2025_%28cropped%29.png/330px-Anutin_Charnvirakul_in_September_2025_%28cropped%29.png",
   "https://upload.wikimedia.org/wikipedia/commons/thumb/7/7b/Anand_Panyarachun_%28cropped%29.jpg/250px-Anand_Panyarachun_%28cropped%29.jpg",

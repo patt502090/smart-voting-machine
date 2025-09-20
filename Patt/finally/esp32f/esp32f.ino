@@ -11,9 +11,50 @@
 #include <EEPROM.h>
 #include <Adafruit_Fingerprint.h>
 
+
+// ===== Added: Deep-sleep support =====
+#include "esp_sleep.h"
+
+// ใช้ GPIO35 เป็นขาปลุก (ต่อมาจาก ODROID PIN_33 ผ่าน R อนุกรม ~1k)
+// *GPIO35 เป็นขา RTC input ได้ ปลุกด้วย ext1 ได้
+#define WAKE_PIN 35
+
+// ==== forward declarations to satisfy compile order (ADD ONLY) ====
+struct Rec;                  // ให้คอมไพเลอร์รู้จักชื่อ Rec ล่วงหน้า (ใช้กับ & ได้)
+extern const int UID_HEX_MAX;  // บอกว่าจะมีค่าคงที่ชื่อนี้ประกาศจริงด้านล่าง
+
+// (ออปชัน) ถ้าจะให้หลับเองเมื่อไม่มีเหตุการณ์นาน X ms ให้เปิดใช้ 2 บรรทัดนี้ได้ภายหลัง
+// #define IDLE_SLEEP_MS 60000UL   // FAR/ไม่มีงาน 60s → หลับ
+// static uint32_t lastActiveMs = 0;
+// inline void noteActivity(){ lastActiveMs = millis(); }
+
+void printWakeReason() {
+  esp_sleep_wakeup_cause_t c = esp_sleep_get_wakeup_cause();
+  Serial.print("Wake reason: ");
+  if (c == ESP_SLEEP_WAKEUP_EXT1)      Serial.println("EXT1 (GPIO)");
+  else if (c == ESP_SLEEP_WAKEUP_TIMER) Serial.println("TIMER");
+  else if (c == ESP_SLEEP_WAKEUP_UNDEFINED) Serial.println("POWER-ON/RESET");
+  else { Serial.print("#"); Serial.println((int)c); }
+}
+
+// เข้าหลับทันที แล้วปลุกเมื่อ WAKE_PIN=HIGH จาก ODROID
+void goDeepSleepNow() {
+  Serial.println("-> Deep-sleep now. Waiting for ODROID wake (GPIO35 HIGH)...");
+  delay(50);
+
+  // ใช้ pulldown ภายใน ถ้ายังไม่มี R 100kΩ ภายนอก
+  pinMode(WAKE_PIN, INPUT_PULLDOWN);
+
+  // ปลุกด้วย EXT1 (กลุ่ม RTC IO) เมื่อบิตของ WAKE_PIN = HIGH
+  uint64_t mask = (1ULL << WAKE_PIN);
+  esp_sleep_enable_ext1_wakeup(mask, ESP_EXT1_WAKEUP_ANY_HIGH);
+
+  // ปิด Wi-Fi/Bluetooth อัตโนมัติเมื่อเข้าหลับ (DeepSleep จะปิดทุกอย่างอยู่แล้ว)
+  esp_deep_sleep_start();
+}
 // ---------- Serial / UART ----------
-HardwareSerial mySerial(2);        // UART2 : ใช้คุยกับบอร์ด/จออีกตัว (TX=17, RX=16)
-HardwareSerial FingerSerial(1);    // UART1 : โมดูลลายนิ้วมือ
+HardwareSerial mySerial(2);        // UART2 : ใช้คุยกับบอร์ด/จออีกตัว ตามที่คุณใช้อยู่ (TX=17, RX=16 ด้านล่าง)
+HardwareSerial FingerSerial(1);    // UART1 : ใช้คุยกับโมดูลลายนิ้วมือ
 Adafruit_Fingerprint finger = Adafruit_Fingerprint(&FingerSerial);
 
 // ---------- RFID ----------
@@ -24,139 +65,37 @@ MFRC522 rfid(SS_PIN, RST_PIN);
 // ---------- I/O ----------
 const int EEPROM_SIZE  = 512;
 const int buzzerPin    = 12;
-const int switchPin33  = 33;  // Register
-const int switchPin32  = 32;  // Delete
+const int switchPin33  = 33;  // สวิตช์ Register
+const int switchPin32  = 32;  // สวิตช์ Delete
 const int ledPin       = 13;
 
-// ---------- Finger UART Pins ----------
+// ---------- Finger UART Pins (ปรับให้ตรงบอร์ดคุณ) ----------
 const int FINGER_RX = 26; // ESP32 RX1 pin to sensor TX
 const int FINGER_TX = 25; // ESP32 TX1 pin to sensor RX
 
-// ================== ULTRASONIC (HC-SR04) ==================
-const int TRIG_PIN = 4;    // ตามที่คุณต่อ
-const int ECHO_PIN = 21;   // ตามที่คุณต่อ (ลดระดับแรงดันลง 3.3V แล้ว)
-
-const uint16_t US_INTERVAL_MS = 200;       // วัดทุก ~200ms
-const unsigned long US_TIMEOUT_US = 25000;  // pulseIn timeout ~4.3m
-
-// เกณฑ์ NEAR/FAR + ฮิสเทอรีส (ปรับ runtime ได้ด้วยคำสั่ง NEARTHR/FARTHR)
-volatile float NEAR_ON_CM  = 20.0;  // เข้า NEAR เมื่อ <= 20 cm
-volatile float NEAR_OFF_CM = 30.0;  // กลับ FAR เมื่อ >= 30 cm
-
-bool nearState = false;     // สถานะล่าสุด
-uint32_t lastUSms = 0;
-
-// อ่าน 1 ครั้ง
-inline unsigned long us_read_echo_once() {
-  digitalWrite(TRIG_PIN, LOW);  delayMicroseconds(2);
-  digitalWrite(TRIG_PIN, HIGH); delayMicroseconds(10);
-  digitalWrite(TRIG_PIN, LOW);
-  return pulseIn(ECHO_PIN, HIGH, US_TIMEOUT_US); // us
-}
-
-// อ่าน 3 ครั้ง -> มัธยฐาน (กันสไปค์)
-float measureDistanceCm() {
-  unsigned long a = us_read_echo_once(); delayMicroseconds(150);
-  unsigned long b = us_read_echo_once(); delayMicroseconds(150);
-  unsigned long c = us_read_echo_once();
-  // sort a<=b<=c
-  if (a>b){ auto t=a; a=b; b=t; }
-  if (b>c){ auto t=b; b=c; c=t; }
-  if (a>b){ auto t=a; a=b; b=t; }
-  unsigned long us = b;
-  if (us == 0) return NAN;
-  return (float)us / 58.0f; // ~ cm
-}
-
-// ส่งสถานะไปยังทั้งสองพอร์ต
-void publishUltra(float cm, bool near, bool onlyChange=true) {
-  static bool last = false;
-  if (!onlyChange || near != last) {
-    last = near;
-    mySerial.println(near ? "NEAR" : "FAR");            // → ให้ Odroid/AI รับง่าย
-  }
-  // DEBUG บน USB Serial เสมอ (1 บรรทัดสั้นๆ)
-  Serial.print("ULTRA cm=");
-  if (isnan(cm)) Serial.print("NaN");
-  else Serial.printf("%.1f", cm);
-  Serial.print(" near=");
-  Serial.println(near ? 1 : 0);
-}
-
-void ultrasonicTask() {
-  if (millis() - lastUSms < US_INTERVAL_MS) return;
-  lastUSms = millis();
-
-  float cm = measureDistanceCm();
-  if (isnan(cm)) {
-    // timeout: ไม่อัพเดตสถานะ แต่พิมพ์ดีบัก
-    Serial.println("ULTRA cm=NaN near=?");
-    return;
-  }
-
-  bool newNear = nearState;
-  if (!nearState && cm <= NEAR_ON_CM)  newNear = true;
-  if ( nearState && cm >= NEAR_OFF_CM) newNear = false;
-
-  publishUltra(cm, newNear, /*onlyChange=*/true);
-  nearState = newNear;
-}
-
-// =============== โปรโตคอล Serial กับ AI (ขา mySerial) ===============
-// คำสั่งเข้า:
-//   "ULTRA?"           -> ตอบหนึ่งบรรทัด "ULTRA cm=xx.x near=0/1"
-//   "NEARTHR <cm>"     -> ตั้ง NEAR_ON_CM
-//   "FARTHR <cm>"      -> ตั้ง NEAR_OFF_CM
-// (เผื่ออนาคต AI ปรับ threshold runtime)
-void handleMySerialCommand(const String &line) {
-  String cmd = line; cmd.trim();
-  if (cmd.length() == 0) return;
-
-  if (cmd.equalsIgnoreCase("ULTRA?")) {
-    float cm = measureDistanceCm();
-    bool ns = nearState;
-    if (!isnan(cm)) {
-      // คำนวณ near ทันทีตามปัจจุบัน (ไม่เปลี่ยนสถานะหลัก)
-      if (!ns && cm <= NEAR_ON_CM)  ns = true;
-      if ( ns && cm >= NEAR_OFF_CM) ns = false;
-    }
-    mySerial.print("ULTRA cm=");
-    if (isnan(cm)) mySerial.print("NaN");
-    else mySerial.printf("%.1f", cm);
-    mySerial.print(" near=");
-    mySerial.println(ns ? 1 : 0);
-    return;
-  }
-
-  if (cmd.startsWith("NEARTHR ")) {
-    float v = cmd.substring(8).toFloat();
-    if (v > 0) {
-      NEAR_ON_CM = v;
-      mySerial.print("OK NEARTHR=");
-      mySerial.println(NEAR_ON_CM, 1);
-    } else {
-      mySerial.println("ERR");
-    }
-    return;
-  }
-
-  if (cmd.startsWith("FARTHR ")) {
-    float v = cmd.substring(7).toFloat();
-    if (v > 0) {
-      NEAR_OFF_CM = v;
-      mySerial.print("OK FARTHR=");
-      mySerial.println(NEAR_OFF_CM, 1);
-    } else {
-      mySerial.println("ERR");
-    }
-    return;
-  }
-
-  // อื่นๆ -> ท่อไป Serial หลักเพื่อดีบัก
-  Serial.print("mySerial> "); Serial.println(cmd);
-}
+// ---------- Protocol between boards (คงรูปแบบเดิมของคุณ) ----------
+/*
+  mySerial.println("regis"); // โหมดลงทะเบียน
+  mySerial.println("S");     // สแกนบัตรปกติ: สถานะกำลังอ่าน
+  mySerial.println("W");     // บัตรผิด
+  mySerial.println("OK");    // ยืนยันผ่าน (บัตร+นิ้วผ่าน)
+*/
 
 // ---------- Durable Storage Layout (EEPROM) ----------
+/*
+  Header (offset 0..15)
+    0..3   : MAGIC 'VOTE' (0x56 0x4F 0x54 0x45)
+    4      : VERSION = 1
+    5..15  : reserved
+
+  Records start at BASE = 16
+  Each record = 20 bytes
+    0..15 : UID_HEX (fixed 16 chars, ASCII hex, padded with 0x00)
+    16    : FP_ID (0..199)  => id ในโมดูลลายนิ้วมือ
+    17    : VOTED (0/1)
+    18    : VALID (0xA5 = valid, 0xFF = empty)
+    19    : reserved
+*/
 const uint32_t MAGIC = 0x564F5445UL;  // 'VOTE'
 const uint8_t  VERSION = 1;
 const int      HDR_SIZE = 16;
@@ -167,33 +106,40 @@ const uint8_t  VALID_FLAG = 0xA5;
 const uint8_t  EMPTY_FLAG = 0xFF;
 const int      MAX_RECORDS = (EEPROM_SIZE - BASE) / RECORD_SIZE; // ~= 24
 
+// ---------- Utils ----------
 struct Rec {
-  char     uid[UID_HEX_MAX];
+  char     uid[UID_HEX_MAX]; // ไม่รับ '\0' เสมอ ให้เก็บเป็น 16 ชาร์ (ถ้าน้อยกว่าก็ 0x00 padding)
   uint8_t  fp_id;
-  uint8_t  voted;
-  uint8_t  valid;
+  uint8_t  voted;            // 0/1
+  uint8_t  valid;            // VALID_FLAG หรือ EMPTY_FLAG
   uint8_t  reserved;
 };
 
 void eepromWriteBytes(int addr, const uint8_t* data, int len) {
   for (int i=0; i<len; ++i) EEPROM.write(addr+i, data[i]);
 }
+
 void eepromReadBytes(int addr, uint8_t* data, int len) {
   for (int i=0; i<len; ++i) data[i] = EEPROM.read(addr+i);
 }
+
 void writeHeader() {
   uint8_t hdr[HDR_SIZE] = {0};
   hdr[0] = 'V'; hdr[1] = 'O'; hdr[2] = 'T'; hdr[3] = 'E';
   hdr[4] = VERSION;
+  // rest zero
   eepromWriteBytes(0, hdr, HDR_SIZE);
   EEPROM.commit();
 }
+
 bool headerOK() {
   uint8_t h[5];
   for (int i=0;i<5;i++) h[i] = EEPROM.read(i);
   return (h[0]=='V' && h[1]=='O' && h[2]=='T' && h[3]=='E' && h[4]==VERSION);
 }
+
 int recAddr(int idx) { return BASE + idx*RECORD_SIZE; }
+
 void readRec(int idx, Rec &r) {
   uint8_t buf[RECORD_SIZE];
   eepromReadBytes(recAddr(idx), buf, RECORD_SIZE);
@@ -203,6 +149,7 @@ void readRec(int idx, Rec &r) {
   r.valid    = buf[18];
   r.reserved = buf[19];
 }
+
 void writeRec(int idx, const Rec &r) {
   uint8_t buf[RECORD_SIZE];
   for (int i=0; i<UID_HEX_MAX; ++i) buf[i] = (uint8_t)r.uid[i];
@@ -213,12 +160,14 @@ void writeRec(int idx, const Rec &r) {
   eepromWriteBytes(recAddr(idx), buf, RECORD_SIZE);
   EEPROM.commit();
 }
+
 void clearRec(int idx) {
   Rec r{};
   for (int i=0;i<UID_HEX_MAX;++i) r.uid[i]=0x00;
   r.fp_id=0; r.voted=0; r.valid=EMPTY_FLAG; r.reserved=0;
   writeRec(idx, r);
 }
+
 int findFreeSlot() {
   for (int i=0;i<MAX_RECORDS;++i) {
     Rec r; readRec(i,r);
@@ -226,13 +175,22 @@ int findFreeSlot() {
   }
   return -1;
 }
+
+#define UID_HEX_MAX 16
 bool sameUID16(const char a[UID_HEX_MAX], const char b[UID_HEX_MAX]) {
   for (int i=0;i<UID_HEX_MAX;++i) if (a[i]!=b[i]) return false;
   return true;
 }
+
 void uidToFixed16(const String &uidHex, char out16[UID_HEX_MAX]) {
-  for (int i=0;i<UID_HEX_MAX;i++) out16[i] = (i < uidHex.length()) ? uidHex.charAt(i) : 0x00;
+  // ตัด/แพดให้ยาว 16 ตัวอักษร
+  // (UID 4 ไบต์ => 8 ตัวอักษร, UID 7/10 ไบต์ => 14/20 ตัวอักษร → เก็บ 16 ตัวอักษรแรกพอ)
+  for (int i=0;i<UID_HEX_MAX;i++) {
+    out16[i] = (i < uidHex.length()) ? uidHex.charAt(i) : 0x00;
+  }
 }
+#undef UID_HEX_MAX
+
 int findByUID(const String &uidHex) {
   char key[UID_HEX_MAX]; uidToFixed16(uidHex, key);
   for (int i=0;i<MAX_RECORDS;++i) {
@@ -241,6 +199,7 @@ int findByUID(const String &uidHex) {
   }
   return -1;
 }
+
 int findByFPID(uint8_t fp) {
   for (int i = 0; i < MAX_RECORDS; ++i) {
     Rec r; readRec(i, r);
@@ -249,13 +208,7 @@ int findByFPID(uint8_t fp) {
   return -1;
 }
 
-// ---------- Fingerprint helpers ----------
-bool fingerBegin() {
-  FingerSerial.begin(57600, SERIAL_8N1, FINGER_RX, FINGER_TX);
-  finger.begin(57600);
-  delay(200);
-  return finger.verifyPassword();
-}
+// สแกนนิ้วแบบเร็วเพื่อเช็กว่ามีนิ้วนี้อยู่ในฐานแล้วหรือไม่
 int quickSearchFingerprint(uint32_t timeout_ms = 10000) {
   unsigned long t0 = millis();
   while (millis() - t0 < timeout_ms) {
@@ -264,12 +217,14 @@ int quickSearchFingerprint(uint32_t timeout_ms = 10000) {
     if (p != FINGERPRINT_OK) { delay(50); continue; }
     p = finger.image2Tz(1);
     if (p != FINGERPRINT_OK) { delay(50); continue; }
-    p = finger.fingerFastSearch();
-    if (p == FINGERPRINT_OK) return finger.fingerID;
-    else return -1;
+    p = finger.fingerFastSearch();         // ค้นหาในฐานของเซ็นเซอร์
+    if (p == FINGERPRINT_OK) return finger.fingerID;  // พบแล้ว → คืน fp_id เดิม
+    else return -1;                        // ไม่พบ → นิ้วใหม่น่าจะยังไม่อยู่ในฐาน
   }
-  return -1;
+  return -1; // timeout
 }
+
+
 bool setVotedByIndex(int idx, uint8_t v) {
   if (idx<0 || idx>=MAX_RECORDS) return false;
   Rec r; readRec(idx,r);
@@ -278,37 +233,66 @@ bool setVotedByIndex(int idx, uint8_t v) {
   writeRec(idx,r);
   return true;
 }
+
+// ---------- Fingerprint helpers ----------
+bool fingerBegin() {
+  // เริ่มพอร์ตกับโมดูลลายนิ้วมือ
+  FingerSerial.begin(57600, SERIAL_8N1, FINGER_RX, FINGER_TX);
+  finger.begin(57600);
+  delay(200);
+  return finger.verifyPassword();
+}
+
 int enrollFingerprint(uint8_t fp_id) {
+  // ขั้นตอนย่อสไตล์ Adafruit: ขอภาพสองครั้ง, สร้างโมเดล, เก็บไว้ตำแหน่ง fp_id
+  // คืน 0 = ok, อื่นๆ = code ผิดพลาด
   int p = -1;
   Serial.printf("Enroll FP id=%d : place finger\n", fp_id);
+
+  // ภาพ 1
   while ((p = finger.getImage()) != FINGERPRINT_OK) {
     if (p == FINGERPRINT_NOFINGER) { delay(50); continue; }
     if (p == FINGERPRINT_PACKETRECIEVEERR) return p;
     if (p == FINGERPRINT_IMAGEFAIL)       return p;
   }
-  p = finger.image2Tz(1); if (p != FINGERPRINT_OK) return p;
+
+  p = finger.image2Tz(1);
+  if (p != FINGERPRINT_OK) return p;
+
   Serial.println("Remove finger");
   while (finger.getImage() != FINGERPRINT_NOFINGER) delay(50);
+
   Serial.println("Place same finger again");
   while ((p = finger.getImage()) != FINGERPRINT_OK) {
     if (p == FINGERPRINT_NOFINGER) { delay(50); continue; }
     if (p == FINGERPRINT_PACKETRECIEVEERR) return p;
     if (p == FINGERPRINT_IMAGEFAIL)       return p;
   }
-  p = finger.image2Tz(2); if (p != FINGERPRINT_OK) return p;
-  p = finger.createModel(); if (p != FINGERPRINT_OK) return p;
+
+  p = finger.image2Tz(2);
+  if (p != FINGERPRINT_OK) return p;
+
+  p = finger.createModel();
+  if (p != FINGERPRINT_OK) return p;
+
   p = finger.storeModel(fp_id);
   return p; // FINGERPRINT_OK = 0x00
 }
+
 int matchFingerprint() {
-  uint8_t p = finger.getImage(); if (p != FINGERPRINT_OK)  return -1;
-  p = finger.image2Tz();         if (p != FINGERPRINT_OK)  return -1;
-  p = finger.fingerFastSearch(); if (p != FINGERPRINT_OK)  return -1;
-  return finger.fingerID;
+  // จับภาพ → แปลง → ค้นหา เร็ว
+  uint8_t p = finger.getImage();
+  if (p != FINGERPRINT_OK)  return -1;
+  p = finger.image2Tz();
+  if (p != FINGERPRINT_OK)  return -1;
+  p = finger.fingerFastSearch();
+  if (p != FINGERPRINT_OK)  return -1;
+  return finger.fingerID; // ตำแหน่งที่ match
 }
 
 // ---------- App Logic ----------
 String readRFIDasHex() {
+  // คืนเป็นตัวอักษร hex (ไม่เว้นวรรค), ตัวพิมพ์ใหญ่, ยาวเท่าจำนวน uid.size*2 (สูงสุด ~20 chars)
   String ID="";
   for (byte i=0;i<rfid.uid.size;i++){
     if (rfid.uid.uidByte[i] < 0x10) ID += "0";
@@ -318,6 +302,7 @@ String readRFIDasHex() {
   ID.replace(" ", "");
   return ID;
 }
+
 bool storeNewRecord(const String &uidHex, uint8_t fp_id) {
   int slot = findFreeSlot();
   if (slot<0) return false;
@@ -330,18 +315,25 @@ bool storeNewRecord(const String &uidHex, uint8_t fp_id) {
   writeRec(slot, r);
   return true;
 }
+
 bool removeByUID(const String &uidHex) {
   int idx = findByUID(uidHex);
   if (idx<0) return false;
   Rec r; readRec(idx, r);
-  if (r.fp_id>0) finger.deleteModel(r.fp_id);
+  // ลบในโมดูลลายนิ้วมือด้วย
+  if (r.fp_id>0) {
+    finger.deleteModel(r.fp_id);
+  }
   clearRec(idx);
   return true;
 }
 
+// ---------- High-level flows ----------
 void registerCardAndFingerprint() {
   mySerial.println("regis");
   Serial.println("Registration mode... Tap a new card");
+
+  // รอการ์ด
   while (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) { delay(50); }
   String uidHex = readRFIDasHex();
   rfid.PICC_HaltA();
@@ -353,21 +345,25 @@ void registerCardAndFingerprint() {
     return;
   }
 
+  // === NEW: ตรวจนิ้วซ้ำก่อน Enroll ===
   Serial.println("Place finger to check duplication...");
   int existing_fp = quickSearchFingerprint(10000);
   if (existing_fp >= 0) {
     int idxExisting = findByFPID(existing_fp);
     if (idxExisting >= 0) {
+      // มีนิ้วนี้อยู่ในระบบแล้ว และผูกกับบัตรเดิมอยู่ → บล็อก
       Rec rExist; readRec(idxExisting, rExist);
       Serial.printf("Duplicate finger detected! Already linked to another card (FP_ID=%d). Abort.\n", existing_fp);
       tone(buzzerPin, 600, 400);
       return;
     } else {
+      // กรณี “เจอในเซ็นเซอร์แต่ไม่เจอใน EEPROM” (ข้อมูลค้าง) → ลบเทมเพลตทิ้งก่อน
       Serial.printf("Found stale FP template (id=%d) without EEPROM record. Deleting stale template.\n", existing_fp);
       finger.deleteModel(existing_fp);
     }
   }
 
+  // หา fp_id ว่าง (เหมือนเดิม)
   uint8_t chosen_fp_id = 1;
   bool used[200]; for (int i=0; i<200; i++) used[i] = false;
   for (int i=0; i<MAX_RECORDS; i++) {
@@ -381,6 +377,7 @@ void registerCardAndFingerprint() {
     return;
   }
 
+  // Enroll ตามปกติ
   Serial.printf("Enroll fingerprint for this card (UID=%s) at FP_ID=%d\n", uidHex.c_str(), chosen_fp_id);
   int p = enrollFingerprint(chosen_fp_id);
   if (p != FINGERPRINT_OK) {
@@ -396,9 +393,10 @@ void registerCardAndFingerprint() {
   } else {
     Serial.println("EEPROM full. Cannot store new record.");
     tone(buzzerPin, 500, 500);
-    finger.deleteModel(chosen_fp_id);
+    finger.deleteModel(chosen_fp_id);  // roll back
   }
 }
+
 
 void deleteCardFlow() {
   Serial.println("Delete mode... Tap a card to delete");
@@ -416,11 +414,14 @@ void deleteCardFlow() {
     return;
   }
 
+  // โหลดเรคคอร์ดเพื่อรู้ fp_id ของเจ้าของบัตร
   Rec r; readRec(idx, r);
+
+  // ✅ ขั้นตอน “ยืนยันลายนิ้วมือก่อนลบ”
   Serial.printf("Verify fingerprint to delete (expect FP_ID=%d)\n", r.fp_id);
   unsigned long t0 = millis();
   int matched = -1;
-  while (millis() - t0 < 15000) {
+  while (millis() - t0 < 15000) {           // รอสูงสุด 15 วินาที
     matched = matchFingerprint();
     if (matched >= 0) break;
     delay(50);
@@ -431,6 +432,7 @@ void deleteCardFlow() {
     return;
   }
 
+  // ลบ fingerprint template ในเซ็นเซอร์
   if (r.fp_id > 0) {
     uint8_t p = finger.deleteModel(r.fp_id);
     if (p != FINGERPRINT_OK) {
@@ -438,13 +440,19 @@ void deleteCardFlow() {
     }
   }
 
+  // ลบเรคคอร์ดบัตรใน EEPROM
   clearRec(idx);
   Serial.println("Card + Fingerprint deleted");
   tone(buzzerPin, 1200, 150); delay(150); tone(buzzerPin, 1200, 150);
 }
 
+
 void normalScanFlow() {
+  // แตะบัตร → ตรวจว่าลงทะเบียนหรือยัง → ถ้าลงทะเบียน ต้องสแกนนิ้วให้ "ตรงกับ fp_id" ของบัตรนั้น
+  
   Serial.println("Scan card...");
+
+  //if (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) return;
   mySerial.println("S");
   String uidHex = readRFIDasHex();
   rfid.PICC_HaltA();
@@ -453,6 +461,8 @@ void normalScanFlow() {
   int idx = findByUID(uidHex);
   if (idx < 0) {
     Serial.println("Unknown card");
+    //mySerial.println("W");
+    // ระฆัง + ไฟ
     tone(buzzerPin, 1000, 200);
     digitalWrite(ledPin, HIGH); delay(200); digitalWrite(ledPin, LOW); delay(150);
     tone(buzzerPin, 1000, 200);
@@ -460,6 +470,7 @@ void normalScanFlow() {
   }
 
   Rec r; readRec(idx, r);
+  // ถ้าใช้ในระบบโหวต: block ถ้า voted=1 แล้ว
   if (r.voted == 1) {
     Serial.println("Already voted for this card holder.");
     mySerial.println("W");
@@ -468,9 +479,10 @@ void normalScanFlow() {
   }
 
   Serial.printf("Card OK. Please verify fingerprint (expect FP_ID=%d)\n", r.fp_id);
+  // จับนิ้วแล้ว match
   unsigned long t0 = millis();
   int matched = -1;
-  while (millis() - t0 < 15000) {
+  while (millis() - t0 < 15000) { // รอสูงสุด 15 วินาที
     matched = matchFingerprint();
     if (matched >= 0) break;
     delay(50);
@@ -489,9 +501,12 @@ void normalScanFlow() {
     return;
   }
 
+  // ผ่านเงื่อนไข: บัตร+นิ้ว ตรงกัน → ถือว่าสำเร็จ
   mySerial.println("OK");
   tone(buzzerPin, 1500, 120);
   digitalWrite(ledPin, HIGH); delay(120); digitalWrite(ledPin, LOW);
+
+  // ถ้าเป็นระบบโหวต: mark voted = 1
   setVotedByIndex(idx, 1);
 }
 
@@ -500,13 +515,14 @@ void setup() {
   Wire.begin();
   Serial.begin(9600);
 
-  // UART2
+  // UART2 (debug/เชื่อมต่ออุปกรณ์ลูกโซ่ที่คุณใช้อยู่)
   mySerial.begin(9600, SERIAL_8N1, 16, 17); // RX=16, TX=17
 
   EEPROM.begin(EEPROM_SIZE);
   if (!headerOK()) {
     Serial.println("Init header...");
     writeHeader();
+    // เคลียร์ทุกเรคคอร์ด
     for (int i=0;i<MAX_RECORDS;i++) clearRec(i);
   }
 
@@ -519,48 +535,57 @@ void setup() {
   pinMode(ledPin, OUTPUT);
   digitalWrite(ledPin, LOW);
 
-  // Ultrasonic pins
-  pinMode(TRIG_PIN, OUTPUT);
-  pinMode(ECHO_PIN, INPUT);
-
   if (!fingerBegin()) {
     Serial.println("Fingerprint module not found. Check wiring.");
+    // ทำงานต่อได้ แต่ฟีเจอร์นิ้วจะใช้ไม่ได้
   } else {
     Serial.println("Fingerprint module ready.");
   }
 
   Serial.printf("MAX_RECORDS=%d, RECORD_SIZE=%d\n", MAX_RECORDS, RECORD_SIZE);
-  Serial.println("Ultrasonic ready.");
+
+    // ===== Added: show wake reason & prepare wake pin =====
+  printWakeReason();
+  pinMode(WAKE_PIN, INPUT_PULLDOWN);  // กันลอยตอนบูต ถ้ายังไม่มี R pulldown ภายนอก
 }
 
 void loop() {
-  // ปุ่มโหมด
   int switchReg = digitalRead(switchPin33);
   int switchDel = digitalRead(switchPin32);
 
   if (switchReg == LOW) {
-    while (digitalRead(switchPin33)==LOW) delay(10);
+    // โหมดลงทะเบียน: บัตร + ลายนิ้วมือ (คู่กัน)
+    while (digitalRead(switchPin33)==LOW) delay(10); // รอปล่อยปุ่ม
     registerCardAndFingerprint();
     delay(300);
     return;
-  } else if (switchDel == LOW) {
+  }
+
+  else if (switchDel == LOW) {
+    // โหมดลบเรคคอร์ด (บัตร) + ลบ template ในนิ้ว
     while (digitalRead(switchPin32)==LOW) delay(10);
     deleteCardFlow();
     delay(300);
     return;
   }
 
-  // โหมดปกติ: RFID -> Fingerprint
+  // โหมดใช้งานปกติ: แตะบัตร → ต้องยืนยันนิ้วเจ้าของบัตร
   if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
     normalScanFlow();
   }
 
-  // ===== Ultrasonic NEAR/FAR loop (ไม่บล็อก) =====
-  ultrasonicTask();
-
-  // รับคำสั่งจาก mySerial (ฝั่ง AI/คอม)
-  if (mySerial.available()) {
+  // pipe ข้อความจากพอร์ตลูกโซ่ (option)
+    if (mySerial.available()) {
     String msg = mySerial.readStringUntil('\n');
-    handleMySerialCommand(msg);
+
+    // ===== Added: Command "SLEEP!" from ODROID =====
+    String t = msg; t.trim();
+    if (t.equalsIgnoreCase("SLEEP!")) {
+      mySerial.println("OK SLEEP");
+      delay(30);
+      goDeepSleepNow();      // เข้าหลับทันที (จะไม่กลับจากฟังก์ชันนี้)
+    }
+
+    Serial.println(msg);   // เดิม (ยังพิมพ์ log ต่อไปตามปกติ)
   }
 }

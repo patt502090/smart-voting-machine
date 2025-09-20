@@ -1,30 +1,29 @@
+/* Modern Smart Voting Dashboard Styles */
+/* Most styles are now inline in index.html to match ESP32 design */
+
+/* Additional utility classes for admin panel and other pages */
 :root{
-    --bg:#0b1220; --card:#0f172a; --line:#1f2937;
-    --fg:#e6e7ef; --muted:#9fb0d8; --accent:#6ea8fe;
-    --ok:#22c55e; --bad:#ef4444; --warn:#f59e0b;
-  }
-  *{box-sizing:border-box} html,body{height:100%}
-  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,Segoe UI,Roboto,Arial}
-  .wrap{max-width:1200px;margin:0 auto;padding:18px 16px 28px}
-  h1{margin:0 0 12px;font-size:22px}
-  .kv{display:flex;gap:8px;flex-wrap:wrap;color:var(--muted);font-size:12px}
-  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-top:14px}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;box-shadow:0 6px 20px rgba(0,0,0,.25)}
-  .label{font-size:12px;color:var(--muted)}
-  .value{font-size:32px;font-weight:800;margin-top:4px}
-  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-  .btn{background:#1d2740;border:1px solid #2b385a;color:var(--fg);padding:8px 12px;border-radius:10px;cursor:pointer;text-decoration:none}
-  .btn:hover{border-color:var(--accent)}
-  .input{background:#0f1628;color:var(--fg);border:1px solid #243357;border-radius:10px;padding:8px 10px}
-  .hr{height:1px;background:#1f2a46;margin:16px 0}
-  .bar{height:10px;background:#1f2a46;border-radius:6px;overflow:hidden}
-  .fill{height:100%;background:linear-gradient(90deg,#22d3ee,#a78bfa);width:0}
-  .canvas{width:100%;height:220px;background:#0b1120;border:1px solid #1c2440;border-radius:12px}
-  .photo{width:100%;aspect-ratio:1/1;border-radius:10px;object-fit:cover;border:1px solid #0b1220;margin-top:10px}
-  .table{width:100%;border-collapse:collapse;font-size:13px}
-  .table th,.table td{border-bottom:1px solid #1f2a46;padding:8px 6px;text-align:left}
-  .table th{color:var(--muted);font-weight:600}
-  .footer{color:var(--muted);font-size:12px;margin-top:8px}
-  
-  
-  
+  --bg:#0b1220; --card:#0f172a; --line:#1f2937;
+  --fg:#e6e7ef; --muted:#9fb0d8; --accent:#6ea8fe;
+  --ok:#22c55e; --bad:#ef4444; --warn:#f59e0b;
+}
+
+*{box-sizing:border-box} 
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,Segoe UI,Roboto,Arial}
+
+/* Admin panel specific styles */
+.admin-wrap{max-width:1200px;margin:0 auto;padding:18px 16px 28px}
+.admin-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-top:14px}
+.admin-card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;box-shadow:0 6px 20px rgba(0,0,0,.25)}
+.label{font-size:12px;color:var(--muted)}
+.value{font-size:32px;font-weight:800;margin-top:4px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.btn{background:#1d2740;border:1px solid #2b385a;color:var(--fg);padding:8px 12px;border-radius:10px;cursor:pointer;text-decoration:none}
+.btn:hover{border-color:var(--accent)}
+.input{background:#0f1628;color:var(--fg);border:1px solid #243357;border-radius:10px;padding:8px 10px}
+.hr{height:1px;background:#1f2a46;margin:16px 0}
+.table{width:100%;border-collapse:collapse;font-size:13px}
+.table th,.table td{border-bottom:1px solid #1f2a46;padding:8px 6px;text-align:left}
+.table th{color:var(--muted);font-weight:600}
+.footer{color:var(--muted);font-size:12px;margin-top:8px}

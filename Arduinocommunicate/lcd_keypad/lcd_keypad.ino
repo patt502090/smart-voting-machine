@@ -23,6 +23,8 @@
 #include <SPI.h>
 #include <SD.h>
 #define SD_ChipSelectPin 4
+#include <avr/wdt.h>
+
 
 //#include <NeoSWSerial.h>
 //const uint8_t RX_PIN = 2;   // คุณตั้งไว้ 8
@@ -31,10 +33,17 @@
 TMRpcm tmrpcm;
 //SoftwareSerial mySerial(8, 7);  // RX, TX
 
+
+const uint8_t SD_RETRIES = 3;          // จำนวนครั้งลองใหม่ก่อนยอมรีเซ็ต
 bool isLikeString(String msg, String Text);
 unsigned long lastPlayTime = 0;      // เวลาเล่นเสียงล่าสุด
 unsigned long lastPlayTime1 = 0;      // เวลาเล่นเสียงล่าสุด
 unsigned long lastPlayTime2 = 0;      // เวลาเล่นเสียงล่าสุด
+unsigned long lastPlayTime4 = 0;
+unsigned long lastPlayTime3 = 0;
+unsigned long lastPlayTime5 = 0;
+unsigned long lastPlayTime6 = 0;
+unsigned long lastPlayTime7 = 0;
 const unsigned long interval = 500;  // หน่วง 5 วินาที
 
 //------------------
@@ -413,19 +422,49 @@ void playWavBlocking(const char* path) {
 }
 
 
+
+// เรียกทันทีเป็นอย่างแรกใน setup() เพื่อป้องกันบู๊ทลูปเมื่อเคยรีเซ็ตจาก WDT มา
+void wdt_sanity_boot() {
+  MCUSR = 0;          // ล้างแฟล็กรีเซ็ตต่าง ๆ (รวม WDRF)
+  wdt_disable();      // ปิด WDT ถ้าเคยค้างจากครั้งที่แล้ว
+}
+
+[[noreturn]] void reset_via_wdt() {
+  // ตั้ง watchdog ให้ timeout สั้น ๆ แล้ววนค้างรอให้มันรีเซ็ต
+  wdt_enable(WDTO_15MS);   // 15ms
+  while (true) { }         // รอให้ WDT ยิงรีเซ็ต
+}
+
+void initSD_orReset() {
+  for (uint8_t i = 0; i < SD_RETRIES; ++i) {
+    if (SD.begin(SD_ChipSelectPin)) {
+      Serial.println(F("SD init OK"));
+      return;
+    }
+    Serial.println(F("SD init failed, retrying..."));
+    delay(200);  // หน่วงสั้น ๆ ก่อนลองใหม่
+  }
+  Serial.println(F("SD init failed -> resetting via WDT"));
+  reset_via_wdt();   // จะไม่หวนกลับจากฟังก์ชันนี้ (รีเซ็ตเครื่อง)
+}
+
+
 // ============ SETUP / LOOP ============
 void setup() {
-
+  wdt_sanity_boot();      // สำคัญ: เคลียร์/ปิด WDT ตั้งแต่ต้น
   Serial.begin(9600);
-
-  if (!SD.begin(SD_ChipSelectPin)) {  // see if the card is present and can be initialized:
-    Serial.println("SD fail");
-    return;  // don't do anything more if not
-  }
   tmrpcm.speakerPin = 9;  //5,6,11 or 46 on Mega, 9 on Uno, Nano, etc
-  Serial.println("test");
   tmrpcm.setVolume(5);
   tmrpcm.quality(1);
+  initSD_orReset();
+  /*if (!SD.begin(SD_ChipSelectPin)) {  // see if the card is present and can be initialized:
+    Serial.println("SD fail");
+    
+    return;  // don't do anything more if not
+  }*/
+
+  Serial.println("test");
+
   Wire.begin();  // UNO: SDA=A4, SCL=A5
 
 
@@ -542,17 +581,24 @@ void loop() {
       unsigned long currentTime = millis();
 
       // ถ้ายังไม่ถึง 5 วินาทีตั้งแต่เล่นครั้งล่าสุด ให้ข้าม
-      if (currentTime - lastPlayTime1 >= interval) {
+      if (currentTime - lastPlayTime2 >= interval) {
         tmrpcm.play("n.wav");
 
-        lastPlayTime1 = currentTime;  // เก็บเวลาไว้
+        lastPlayTime2 = currentTime;  // เก็บเวลาไว้
       }
     }
-      else if (msg == "C") {
+      else if (msg == "OK") {
             //Serial.println("readrfid");
-      
+            unsigned long currentTime = millis();
+
+      // ถ้ายังไม่ถึง 5 วินาทีตั้งแต่เล่นครั้งล่าสุด ให้ข้าม
+      if (currentTime - lastPlayTime3 >= interval) {
         tmrpcm.play("c.wav");
-       }
+
+        lastPlayTime3 = currentTime;  // เก็บเวลาไว้
+      }
+        
+    }
         
 
 

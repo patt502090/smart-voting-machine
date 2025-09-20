@@ -34,14 +34,15 @@ TMRpcm tmrpcm;
 //SoftwareSerial mySerial(8, 7);  // RX, TX
 
 
-const uint8_t SD_RETRIES = 3;          // จำนวนครั้งลองใหม่ก่อนยอมรีเซ็ต
+const uint8_t SD_RETRIES = 3;  // จำนวนครั้งลองใหม่ก่อนยอมรีเซ็ต
 bool isLikeString(String msg, String Text);
-unsigned long lastPlayTime = 0;      // เวลาเล่นเสียงล่าสุด
-unsigned long lastPlayTime1 = 0;      // เวลาเล่นเสียงล่าสุด
-unsigned long lastPlayTime2 = 0;      // เวลาเล่นเสียงล่าสุด
+unsigned long lastPlayTime = 0;   // เวลาเล่นเสียงล่าสุด
+unsigned long lastPlayTime1 = 0;  // เวลาเล่นเสียงล่าสุด
+unsigned long lastPlayTime2 = 0;  // เวลาเล่นเสียงล่าสุด
+unsigned long lastPlayTime5 = 0;
 unsigned long lastPlayTime4 = 0;
 unsigned long lastPlayTime3 = 0;
-unsigned long lastPlayTime5 = 0;
+
 unsigned long lastPlayTime6 = 0;
 unsigned long lastPlayTime7 = 0;
 const unsigned long interval = 500;  // หน่วง 5 วินาที
@@ -425,14 +426,14 @@ void playWavBlocking(const char* path) {
 
 // เรียกทันทีเป็นอย่างแรกใน setup() เพื่อป้องกันบู๊ทลูปเมื่อเคยรีเซ็ตจาก WDT มา
 void wdt_sanity_boot() {
-  MCUSR = 0;          // ล้างแฟล็กรีเซ็ตต่าง ๆ (รวม WDRF)
-  wdt_disable();      // ปิด WDT ถ้าเคยค้างจากครั้งที่แล้ว
+  MCUSR = 0;      // ล้างแฟล็กรีเซ็ตต่าง ๆ (รวม WDRF)
+  wdt_disable();  // ปิด WDT ถ้าเคยค้างจากครั้งที่แล้ว
 }
 
 [[noreturn]] void reset_via_wdt() {
   // ตั้ง watchdog ให้ timeout สั้น ๆ แล้ววนค้างรอให้มันรีเซ็ต
-  wdt_enable(WDTO_15MS);   // 15ms
-  while (true) { }         // รอให้ WDT ยิงรีเซ็ต
+  wdt_enable(WDTO_15MS);  // 15ms
+  while (true) {}         // รอให้ WDT ยิงรีเซ็ต
 }
 
 void initSD_orReset() {
@@ -445,17 +446,17 @@ void initSD_orReset() {
     delay(200);  // หน่วงสั้น ๆ ก่อนลองใหม่
   }
   Serial.println(F("SD init failed -> resetting via WDT"));
-  reset_via_wdt();   // จะไม่หวนกลับจากฟังก์ชันนี้ (รีเซ็ตเครื่อง)
+  reset_via_wdt();  // จะไม่หวนกลับจากฟังก์ชันนี้ (รีเซ็ตเครื่อง)
 }
 
 
 // ============ SETUP / LOOP ============
 void setup() {
-  wdt_sanity_boot();      // สำคัญ: เคลียร์/ปิด WDT ตั้งแต่ต้น
+  wdt_sanity_boot();  // สำคัญ: เคลียร์/ปิด WDT ตั้งแต่ต้น
   Serial.begin(9600);
   tmrpcm.speakerPin = 9;  //5,6,11 or 46 on Mega, 9 on Uno, Nano, etc
-  tmrpcm.setVolume(5);
-  tmrpcm.quality(1);
+  //tmrpcm.setVolume(5);
+  //tmrpcm.quality(1);
   initSD_orReset();
   /*if (!SD.begin(SD_ChipSelectPin)) {  // see if the card is present and can be initialized:
     Serial.println("SD fail");
@@ -475,10 +476,9 @@ void setup() {
 
 
   tmrpcm.play("sawadh.wav");
-
-  //playWavBlocking("sound/sawadh.wav");
-  //mySerial.begin(9600);
-  //--------------------
+if (!tmrpcm.isPlaying()) {
+  tmrpcm.play("sawadh.wav");
+}
   buzzer.init();
   buzzer.playBoot();  // jingle เปิดเครื่อง
 
@@ -493,8 +493,9 @@ void setup() {
 
 
 String enteredPass = "";
-String savedPass = "";
+String savedPass = "1234";
 bool fregis = false;  // สถานะเข้าสู่โหมดกรอกรหัส
+bool regisstatus = false;
 
 bool playIfIdle(const char* path) {
   if (tmrpcm.isPlaying()) return false;
@@ -506,33 +507,27 @@ bool playIfIdle(const char* path) {
 }
 
 
-void loop() {
-  // อ่านคีย์
-  char k = kpd.getKey();
-  if (k) {
-    if (k >= '0' && k <= '9') {
-      currentChoice = k - '0';
-      drawVoteUI_base();
-      buzzer.playClick();  // เสียงคลิกตอนกดเลข
-    } else if (k == '*') {
-      if (currentChoice >= 0) buzzer.playBack();  // ล้างค่า -> เสียงย้อน
-      currentChoice = -1;
-      drawVoteUI_base();
-    } else if (k == '#') {
-      if (currentChoice >= 0) {
-        page = PAGE_CONFIRM;
-        drawConfirmUI();
-        onConfirmVote(currentChoice);      // ส่ง CF:X + แฟนแฟร์
-        confirmUntil = millis() + 1000UL;  // โชว์หน้า Confirm 1 วินาที (non-blocking)
-        currentChoice = -1;                // เคลียร์ตัวเลือกทันที
-      } else {
-        buzzer.playError();  // ยังไม่เลือกแต่กดยืนยัน
-      }
+void vote(char k) {
+  if (k >= '0' && k <= '9') {
+    currentChoice = k - '0';
+    drawVoteUI_base();
+    buzzer.playClick();  // เสียงคลิกตอนกดเลข
+  } else if (k == '*') {
+    if (currentChoice >= 0) buzzer.playBack();  // ล้างค่า -> เสียงย้อน
+    currentChoice = -1;
+    drawVoteUI_base();
+  } else if (k == '#') {
+    if (currentChoice >= 0) {
+      page = PAGE_CONFIRM;
+      drawConfirmUI();
+      onConfirmVote(currentChoice);      // ส่ง CF:X + แฟนแฟร์
+      confirmUntil = millis() + 1000UL;  // โชว์หน้า Confirm 1 วินาที (non-blocking)
+      currentChoice = -1;                // เคลียร์ตัวเลือกทันที
     } else {
-      // A/B/C/D → คลิกโทนสูง
-      buzzer.playClickHi();
+      buzzer.playError();  // ยังไม่เลือกแต่กดยืนยัน
     }
   }
+
 
   // อนิเมชัน + จัดการหน้า Confirm non-blocking + อัปเดตเสียง
   if (page == PAGE_VOTE) animateDuringSelect();
@@ -542,110 +537,147 @@ void loop() {
   }
   buzzer.update();
   //Serial.println("Vote1");
-  delay(500);
-  
+  //delay(500);
+}
+
+void loop() {
+
+
+
+  // อ่านคีย์
+  char k = kpd.getKey();
+
+  if (k) {
+    vote(k);
+  }
 
   // mark update
-  String msg="";
+  char msg;
   if (Serial.available()) {
-     msg = Serial.readStringUntil('\n');
+    //msg = Serial.readStringUntil('\n');
+    //msg.trim();
+    msg = Serial.read();
     Serial.println("ESP32: " + msg);
-    msg.trim();
+    //msg = "";
+  }
+
+
+  if (msg != 0) {
+
+
     lcd.clear();
     // มุม
     lcd.setCursor(0, 0);
     lcd.print(msg);
-   
-      
-    
-    
-    
-    
-
-
-    //msg = "";
   }
- if (msg == "S") {
-      //Serial.println("readrfid");
-      unsigned long currentTime = millis();
 
-      // ถ้ายังไม่ถึง 5 วินาทีตั้งแต่เล่นครั้งล่าสุด ให้ข้าม
-      if (currentTime - lastPlayTime >= interval) {
-        tmrpcm.play("re.wav");
-
-        lastPlayTime = currentTime;  // เก็บเวลาไว้
-      }
-
-    } else if (msg == "W") {
-            //Serial.println("readrfid");
-      unsigned long currentTime = millis();
-
-      // ถ้ายังไม่ถึง 5 วินาทีตั้งแต่เล่นครั้งล่าสุด ให้ข้าม
-      if (currentTime - lastPlayTime2 >= interval) {
-        tmrpcm.play("n.wav");
-
-        lastPlayTime2 = currentTime;  // เก็บเวลาไว้
-      }
-    }
-      else if (msg == "OK") {
-            //Serial.println("readrfid");
-            unsigned long currentTime = millis();
-
-      // ถ้ายังไม่ถึง 5 วินาทีตั้งแต่เล่นครั้งล่าสุด ให้ข้าม
-      if (currentTime - lastPlayTime3 >= interval) {
-        tmrpcm.play("c.wav");
-
-        lastPlayTime3 = currentTime;  // เก็บเวลาไว้
-      }
-        
-    }
-        
-
-
-
-  /*
-  if (msg == "Scanning") {
+  if (msg == 'S') {
     //Serial.println("readrfid");
     unsigned long currentTime = millis();
 
     // ถ้ายังไม่ถึง 5 วินาทีตั้งแต่เล่นครั้งล่าสุด ให้ข้าม
     if (currentTime - lastPlayTime >= interval) {
-      tmrpcm.play("sound/readrfid.wav");
+      tmrpcm.play("re.wav");  //กำลังอ่านบัตร
 
       lastPlayTime = currentTime;  // เก็บเวลาไว้
     }
 
-  } /*
-    if (msg == "Wrong card!") {
-      //Serial.println("readrfid");
-      unsigned long currentTime = millis();
+  }
 
-      // ถ้ายังไม่ถึง 5 วินาทีตั้งแต่เล่นครั้งล่าสุด ให้ข้าม
-      if (currentTime - lastPlayTime >= interval) {
-        tmrpcm.play("sound/noreg.wav");
+  else if (msg == 'W') {
+    //Serial.println("readrfid");
+    unsigned long currentTime = millis();
 
-        lastPlayTime = currentTime;  // เก็บเวลาไว้
-      }
+    // ถ้ายังไม่ถึง 5 วินาทีตั้งแต่เล่นครั้งล่าสุด ให้ข้าม
+    if (currentTime - lastPlayTime2 >= interval) {
+      tmrpcm.play("n.wav");  //คุณยังไม่ลงทะเบียน
+
+      lastPlayTime2 = currentTime;  // เก็บเวลาไว้
     }
-    /*else if (msg == "Scan new card") {
-      //Serial.println("readrfid");
-      unsigned long currentTime = millis();
+  } else if (msg == 'O') {
 
-      // ถ้ายังไม่ถึง 5 วินาทีตั้งแต่เล่นครั้งล่าสุด ให้ข้าม
-      if (currentTime - lastPlayTime >= interval) {
-        tmrpcm.play("sound/noreg.wav");
+    unsigned long currentTime = millis();
 
-        lastPlayTime = currentTime;  // เก็บเวลาไว้
-      }
+    // ถ้ายังไม่ถึง 5 วินาทีตั้งแต่เล่นครั้งล่าสุด ให้ข้าม
+    if (currentTime - lastPlayTime3 >= interval) {
+      tmrpcm.play("c.wav");  //ยืนยันตัวตนสำเร็จ
+
+      lastPlayTime3 = currentTime;  // เก็บเวลาไว้
     }
-    else if(msg == "regis")
-    {
-      fregis = true;
-    }
-/*  }
-  
 
-if (fregis) {
+
+  }
+
+  else if (msg == 'V') {
+
+    unsigned long currentTime = millis();
+
+    // ถ้ายังไม่ถึง 5 วินาทีตั้งแต่เล่นครั้งล่าสุด ให้ข้าม
+    if (currentTime - lastPlayTime4 >= interval) {
+      tmrpcm.play("ch.wav");  //ยืนยันตัวตนสำเร็จ
+
+      lastPlayTime4 = currentTime;  // เก็บเวลาไว้
+    }
+  }
+
+  else if (msg == 'R') {
+
+    fregis = true;
+  }
+
+
+
+
+  /*
+if (msg == "S") {
+  unsigned long currentTime = millis();
+  if (currentTime - lastPlayTime >= interval) {
+    //tmrpcm.play("re.wav");
+    playIfIdle("re.wav");            // ✅ กันไม่ให้ไปตัดเสียงเปิดเครื่อง
+    lastPlayTime = currentTime;
+  }
+}
+else if (msg == "W") {
+  unsigned long currentTime = millis();
+  if (currentTime - lastPlayTime2 >= interval) {
+    playIfIdle("n.wav");             // ✅
+    lastPlayTime2 = currentTime;
+  }
+}
+else if (msg == "OK") {
+  unsigned long currentTime = millis();
+  if (currentTime - lastPlayTime3 >= interval) {
+    playIfIdle("c.wav");             // ✅
+    lastPlayTime3 = currentTime;
+  }
+}
+else if (msg == "q") {              
+  unsigned long currentTime = millis();
+  if (currentTime - lastPlayTime5 >= interval) {   // ➜ ใช้ตัวจับเวลาคนละตัว
+    playIfIdle("re.wav");             
+    lastPlayTime5 = currentTime;
+  }
+}
+
+else if (msg == "V") {
+  unsigned long currentTime = millis();
+  if (currentTime - lastPlayTime4 >= interval) {
+    playIfIdle("ch.wav");            
+    lastPlayTime4 = currentTime;
+  }
+}
+
+
+*/
+
+
+
+
+
+
+
+
+  if (fregis) {
     lcd.clear();
     lcd.setCursor(2, 0);
     lcd.print("Enter pass:");
@@ -664,80 +696,23 @@ if (fregis) {
         }
       } else if (k == '#') {
         if (enteredPass.length() == 4) {
-          savedPass = enteredPass;   // เก็บรหัสจริง
-          Serial.println("Saved pass = " + savedPass);
+          savedPass = enteredPass;  // เก็บรหัสจริง
+          //Serial.println("Saved pass = " + savedPass);
           enteredPass = "";
-          fregis = false;            // ออกจากโหมดกรอกรหัส
+          fregis = false;  // ออกจากโหมดกรอกรหัส
+          regisstatus = true;
           lcd.clear();
           lcd.setCursor(2, 0);
           lcd.print("Pass Saved!");
-          delay(1000);
-          lcd.clear();
+          //delay(1000);
+
         } else {
           lcd.setCursor(0, 1);
           lcd.print("Must be 4 digits");
-          delay(1000);
+          //delay(1000);
         }
       }
     }
-    return; // ไม่ให้ไปทำงาน loop ส่วนอื่น
-  }*/
-
-
-
-
-  /*
-    if (isLikeString(msg,"Scanning")) {
-      {
-
-        unsigned long currentTime = millis();
-
-        // ถ้ายังไม่ถึง 5 วินาทีตั้งแต่เล่นครั้งล่าสุด ให้ข้าม
-        if (currentTime - lastPlayTime >= interval) {
-          tmrpcm.play("sound/readrfid.wav");
-          lastPlayTime = currentTime;  // เก็บเวลาไว้
-        }
-      }
-    }
-    if (isLikeString(msg,"Wrong card!")) {
-
-      unsigned long currentTime = millis();
-
-      // ถ้ายังไม่ถึง 5 วินาทีตั้งแต่เล่นครั้งล่าสุด ให้ข้าม
-      if (currentTime - lastPlayTime >= interval) {
-        tmrpcm.play("sound/noreg.wav");
-        lastPlayTime = currentTime;  // เก็บเวลาไว้
-      }
-    }
-  }**/
-}
-
-
-//mark update
-bool isLikeString(String text, String target) {
-  text.toLowerCase();
-  text.trim();
-
-
-
-  // ถ้าความยาวต่างกันเกิน 2 ตัว ไม่ต้องเช็คเลย
-  if (abs((int)text.length() - (int)target.length()) > 2) {
-    return false;
+    //return;  // ไม่ให้ไปทำงาน loop ส่วนอื่น
   }
-
-  int diff = 0;
-  int len = min(text.length(), target.length());
-
-  // เช็คทีละตัวอักษร
-  for (int i = 0; i < len; i++) {
-    if (text[i] != target[i]) {
-      diff++;
-    }
-  }
-
-  // บวกความต่างของความยาวเข้าไปด้วย
-  diff += abs((int)text.length() - (int)target.length());
-
-  // ยอมให้ต่างกันไม่เกิน 2 ตัวอักษร
-  return (diff <= 2);
 }

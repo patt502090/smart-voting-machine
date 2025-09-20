@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Smart Voting — Admin</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/style.css">
+<div class="wrap">
+  <h1>Smart Voting — Admin</h1>
+  <div class="row" style="margin-bottom:10px">
+    <input id="token" class="input" placeholder="X-API-KEY" style="min-width:240px">
+    <button class="btn" onclick="resetAll()">Reset</button>
+    <a class="btn" href="/export.csv">Export CSV</a>
+  </div>
+
+  <div class="hr"></div>
+
+  <div class="row" style="margin-bottom:10px">
+    <input id="optKey" class="input" placeholder="หมายเลข (0-9)">
+    <input id="optLabel" class="input" placeholder="ชื่อผู้สมัครใหม่">
+    <button class="btn" onclick="renameOpt()">Rename</button>
+  </div>
+
+  <div class="row" style="margin-bottom:10px">
+    <form id="upForm" class="row">
+      <input type="file" id="files" multiple accept=".jpg,.jpeg,.png" class="input">
+      <button class="btn">Upload 0.jpg..9.jpg</button>
+    </form>
+  </div>
+
+  <div class="hr"></div>
+
+  <table class="table" id="tbl">
+    <thead><tr><th>หมายเลข</th><th>ชื่อ</th><th>คะแนน</th><th>รูป</th></tr></thead>
+    <tbody></tbody>
+  </table>
+
+  <div class="footer" id="msg"></div>
+</div>
+<script src="/static/admin.js"></script>
+
+

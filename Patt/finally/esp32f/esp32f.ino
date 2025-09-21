@@ -78,7 +78,6 @@ void dbgPrintWakePin(const char *tag) {
 
 // ใช้ GPIO35 เป็นขาปลุก (ต่อมาจาก ODROID PIN_33 ผ่าน R อนุกรม ~1k)
 // *GPIO35 เป็นขา RTC input ได้ ปลุกด้วย ext1 ได้
-#define WAKE_PIN 33
 
 // ==== forward declarations to satisfy compile order (ADD ONLY) ====
 struct Rec;                    // ให้คอมไพเลอร์รู้จักชื่อ Rec ล่วงหน้า (ใช้กับ & ได้)
@@ -160,31 +159,36 @@ void printBootAndWakeInfo() {
 // เข้าหลับทันที แล้วปลุกเมื่อ WAKE_PIN=HIGH จาก ODROID
 void goDeepSleepNow() {
   Serial.println("-> Deep-sleep now. Waiting for ODROID wake (GPIO HIGH)...");
-  delay(50);
+  delay(30);
 
-  // ปิดอุปกรณ์ที่อาจกินกระแส/ดีดกลับก่อน
+  // ปิด I/O ที่อาจดีดกลับ
   pinMode(12, INPUT);
-  pinMode(4, INPUT);
+  pinMode(4,  INPUT);
 
-  // ถอด interrupt ของ WAKE_PIN ออกจาก digital GPIO ก่อนเข้าหลับ (กันงอแง)
+  // เอา interrupt ของขาปลุกออกก่อน
   detachInterrupt(digitalPinToInterrupt(WAKE_PIN));
 
-  // เตรียมขาปลุกใน RTC domain (input + pulldown) *** ไม่ต้อง hold ***
-  rtc_gpio_deinit((gpio_num_t)WAKE_PIN);
+  // ตั้งค่าพินปลุกในสองโดเมนให้สะอาด
+  rtc_gpio_hold_dis((gpio_num_t)WAKE_PIN);
+  pinMode(WAKE_PIN, INPUT);                       // digital
+  rtc_gpio_deinit((gpio_num_t)WAKE_PIN);          // RTC
   rtc_gpio_init((gpio_num_t)WAKE_PIN);
   rtc_gpio_set_direction((gpio_num_t)WAKE_PIN, RTC_GPIO_MODE_INPUT_ONLY);
   rtc_gpio_pulldown_en((gpio_num_t)WAKE_PIN);
   rtc_gpio_pullup_dis((gpio_num_t)WAKE_PIN);
-  // rtc_gpio_hold_en(...)   // <-- ลบ/ห้ามใช้กับขาปลุก
 
-  // ปิดทุกแหล่ง แล้วเปิด EXT1 (ระดับ HIGH) + ตั้ง TIMER เป็น safety 10 วินาที
+  // ถ้าขาปลุก HIGH อยู่แล้ว ให้ข้ามหลับ (กันเด้ง)
+  if (rtc_gpio_get_level((gpio_num_t)WAKE_PIN) == 1) {
+    Serial.println("[SLEEP] WAKE_PIN is HIGH already -> skip sleep");
+    return;
+  }
+
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
   esp_sleep_enable_ext1_wakeup(1ULL << WAKE_PIN, ESP_EXT1_WAKEUP_ANY_HIGH);
-  esp_sleep_enable_timer_wakeup(10ULL * 1000000ULL);  // auto ตื่นใน 10s กันค้าง
 
-  delay(30);
   esp_deep_sleep_start();
 }
+
 
 // ---------- Serial / UART ----------
 HardwareSerial mySerial(2);      // UART2 : ใช้คุยกับบอร์ด/จออีกตัว ตามที่คุณใช้อยู่ (TX=17, RX=16 ด้านล่าง)
@@ -845,22 +849,22 @@ void setup() {
 }
 
 void loop() {
-  int switchReg = digitalRead(switchPin33);
-  int switchDel = digitalRead(switchPin32);
+  // int switchReg = digitalRead(switchPin33);
+  // int switchDel = digitalRead(switchPin32);
 
-  if (switchReg == LOW) {
-    // โหมดลงทะเบียน: บัตร + ลายนิ้วมือ (คู่กัน)
-    while (digitalRead(switchPin33) == LOW) delay(10);  // รอปล่อยปุ่ม
-    registerCardAndFingerprint();
-    delay(300);
-    return;
-  } else if (switchDel == LOW) {
-    // โหมดลบเรคคอร์ด (บัตร) + ลบ template ในนิ้ว
-    while (digitalRead(switchPin32) == LOW) delay(10);
-    deleteCardFlow();
-    delay(300);
-    return;
-  }
+  // if (switchReg == LOW) {
+  //   // โหมดลงทะเบียน: บัตร + ลายนิ้วมือ (คู่กัน)
+  //   while (digitalRead(switchPin33) == LOW) delay(10);  // รอปล่อยปุ่ม
+  //   registerCardAndFingerprint();
+  //   delay(300);
+  //   return;
+  // } else if (switchDel == LOW) {
+  //   // โหมดลบเรคคอร์ด (บัตร) + ลบ template ในนิ้ว
+  //   while (digitalRead(switchPin32) == LOW) delay(10);
+  //   deleteCardFlow();
+  //   delay(300);
+  //   return;
+  // }
 
   // โหมดใช้งานปกติ: แตะบัตร → ต้องยืนยันนิ้วเจ้าของบัตร
   if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {

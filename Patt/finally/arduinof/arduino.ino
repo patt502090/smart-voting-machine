@@ -351,28 +351,40 @@ void printMaskedAt(uint8_t x, uint8_t y, const String& s) {
   for (uint8_t i = s.length(); i < 4; i++) lcd.print(' ');
 }
 
-// ===== Vote handler =====
-void vote(char k) {
-  if (k >= '0' && k <= '9') {
-    currentChoice = k - '0';
-    drawVoteUI_base();
-    buzzer.playClick();  // มี gate ภายใน
-  } else if (k == '*') {
-    if (currentChoice >= 0) buzzer.playBack();
-    currentChoice = -1;
-    drawVoteUI_base();
-  } else if (k == '#') {
-    if (currentChoice >= 0) {
-      page = PAGE_CONFIRM;
-      drawConfirmUI();
-      onConfirmVote(currentChoice);
-      confirmUntil = millis() + 1000UL;
-      currentChoice = -1;
+void sendPreview() {
+    if (currentChoice < 0) {
+      Serial.println(F("SEL:CLEAR"));        // ยังไม่เลือก/ล้าง
     } else {
-      buzzer.playError();
+      Serial.print(F("SEL:"));
+      Serial.println(currentChoice);         // 0..9
     }
   }
-}
+
+// ===== Vote handler =====
+void vote(char k) {
+    if (k >= '0' && k <= '9') {
+      currentChoice = k - '0';
+      drawVoteUI_base();
+      buzzer.playClick();
+      sendPreview();                 // <<<< ส่ง “SEL:<n>”
+    } else if (k == '*') {
+      if (currentChoice >= 0) buzzer.playBack();
+      currentChoice = -1;
+      drawVoteUI_base();
+      sendPreview();                 // <<<< ส่ง “SEL:CLEAR”
+    } else if (k == '#') {
+      if (currentChoice >= 0) {
+        page = PAGE_CONFIRM;
+        drawConfirmUI();
+        onConfirmVote(currentChoice);  // <<<< ของเดิม: ส่ง CF:<n>
+        confirmUntil = millis() + 1000UL;
+        currentChoice = -1;
+        // (ไม่ต้องส่ง SEL ที่นี่—เดี๋ยวกลับหน้าโหวตค่อยส่งเองถ้าต้องการ)
+      } else {
+        buzzer.playError();
+      }
+    }
+  }
 
 // ============ SETUP / LOOP ============
 void setup() {

@@ -17,11 +17,42 @@
 
 // ใช้ GPIO35 เป็นขาปลุก (ต่อมาจาก ODROID PIN_33 ผ่าน R อนุกรม ~1k)
 // *GPIO35 เป็นขา RTC input ได้ ปลุกด้วย ext1 ได้
-#define WAKE_PIN 35
+#define WAKE_PIN 33
 
 // ==== forward declarations to satisfy compile order (ADD ONLY) ====
 struct Rec;                  // ให้คอมไพเลอร์รู้จักชื่อ Rec ล่วงหน้า (ใช้กับ & ได้)
 extern const int UID_HEX_MAX;  // บอกว่าจะมีค่าคงที่ชื่อนี้ประกาศจริงด้านล่าง
+
+
+// ===== [ADD] Ultrasonic (HC-SR04) for auto-sleep =====
+const int TRIG_PIN = 4;
+const int ECHO_PIN = 34;                 // ต้องลดเป็น 3.3V ก่อนเข้า ESP32
+
+// เกณฑ์ “ใกล้”
+volatile float NEAR_ON_CM  = 25.0;       // เข้าสถานะ NEAR เมื่อ <= 25 cm
+volatile float NEAR_OFF_CM = 35.0;       // กลับ FAR เมื่อ >= 35 cm (ฮิสเทอรีส)
+
+// รอบวัดและ timeout
+const uint16_t US_INTERVAL_MS   = 200;   // วัดทุก ~200ms
+const unsigned long US_TIMEOUT  = 25000; // pulseIn timeout ~25ms
+
+// ===== [ADD] counters & confirm windows for noise filtering =====
+static uint8_t nearConsec = 0;
+static uint8_t farConsec  = 0;
+static const uint8_t NEAR_CONFIRM_N = 2;  // ต้องเห็น NEAR 2 เฟรมติดถึงจะเปลี่ยนเป็น NEAR
+static const uint8_t FAR_CONFIRM_N  = 2;  // ต้องเห็น FAR  2 เฟรมติดถึงจะเปลี่ยนเป็น FAR
+
+// จับเวลาเพื่อหลับ
+const uint32_t NO_NEAR_SLEEP_MS = 5000;  // FAR ต่อเนื่อง 5 วินาที -> หลับ
+
+// ตัวแปรสถานะ
+static bool nearState = false;
+static uint32_t lastUSms = 0;
+static uint32_t lastNearSeenMs = 0;
+
+// [ADD] Debug logging for Ultrasonic
+#define DEBUG_ULTRA 1
+static uint32_t lastUltraLogMs = 0;
 
 // (ออปชัน) ถ้าจะให้หลับเองเมื่อไม่มีเหตุการณ์นาน X ms ให้เปิดใช้ 2 บรรทัดนี้ได้ภายหลัง
 // #define IDLE_SLEEP_MS 60000UL   // FAR/ไม่มีงาน 60s → หลับ
@@ -39,7 +70,7 @@ void printWakeReason() {
 
 // เข้าหลับทันที แล้วปลุกเมื่อ WAKE_PIN=HIGH จาก ODROID
 void goDeepSleepNow() {
-  Serial.println("-> Deep-sleep now. Waiting for ODROID wake (GPIO35 HIGH)...");
+  Serial.println("-> Deep-sleep now. Waiting for ODROID wake (GPIO HIGH)...");
   delay(50);
 
   // ใช้ pulldown ภายใน ถ้ายังไม่มี R 100kΩ ภายนอก
@@ -65,7 +96,7 @@ MFRC522 rfid(SS_PIN, RST_PIN);
 // ---------- I/O ----------
 const int EEPROM_SIZE  = 512;
 const int buzzerPin    = 12;
-const int switchPin33  = 33;  // สวิตช์ Register
+const int switchPin33  = 14;  // สวิตช์ Register
 const int switchPin32  = 32;  // สวิตช์ Delete
 const int ledPin       = 13;
 
@@ -510,6 +541,80 @@ void normalScanFlow() {
   setVotedByIndex(idx, 1);
 }
 
+// [ADD] วัด echo ครั้งเดียว
+inline unsigned long us_read_once() {
+  digitalWrite(TRIG_PIN, LOW);  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH); delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  return pulseIn(ECHO_PIN, HIGH, US_TIMEOUT); // microseconds
+}
+
+// [ADD] อ่าน 3 ครั้งเอามัธยฐาน เพื่อลดสไปค์
+float measureDistanceCm() {
+  unsigned long a = us_read_once(); delayMicroseconds(150);
+  unsigned long b = us_read_once(); delayMicroseconds(150);
+  unsigned long c = us_read_once();
+  // sort a<=b<=c
+  if (a>b){ auto t=a;a=b;b=t; } if (b>c){ auto t=b;b=c;c=t; } if (a>b){ auto t=a;a=b;b=t; }
+  unsigned long us = b;
+  if (us == 0) return NAN;
+  return (float)us / 58.0f; // cm
+}
+
+// [ADD] งานหลัก Ultrasonic: อัปเดต nearState + ตัดสินใจหลับ
+// ===== [REPLACE CALL INSIDE YOUR TICK] =====
+void ultrasonicTickForSleep() {
+  if (millis() - lastUSms < US_INTERVAL_MS) return;
+  lastUSms = millis();
+
+  float cm = measureDistanceCmRobust();  // <-- ใช้ตัว robust
+
+  // ถ้าอ่านไม่ได้: นับ FAR ต่อ และพิมพ์ log เป็นครั้งคราว
+  if (isnan(cm)) {
+    farConsec  = min<uint8_t>(FAR_CONFIRM_N, farConsec + 1);
+    nearConsec = 0;
+
+    if (DEBUG_ULTRA && (millis() - lastUltraLogMs >= 1000)) {
+      Serial.println("[US] cm=NaN (treat FAR)");
+      lastUltraLogMs = millis();
+    }
+  } else {
+    // ตัดสินใจ newNear ด้วยฮิสเทอรีส
+    bool wantNear = nearState;
+    if (!nearState && cm <= NEAR_ON_CM)  wantNear = true;
+    if ( nearState && cm >= NEAR_OFF_CM) wantNear = false;
+
+    if (wantNear) { nearConsec = min<uint8_t>(NEAR_CONFIRM_N, nearConsec + 1); farConsec = 0; }
+    else          { farConsec  = min<uint8_t>(FAR_CONFIRM_N,  farConsec + 1);  nearConsec = 0; }
+
+    // เปลี่ยนสถานะเมื่อ “ยืนยัน” ครบ N เฟรม
+    bool newNear = nearState;
+    if (!nearState && nearConsec >= NEAR_CONFIRM_N) newNear = true;
+    if ( nearState &&  farConsec >= FAR_CONFIRM_N)  newNear = false;
+
+    // log ทุก 1s หรือเมื่อมีการสลับสถานะ
+    if (DEBUG_ULTRA && (millis() - lastUltraLogMs >= 1000 || newNear != nearState)) {
+      Serial.print("[US] cm="); Serial.printf("%.1f", cm);
+      Serial.print(" near="); Serial.println(newNear ? 1 : 0);
+      lastUltraLogMs = millis();
+    }
+
+    if (newNear != nearState) {
+      mySerial.println(newNear ? "NEAR" : "FAR");  // แจ้ง ODROID ถ้าต่อ UART
+      nearState = newNear;
+      if (newNear) lastNearSeenMs = millis();      // รีเฟรชเวลาเมื่อเห็นคน
+    } else {
+      if (newNear) lastNearSeenMs = millis();      // ยังเห็นคนอยู่
+    }
+  }
+
+  // ไม่มี NEAR ต่อเนื่องครบ 5s → หลับ
+  if (!nearState && (millis() - lastNearSeenMs >= NO_NEAR_SLEEP_MS)) {
+    Serial.println("No NEAR (valid) for 5s -> Deep-sleep");
+    goDeepSleepNow();
+  }
+}
+
 // ---------- Setup / Loop ----------
 void setup() {
   Wire.begin();
@@ -517,6 +622,14 @@ void setup() {
 
   // UART2 (debug/เชื่อมต่ออุปกรณ์ลูกโซ่ที่คุณใช้อยู่)
   mySerial.begin(9600, SERIAL_8N1, 16, 17); // RX=16, TX=17
+
+    // [ADD] Ultrasonic pins
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);        // มีตัวแบ่งแรงดันที่ขา ECHO -> 3.3V แล้ว
+  digitalWrite(TRIG_PIN, LOW);
+
+  // [ADD] ให้ระบบถือว่าเพิ่งเห็นคน (กันหลับเร็วเกินตอนบูต)
+  lastNearSeenMs = millis();
 
   EEPROM.begin(EEPROM_SIZE);
   if (!headerOK()) {
@@ -547,6 +660,9 @@ void setup() {
     // ===== Added: show wake reason & prepare wake pin =====
   printWakeReason();
   pinMode(WAKE_PIN, INPUT_PULLDOWN);  // กันลอยตอนบูต ถ้ายังไม่มี R pulldown ภายนอก
+  
+  // [ADD] init log timer
+  lastUltraLogMs = millis();
 }
 
 void loop() {
@@ -588,4 +704,64 @@ void loop() {
 
     Serial.println(msg);   // เดิม (ยังพิมพ์ log ต่อไปตามปกติ)
   }
+
+    // [ADD] อัลตราโซนิกตัดสินใจหลับ
+  ultrasonicTickForSleep();
+
+  // [ADD] Console command: "ULTRA?" หรือ "U"
+  if (Serial.available()) {
+    String cmd = Serial.readStringUntil('\n'); cmd.trim();
+    if (cmd.equalsIgnoreCase("ULTRA?") || cmd.equalsIgnoreCase("U")) {
+      float cm = measureDistanceCm();
+      bool ns = nearState;
+      if (!isnan(cm)) {
+        if (!ns && cm <= NEAR_ON_CM)  ns = true;
+        if ( ns && cm >= NEAR_OFF_CM) ns = false;
+      }
+      Serial.print("[US:NOW] cm=");
+      if (isnan(cm)) Serial.print("NaN");
+      else Serial.printf("%.1f", cm);
+      Serial.print(" near=");
+      Serial.println(ns ? 1 : 0);
+    }
+  }
+}
+
+// ===== [ADD] Robust ultrasonic helpers =====
+#ifndef PULSEIN_LONG_TIMEOUT_US
+#define PULSEIN_LONG_TIMEOUT_US 50000UL  // สำรอง ถ้าไลบรารีเก่า
+#endif
+
+// เกณฑ์กรองค่าที่เชื่อถือได้
+static const float MIN_VALID_CM = 5.0f;
+static const float MAX_VALID_CM = 300.0f;
+
+// อ่าน echo แบบ robust: รอให้ ECHO เป็น LOW ก่อนทุกครั้ง, ใช้ pulseInLong
+unsigned long us_read_echo_once_robust() {
+  // กันกรณี ECHO ยังค้าง HIGH จากรอบก่อน
+  // รอให้ LOW ก่อน (แต่จำกัดเวลา)
+  (void) pulseInLong(ECHO_PIN, LOW, 3000UL);
+
+  digitalWrite(TRIG_PIN, LOW);  delayMicroseconds(3);
+  digitalWrite(TRIG_PIN, HIGH); delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+
+  // วัดช่วง HIGH ของ ECHO
+  return pulseInLong(ECHO_PIN, HIGH, US_TIMEOUT);
+}
+
+// วัดหลายครั้ง → มัธยฐาน → คัดกรองช่วง valid
+float measureDistanceCmRobust() {
+  unsigned long a = us_read_echo_once_robust(); delayMicroseconds(150);
+  unsigned long b = us_read_echo_once_robust(); delayMicroseconds(150);
+  unsigned long c = us_read_echo_once_robust();
+
+  // sort a<=b<=c
+  if (a>b){ auto t=a;a=b;b=t; } if (b>c){ auto t=b;b=c;c=t; } if (a>b){ auto t=a;a=b;b=t; }
+  unsigned long us = b;
+  if (us == 0) return NAN;        // timeout → ไม่เชื่อถือ
+
+  float cm = (float)us / 58.0f;
+  if (cm < MIN_VALID_CM || cm > MAX_VALID_CM) return NAN;  // กรองค่าหลอก
+  return cm;
 }

@@ -103,7 +103,7 @@ static const uint8_t NEAR_CONFIRM_N = 2;  // ต้องเห็น NEAR 2 เ
 static const uint8_t FAR_CONFIRM_N = 2;   // ต้องเห็น FAR  2 เฟรมติดถึงจะเปลี่ยนเป็น FAR
 
 // จับเวลาเพื่อหลับ
-const uint32_t NO_NEAR_SLEEP_MS = 5000;  // FAR ต่อเนื่อง 5 วินาที -> หลับ
+const uint32_t NO_NEAR_SLEEP_MS = 30000;  // FAR ต่อเนื่อง 30 วินาที -> หลับ
 
 // ตัวแปรสถานะ
 static bool nearState = false;

@@ -59,13 +59,36 @@ static uint32_t lastUltraLogMs = 0;
 // static uint32_t lastActiveMs = 0;
 // inline void noteActivity(){ lastActiveMs = millis(); }
 
-void printWakeReason() {
-  esp_sleep_wakeup_cause_t c = esp_sleep_get_wakeup_cause();
-  Serial.print("Wake reason: ");
-  if (c == ESP_SLEEP_WAKEUP_EXT1)      Serial.println("EXT1 (GPIO)");
-  else if (c == ESP_SLEEP_WAKEUP_TIMER) Serial.println("TIMER");
-  else if (c == ESP_SLEEP_WAKEUP_UNDEFINED) Serial.println("POWER-ON/RESET");
-  else { Serial.print("#"); Serial.println((int)c); }
+#include "esp_system.h"
+#include "driver/rtc_io.h"
+
+void printBootAndWakeInfo() {
+  esp_reset_reason_t rr = esp_reset_reason();
+  Serial.printf("Reset reason=%d (1=POWERON, 12=BROWNOUT, 5=DEEPSLEEP)\n", (int)rr);
+
+  esp_sleep_wakeup_cause_t wc = esp_sleep_get_wakeup_cause();
+  Serial.print("Wake cause=");
+  switch (wc) {
+    case ESP_SLEEP_WAKEUP_EXT0:     Serial.println("EXT0"); break;
+    case ESP_SLEEP_WAKEUP_EXT1:     Serial.println("EXT1"); break;
+    case ESP_SLEEP_WAKEUP_TIMER:    Serial.println("TIMER"); break;
+    case ESP_SLEEP_WAKEUP_TOUCHPAD: Serial.println("TOUCH"); break;
+    case ESP_SLEEP_WAKEUP_ULP:      Serial.println("ULP"); break;
+    case ESP_SLEEP_WAKEUP_GPIO:     Serial.println("GPIO"); break;
+    case ESP_SLEEP_WAKEUP_UNDEFINED:
+    default:                        Serial.println("POWER-ON/RESET"); break;
+  }
+
+  if (wc == ESP_SLEEP_WAKEUP_EXT1) {
+    uint64_t m = esp_sleep_get_ext1_wakeup_status();
+    Serial.printf("EXT1 mask=0x%016llX\n", (unsigned long long)m);
+    if (m) {
+      Serial.print("Pins HIGH: ");
+      bool first=true;
+      for (int g=0; g<=39; ++g) if (m & (1ULL<<g)) { Serial.print(first?"":" ,"); Serial.print(g); first=false; }
+      Serial.println();
+    }
+  }
 }
 
 // เข้าหลับทันที แล้วปลุกเมื่อ WAKE_PIN=HIGH จาก ODROID
@@ -73,16 +96,29 @@ void goDeepSleepNow() {
   Serial.println("-> Deep-sleep now. Waiting for ODROID wake (GPIO HIGH)...");
   delay(50);
 
-  // ใช้ pulldown ภายใน ถ้ายังไม่มี R 100kΩ ภายนอก
-  pinMode(WAKE_PIN, INPUT_PULLDOWN);
+  // ปิดอุปกรณ์ที่อาจกินกระแส/ดีดกลับก่อน
+  pinMode(12, INPUT);         // buzzer
+  pinMode(4, INPUT);          // TRIG ultrasonic -> ปิดการขับ
+  // ถ้ามีรีเลย์/ULN/ภาคโหลดอื่น ๆ ให้ set เป็น INPUT เช่นกัน
 
-  // ปลุกด้วย EXT1 (กลุ่ม RTC IO) เมื่อบิตของ WAKE_PIN = HIGH
-  uint64_t mask = (1ULL << WAKE_PIN);
-  esp_sleep_enable_ext1_wakeup(mask, ESP_EXT1_WAKEUP_ANY_HIGH);
+  // เตรียมขาปลุกให้แน่น (RTC domain + pulldown + hold)
+  rtc_gpio_deinit((gpio_num_t)WAKE_PIN);
+  rtc_gpio_init((gpio_num_t)WAKE_PIN);
+  rtc_gpio_set_direction((gpio_num_t)WAKE_PIN, RTC_GPIO_MODE_INPUT_ONLY);
+  rtc_gpio_pulldown_en((gpio_num_t)WAKE_PIN);
+  rtc_gpio_pullup_dis((gpio_num_t)WAKE_PIN);
+  rtc_gpio_hold_en((gpio_num_t)WAKE_PIN);
 
-  // ปิด Wi-Fi/Bluetooth อัตโนมัติเมื่อเข้าหลับ (DeepSleep จะปิดทุกอย่างอยู่แล้ว)
+  // ตั้งปลุกเฉพาะ EXT1 ที่ขาเดียว (กันเผลอไป enable แหล่งอื่น)
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  esp_sleep_enable_ext1_wakeup(1ULL << WAKE_PIN, ESP_EXT1_WAKEUP_ANY_HIGH);
+
+  // (ถ้ามีตั้ง TIMER ไว้ที่อื่น ให้ปิดด้วย esp_sleep_disable_wakeup_source เช่นกัน)
+
+  delay(30);
   esp_deep_sleep_start();
 }
+
 // ---------- Serial / UART ----------
 HardwareSerial mySerial(2);        // UART2 : ใช้คุยกับบอร์ด/จออีกตัว ตามที่คุณใช้อยู่ (TX=17, RX=16 ด้านล่าง)
 HardwareSerial FingerSerial(1);    // UART1 : ใช้คุยกับโมดูลลายนิ้วมือ
@@ -616,26 +652,30 @@ void ultrasonicTickForSleep() {
 }
 
 // ---------- Setup / Loop ----------
+#include "driver/rtc_io.h"
+#include "esp_system.h"
+
 void setup() {
+  rtc_gpio_hold_dis((gpio_num_t)WAKE_PIN);   // ปลด hold จากรอบก่อน (WAKE_PIN=33)
+  Serial.begin(115200);                      // เหลือแค่อันเดียว พอ
+  Serial.setTimeout(200);                    // กันค้างเวลา readStringUntil
+  mySerial.setTimeout(200);
+
   Wire.begin();
-  Serial.begin(9600);
 
-  // UART2 (debug/เชื่อมต่ออุปกรณ์ลูกโซ่ที่คุณใช้อยู่)
-  mySerial.begin(9600, SERIAL_8N1, 16, 17); // RX=16, TX=17
+  // UART2 สำหรับคุยบอร์ดลูกโซ่
+  mySerial.begin(9600, SERIAL_8N1, 16, 17);  // RX=16, TX=17
 
-    // [ADD] Ultrasonic pins
+  // Ultrasonic
   pinMode(TRIG_PIN, OUTPUT);
-  pinMode(ECHO_PIN, INPUT);        // มีตัวแบ่งแรงดันที่ขา ECHO -> 3.3V แล้ว
+  pinMode(ECHO_PIN, INPUT);                   // GPIO34 เป็น input-only อยู่แล้ว
   digitalWrite(TRIG_PIN, LOW);
-
-  // [ADD] ให้ระบบถือว่าเพิ่งเห็นคน (กันหลับเร็วเกินตอนบูต)
   lastNearSeenMs = millis();
 
   EEPROM.begin(EEPROM_SIZE);
   if (!headerOK()) {
     Serial.println("Init header...");
     writeHeader();
-    // เคลียร์ทุกเรคคอร์ด
     for (int i=0;i<MAX_RECORDS;i++) clearRec(i);
   }
 
@@ -650,18 +690,15 @@ void setup() {
 
   if (!fingerBegin()) {
     Serial.println("Fingerprint module not found. Check wiring.");
-    // ทำงานต่อได้ แต่ฟีเจอร์นิ้วจะใช้ไม่ได้
   } else {
     Serial.println("Fingerprint module ready.");
   }
 
   Serial.printf("MAX_RECORDS=%d, RECORD_SIZE=%d\n", MAX_RECORDS, RECORD_SIZE);
 
-    // ===== Added: show wake reason & prepare wake pin =====
-  printWakeReason();
-  pinMode(WAKE_PIN, INPUT_PULLDOWN);  // กันลอยตอนบูต ถ้ายังไม่มี R pulldown ภายนอก
-  
-  // [ADD] init log timer
+  printBootAndWakeInfo();
+  pinMode(WAKE_PIN, INPUT_PULLDOWN);         // กันลอยตอนบูต
+
   lastUltraLogMs = millis();
 }
 

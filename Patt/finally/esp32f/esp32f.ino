@@ -2,6 +2,36 @@
 #define BLYNK_TEMPLATE_NAME "Quickstart Template"
 #define BLYNK_AUTH_TOKEN "RUBdFFrRrLJ99YHyTgYN5rew8gfkPzaH"
 
+#define WAKE_PIN 33
+
+// ==== must be the very first lines ====
+struct Rec;                    // forward-declare type Rec
+extern const int UID_HEX_MAX;  // forward-declare constant used by Rec
+
+void readRec(int idx, Rec &r);         // tell IDE not to autogenerate wrong prototypes
+void writeRec(int idx, const Rec &r);  // uses incomplete type by reference (OK)
+
+
+#include "driver/rtc_io.h"  // สำหรับ rtc_gpio_get_level()
+#include "esp_system.h"
+
+// ประกาศล่วงหน้าค่าคงที่ที่ struct ใช้ (ถ้าคุณมีเวอร์ชันเป็น #define อยู่แล้ว ข้ามได้)
+#if 0  // DISABLE: duplicates UID_HEX_MAX (we already #define it at top)
+const int      UID_HEX_MAX = 16;
+#endif
+
+// ต้อง “นิยาม” struct Rec ให้เสร็จก่อนฟังก์ชัน readRec()/writeRec()
+// (forward declare เฉยๆ ไม่พอ เพราะฟังก์ชันแตะฟิลด์ใน struct)
+#if 0  // DISABLE: duplicate struct Rec (already defined at top)
+struct Rec {
+  char     uid[UID_HEX_MAX];
+  uint8_t  fp_id;
+  uint8_t  voted;
+  uint8_t  valid;
+  uint8_t  reserved;
+};
+#endif
+
 #include <Wire.h>
 #include <WiFi.h>
 #include <WiFiClient.h>
@@ -15,32 +45,63 @@
 // ===== Added: Deep-sleep support =====
 #include "esp_sleep.h"
 
+// ==== [ADD] Wake-pin debug helpers (no change to existing code) ====
+volatile uint32_t WAKE_edges = 0;
+volatile uint32_t WAKE_lastMs = 0;
+
+IRAM_ATTR void WAKE_isr() {
+  // นับทุกครั้งที่มีขอบขึ้น/ลง
+  WAKE_edges++;
+  WAKE_lastMs = millis();
+}
+
+// อ่านระดับจากทั้ง digital และ RTC domain
+int wake_digital() {
+  return digitalRead(WAKE_PIN);
+}
+int wake_rtc() {
+  return rtc_gpio_get_level((gpio_num_t)WAKE_PIN);
+}
+
+void dbgPrintWakePin(const char *tag) {
+  Serial.print("[WAKEDBG] ");
+  Serial.print(tag);
+  Serial.print("  digital=");
+  Serial.print(wake_digital());
+  Serial.print("  rtc=");
+  Serial.print(wake_rtc());
+  Serial.print("  edges=");
+  Serial.print(WAKE_edges);
+  Serial.print("  lastMs=");
+  Serial.println(WAKE_lastMs);
+}
+
 // ใช้ GPIO35 เป็นขาปลุก (ต่อมาจาก ODROID PIN_33 ผ่าน R อนุกรม ~1k)
 // *GPIO35 เป็นขา RTC input ได้ ปลุกด้วย ext1 ได้
 #define WAKE_PIN 33
 
 // ==== forward declarations to satisfy compile order (ADD ONLY) ====
-struct Rec;                  // ให้คอมไพเลอร์รู้จักชื่อ Rec ล่วงหน้า (ใช้กับ & ได้)
+struct Rec;                    // ให้คอมไพเลอร์รู้จักชื่อ Rec ล่วงหน้า (ใช้กับ & ได้)
 extern const int UID_HEX_MAX;  // บอกว่าจะมีค่าคงที่ชื่อนี้ประกาศจริงด้านล่าง
 
 
 // ===== [ADD] Ultrasonic (HC-SR04) for auto-sleep =====
 const int TRIG_PIN = 4;
-const int ECHO_PIN = 34;                 // ต้องลดเป็น 3.3V ก่อนเข้า ESP32
+const int ECHO_PIN = 34;  // ต้องลดเป็น 3.3V ก่อนเข้า ESP32
 
 // เกณฑ์ “ใกล้”
-volatile float NEAR_ON_CM  = 25.0;       // เข้าสถานะ NEAR เมื่อ <= 25 cm
-volatile float NEAR_OFF_CM = 35.0;       // กลับ FAR เมื่อ >= 35 cm (ฮิสเทอรีส)
+volatile float NEAR_ON_CM = 25.0;   // เข้าสถานะ NEAR เมื่อ <= 25 cm
+volatile float NEAR_OFF_CM = 35.0;  // กลับ FAR เมื่อ >= 35 cm (ฮิสเทอรีส)
 
 // รอบวัดและ timeout
-const uint16_t US_INTERVAL_MS   = 200;   // วัดทุก ~200ms
-const unsigned long US_TIMEOUT  = 25000; // pulseIn timeout ~25ms
+const uint16_t US_INTERVAL_MS = 200;     // วัดทุก ~200ms
+const unsigned long US_TIMEOUT = 25000;  // pulseIn timeout ~25ms
 
 // ===== [ADD] counters & confirm windows for noise filtering =====
 static uint8_t nearConsec = 0;
-static uint8_t farConsec  = 0;
+static uint8_t farConsec = 0;
 static const uint8_t NEAR_CONFIRM_N = 2;  // ต้องเห็น NEAR 2 เฟรมติดถึงจะเปลี่ยนเป็น NEAR
-static const uint8_t FAR_CONFIRM_N  = 2;  // ต้องเห็น FAR  2 เฟรมติดถึงจะเปลี่ยนเป็น FAR
+static const uint8_t FAR_CONFIRM_N = 2;   // ต้องเห็น FAR  2 เฟรมติดถึงจะเปลี่ยนเป็น FAR
 
 // จับเวลาเพื่อหลับ
 const uint32_t NO_NEAR_SLEEP_MS = 5000;  // FAR ต่อเนื่อง 5 วินาที -> หลับ
@@ -69,14 +130,14 @@ void printBootAndWakeInfo() {
   esp_sleep_wakeup_cause_t wc = esp_sleep_get_wakeup_cause();
   Serial.print("Wake cause=");
   switch (wc) {
-    case ESP_SLEEP_WAKEUP_EXT0:     Serial.println("EXT0"); break;
-    case ESP_SLEEP_WAKEUP_EXT1:     Serial.println("EXT1"); break;
-    case ESP_SLEEP_WAKEUP_TIMER:    Serial.println("TIMER"); break;
+    case ESP_SLEEP_WAKEUP_EXT0: Serial.println("EXT0"); break;
+    case ESP_SLEEP_WAKEUP_EXT1: Serial.println("EXT1"); break;
+    case ESP_SLEEP_WAKEUP_TIMER: Serial.println("TIMER"); break;
     case ESP_SLEEP_WAKEUP_TOUCHPAD: Serial.println("TOUCH"); break;
-    case ESP_SLEEP_WAKEUP_ULP:      Serial.println("ULP"); break;
-    case ESP_SLEEP_WAKEUP_GPIO:     Serial.println("GPIO"); break;
+    case ESP_SLEEP_WAKEUP_ULP: Serial.println("ULP"); break;
+    case ESP_SLEEP_WAKEUP_GPIO: Serial.println("GPIO"); break;
     case ESP_SLEEP_WAKEUP_UNDEFINED:
-    default:                        Serial.println("POWER-ON/RESET"); break;
+    default: Serial.println("POWER-ON/RESET"); break;
   }
 
   if (wc == ESP_SLEEP_WAKEUP_EXT1) {
@@ -84,8 +145,13 @@ void printBootAndWakeInfo() {
     Serial.printf("EXT1 mask=0x%016llX\n", (unsigned long long)m);
     if (m) {
       Serial.print("Pins HIGH: ");
-      bool first=true;
-      for (int g=0; g<=39; ++g) if (m & (1ULL<<g)) { Serial.print(first?"":" ,"); Serial.print(g); first=false; }
+      bool first = true;
+      for (int g = 0; g <= 39; ++g)
+        if (m & (1ULL << g)) {
+          Serial.print(first ? "" : " ,");
+          Serial.print(g);
+          first = false;
+        }
       Serial.println();
     }
   }
@@ -97,48 +163,49 @@ void goDeepSleepNow() {
   delay(50);
 
   // ปิดอุปกรณ์ที่อาจกินกระแส/ดีดกลับก่อน
-  pinMode(12, INPUT);         // buzzer
-  pinMode(4, INPUT);          // TRIG ultrasonic -> ปิดการขับ
-  // ถ้ามีรีเลย์/ULN/ภาคโหลดอื่น ๆ ให้ set เป็น INPUT เช่นกัน
+  pinMode(12, INPUT);
+  pinMode(4, INPUT);
 
-  // เตรียมขาปลุกให้แน่น (RTC domain + pulldown + hold)
+  // ถอด interrupt ของ WAKE_PIN ออกจาก digital GPIO ก่อนเข้าหลับ (กันงอแง)
+  detachInterrupt(digitalPinToInterrupt(WAKE_PIN));
+
+  // เตรียมขาปลุกใน RTC domain (input + pulldown) *** ไม่ต้อง hold ***
   rtc_gpio_deinit((gpio_num_t)WAKE_PIN);
   rtc_gpio_init((gpio_num_t)WAKE_PIN);
   rtc_gpio_set_direction((gpio_num_t)WAKE_PIN, RTC_GPIO_MODE_INPUT_ONLY);
   rtc_gpio_pulldown_en((gpio_num_t)WAKE_PIN);
   rtc_gpio_pullup_dis((gpio_num_t)WAKE_PIN);
-  rtc_gpio_hold_en((gpio_num_t)WAKE_PIN);
+  // rtc_gpio_hold_en(...)   // <-- ลบ/ห้ามใช้กับขาปลุก
 
-  // ตั้งปลุกเฉพาะ EXT1 ที่ขาเดียว (กันเผลอไป enable แหล่งอื่น)
+  // ปิดทุกแหล่ง แล้วเปิด EXT1 (ระดับ HIGH) + ตั้ง TIMER เป็น safety 10 วินาที
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
   esp_sleep_enable_ext1_wakeup(1ULL << WAKE_PIN, ESP_EXT1_WAKEUP_ANY_HIGH);
-
-  // (ถ้ามีตั้ง TIMER ไว้ที่อื่น ให้ปิดด้วย esp_sleep_disable_wakeup_source เช่นกัน)
+  esp_sleep_enable_timer_wakeup(10ULL * 1000000ULL);  // auto ตื่นใน 10s กันค้าง
 
   delay(30);
   esp_deep_sleep_start();
 }
 
 // ---------- Serial / UART ----------
-HardwareSerial mySerial(2);        // UART2 : ใช้คุยกับบอร์ด/จออีกตัว ตามที่คุณใช้อยู่ (TX=17, RX=16 ด้านล่าง)
-HardwareSerial FingerSerial(1);    // UART1 : ใช้คุยกับโมดูลลายนิ้วมือ
+HardwareSerial mySerial(2);      // UART2 : ใช้คุยกับบอร์ด/จออีกตัว ตามที่คุณใช้อยู่ (TX=17, RX=16 ด้านล่าง)
+HardwareSerial FingerSerial(1);  // UART1 : ใช้คุยกับโมดูลลายนิ้วมือ
 Adafruit_Fingerprint finger = Adafruit_Fingerprint(&FingerSerial);
 
 // ---------- RFID ----------
-#define SS_PIN   5
+#define SS_PIN 5
 #define RST_PIN 27
 MFRC522 rfid(SS_PIN, RST_PIN);
 
 // ---------- I/O ----------
-const int EEPROM_SIZE  = 512;
-const int buzzerPin    = 12;
-const int switchPin33  = 14;  // สวิตช์ Register
-const int switchPin32  = 32;  // สวิตช์ Delete
-const int ledPin       = 13;
+const int EEPROM_SIZE = 512;
+const int buzzerPin = 12;
+const int switchPin33 = 14;  // สวิตช์ Register
+const int switchPin32 = 32;  // สวิตช์ Delete
+const int ledPin = 13;
 
 // ---------- Finger UART Pins (ปรับให้ตรงบอร์ดคุณ) ----------
-const int FINGER_RX = 26; // ESP32 RX1 pin to sensor TX
-const int FINGER_TX = 25; // ESP32 TX1 pin to sensor RX
+const int FINGER_RX = 26;  // ESP32 RX1 pin to sensor TX
+const int FINGER_TX = 25;  // ESP32 TX1 pin to sensor RX
 
 // ---------- Protocol between boards (คงรูปแบบเดิมของคุณ) ----------
 /*
@@ -164,35 +231,38 @@ const int FINGER_TX = 25; // ESP32 TX1 pin to sensor RX
     19    : reserved
 */
 const uint32_t MAGIC = 0x564F5445UL;  // 'VOTE'
-const uint8_t  VERSION = 1;
-const int      HDR_SIZE = 16;
-const int      UID_HEX_MAX = 16;
-const int      RECORD_SIZE = 20;
-const int      BASE = HDR_SIZE;
-const uint8_t  VALID_FLAG = 0xA5;
-const uint8_t  EMPTY_FLAG = 0xFF;
-const int      MAX_RECORDS = (EEPROM_SIZE - BASE) / RECORD_SIZE; // ~= 24
+const uint8_t VERSION = 1;
+const int HDR_SIZE = 16;
+const int UID_HEX_MAX = 16;
+const int RECORD_SIZE = 20;
+const int BASE = HDR_SIZE;
+const uint8_t VALID_FLAG = 0xA5;
+const uint8_t EMPTY_FLAG = 0xFF;
+const int MAX_RECORDS = (EEPROM_SIZE - BASE) / RECORD_SIZE;  // ~= 24
 
 // ---------- Utils ----------
 struct Rec {
-  char     uid[UID_HEX_MAX]; // ไม่รับ '\0' เสมอ ให้เก็บเป็น 16 ชาร์ (ถ้าน้อยกว่าก็ 0x00 padding)
-  uint8_t  fp_id;
-  uint8_t  voted;            // 0/1
-  uint8_t  valid;            // VALID_FLAG หรือ EMPTY_FLAG
-  uint8_t  reserved;
+  char uid[UID_HEX_MAX];  // ไม่รับ '\0' เสมอ ให้เก็บเป็น 16 ชาร์ (ถ้าน้อยกว่าก็ 0x00 padding)
+  uint8_t fp_id;
+  uint8_t voted;  // 0/1
+  uint8_t valid;  // VALID_FLAG หรือ EMPTY_FLAG
+  uint8_t reserved;
 };
 
-void eepromWriteBytes(int addr, const uint8_t* data, int len) {
-  for (int i=0; i<len; ++i) EEPROM.write(addr+i, data[i]);
+void eepromWriteBytes(int addr, const uint8_t *data, int len) {
+  for (int i = 0; i < len; ++i) EEPROM.write(addr + i, data[i]);
 }
 
-void eepromReadBytes(int addr, uint8_t* data, int len) {
-  for (int i=0; i<len; ++i) data[i] = EEPROM.read(addr+i);
+void eepromReadBytes(int addr, uint8_t *data, int len) {
+  for (int i = 0; i < len; ++i) data[i] = EEPROM.read(addr + i);
 }
 
 void writeHeader() {
-  uint8_t hdr[HDR_SIZE] = {0};
-  hdr[0] = 'V'; hdr[1] = 'O'; hdr[2] = 'T'; hdr[3] = 'E';
+  uint8_t hdr[HDR_SIZE] = { 0 };
+  hdr[0] = 'V';
+  hdr[1] = 'O';
+  hdr[2] = 'T';
+  hdr[3] = 'E';
   hdr[4] = VERSION;
   // rest zero
   eepromWriteBytes(0, hdr, HDR_SIZE);
@@ -201,25 +271,27 @@ void writeHeader() {
 
 bool headerOK() {
   uint8_t h[5];
-  for (int i=0;i<5;i++) h[i] = EEPROM.read(i);
-  return (h[0]=='V' && h[1]=='O' && h[2]=='T' && h[3]=='E' && h[4]==VERSION);
+  for (int i = 0; i < 5; i++) h[i] = EEPROM.read(i);
+  return (h[0] == 'V' && h[1] == 'O' && h[2] == 'T' && h[3] == 'E' && h[4] == VERSION);
 }
 
-int recAddr(int idx) { return BASE + idx*RECORD_SIZE; }
+int recAddr(int idx) {
+  return BASE + idx * RECORD_SIZE;
+}
 
 void readRec(int idx, Rec &r) {
   uint8_t buf[RECORD_SIZE];
   eepromReadBytes(recAddr(idx), buf, RECORD_SIZE);
-  for (int i=0; i<UID_HEX_MAX; ++i) r.uid[i] = (char)buf[i];
-  r.fp_id    = buf[16];
-  r.voted    = buf[17];
-  r.valid    = buf[18];
+  for (int i = 0; i < UID_HEX_MAX; ++i) r.uid[i] = (char)buf[i];
+  r.fp_id = buf[16];
+  r.voted = buf[17];
+  r.valid = buf[18];
   r.reserved = buf[19];
 }
 
 void writeRec(int idx, const Rec &r) {
   uint8_t buf[RECORD_SIZE];
-  for (int i=0; i<UID_HEX_MAX; ++i) buf[i] = (uint8_t)r.uid[i];
+  for (int i = 0; i < UID_HEX_MAX; ++i) buf[i] = (uint8_t)r.uid[i];
   buf[16] = r.fp_id;
   buf[17] = r.voted;
   buf[18] = r.valid;
@@ -230,46 +302,54 @@ void writeRec(int idx, const Rec &r) {
 
 void clearRec(int idx) {
   Rec r{};
-  for (int i=0;i<UID_HEX_MAX;++i) r.uid[i]=0x00;
-  r.fp_id=0; r.voted=0; r.valid=EMPTY_FLAG; r.reserved=0;
+  for (int i = 0; i < UID_HEX_MAX; ++i) r.uid[i] = 0x00;
+  r.fp_id = 0;
+  r.voted = 0;
+  r.valid = EMPTY_FLAG;
+  r.reserved = 0;
   writeRec(idx, r);
 }
 
 int findFreeSlot() {
-  for (int i=0;i<MAX_RECORDS;++i) {
-    Rec r; readRec(i,r);
-    if (r.valid!=VALID_FLAG) return i;
+  for (int i = 0; i < MAX_RECORDS; ++i) {
+    Rec r;
+    readRec(i, r);
+    if (r.valid != VALID_FLAG) return i;
   }
   return -1;
 }
 
 #define UID_HEX_MAX 16
 bool sameUID16(const char a[UID_HEX_MAX], const char b[UID_HEX_MAX]) {
-  for (int i=0;i<UID_HEX_MAX;++i) if (a[i]!=b[i]) return false;
+  for (int i = 0; i < UID_HEX_MAX; ++i)
+    if (a[i] != b[i]) return false;
   return true;
 }
 
 void uidToFixed16(const String &uidHex, char out16[UID_HEX_MAX]) {
   // ตัด/แพดให้ยาว 16 ตัวอักษร
   // (UID 4 ไบต์ => 8 ตัวอักษร, UID 7/10 ไบต์ => 14/20 ตัวอักษร → เก็บ 16 ตัวอักษรแรกพอ)
-  for (int i=0;i<UID_HEX_MAX;i++) {
+  for (int i = 0; i < UID_HEX_MAX; i++) {
     out16[i] = (i < uidHex.length()) ? uidHex.charAt(i) : 0x00;
   }
 }
 #undef UID_HEX_MAX
 
 int findByUID(const String &uidHex) {
-  char key[UID_HEX_MAX]; uidToFixed16(uidHex, key);
-  for (int i=0;i<MAX_RECORDS;++i) {
-    Rec r; readRec(i,r);
-    if (r.valid==VALID_FLAG && sameUID16(r.uid, key)) return i;
+  char key[UID_HEX_MAX];
+  uidToFixed16(uidHex, key);
+  for (int i = 0; i < MAX_RECORDS; ++i) {
+    Rec r;
+    readRec(i, r);
+    if (r.valid == VALID_FLAG && sameUID16(r.uid, key)) return i;
   }
   return -1;
 }
 
 int findByFPID(uint8_t fp) {
   for (int i = 0; i < MAX_RECORDS; ++i) {
-    Rec r; readRec(i, r);
+    Rec r;
+    readRec(i, r);
     if (r.valid == VALID_FLAG && r.fp_id == fp) return i;
   }
   return -1;
@@ -280,24 +360,34 @@ int quickSearchFingerprint(uint32_t timeout_ms = 10000) {
   unsigned long t0 = millis();
   while (millis() - t0 < timeout_ms) {
     uint8_t p = finger.getImage();
-    if (p == FINGERPRINT_NOFINGER) { delay(50); continue; }
-    if (p != FINGERPRINT_OK) { delay(50); continue; }
+    if (p == FINGERPRINT_NOFINGER) {
+      delay(50);
+      continue;
+    }
+    if (p != FINGERPRINT_OK) {
+      delay(50);
+      continue;
+    }
     p = finger.image2Tz(1);
-    if (p != FINGERPRINT_OK) { delay(50); continue; }
-    p = finger.fingerFastSearch();         // ค้นหาในฐานของเซ็นเซอร์
+    if (p != FINGERPRINT_OK) {
+      delay(50);
+      continue;
+    }
+    p = finger.fingerFastSearch();                    // ค้นหาในฐานของเซ็นเซอร์
     if (p == FINGERPRINT_OK) return finger.fingerID;  // พบแล้ว → คืน fp_id เดิม
-    else return -1;                        // ไม่พบ → นิ้วใหม่น่าจะยังไม่อยู่ในฐาน
+    else return -1;                                   // ไม่พบ → นิ้วใหม่น่าจะยังไม่อยู่ในฐาน
   }
-  return -1; // timeout
+  return -1;  // timeout
 }
 
 
 bool setVotedByIndex(int idx, uint8_t v) {
-  if (idx<0 || idx>=MAX_RECORDS) return false;
-  Rec r; readRec(idx,r);
-  if (r.valid!=VALID_FLAG) return false;
-  r.voted = v?1:0;
-  writeRec(idx,r);
+  if (idx < 0 || idx >= MAX_RECORDS) return false;
+  Rec r;
+  readRec(idx, r);
+  if (r.valid != VALID_FLAG) return false;
+  r.voted = v ? 1 : 0;
+  writeRec(idx, r);
   return true;
 }
 
@@ -318,9 +408,12 @@ int enrollFingerprint(uint8_t fp_id) {
 
   // ภาพ 1
   while ((p = finger.getImage()) != FINGERPRINT_OK) {
-    if (p == FINGERPRINT_NOFINGER) { delay(50); continue; }
+    if (p == FINGERPRINT_NOFINGER) {
+      delay(50);
+      continue;
+    }
     if (p == FINGERPRINT_PACKETRECIEVEERR) return p;
-    if (p == FINGERPRINT_IMAGEFAIL)       return p;
+    if (p == FINGERPRINT_IMAGEFAIL) return p;
   }
 
   p = finger.image2Tz(1);
@@ -331,9 +424,12 @@ int enrollFingerprint(uint8_t fp_id) {
 
   Serial.println("Place same finger again");
   while ((p = finger.getImage()) != FINGERPRINT_OK) {
-    if (p == FINGERPRINT_NOFINGER) { delay(50); continue; }
+    if (p == FINGERPRINT_NOFINGER) {
+      delay(50);
+      continue;
+    }
     if (p == FINGERPRINT_PACKETRECIEVEERR) return p;
-    if (p == FINGERPRINT_IMAGEFAIL)       return p;
+    if (p == FINGERPRINT_IMAGEFAIL) return p;
   }
 
   p = finger.image2Tz(2);
@@ -343,25 +439,25 @@ int enrollFingerprint(uint8_t fp_id) {
   if (p != FINGERPRINT_OK) return p;
 
   p = finger.storeModel(fp_id);
-  return p; // FINGERPRINT_OK = 0x00
+  return p;  // FINGERPRINT_OK = 0x00
 }
 
 int matchFingerprint() {
   // จับภาพ → แปลง → ค้นหา เร็ว
   uint8_t p = finger.getImage();
-  if (p != FINGERPRINT_OK)  return -1;
+  if (p != FINGERPRINT_OK) return -1;
   p = finger.image2Tz();
-  if (p != FINGERPRINT_OK)  return -1;
+  if (p != FINGERPRINT_OK) return -1;
   p = finger.fingerFastSearch();
-  if (p != FINGERPRINT_OK)  return -1;
-  return finger.fingerID; // ตำแหน่งที่ match
+  if (p != FINGERPRINT_OK) return -1;
+  return finger.fingerID;  // ตำแหน่งที่ match
 }
 
 // ---------- App Logic ----------
 String readRFIDasHex() {
   // คืนเป็นตัวอักษร hex (ไม่เว้นวรรค), ตัวพิมพ์ใหญ่, ยาวเท่าจำนวน uid.size*2 (สูงสุด ~20 chars)
-  String ID="";
-  for (byte i=0;i<rfid.uid.size;i++){
+  String ID = "";
+  for (byte i = 0; i < rfid.uid.size; i++) {
     if (rfid.uid.uidByte[i] < 0x10) ID += "0";
     ID += String(rfid.uid.uidByte[i], HEX);
   }
@@ -372,7 +468,7 @@ String readRFIDasHex() {
 
 bool storeNewRecord(const String &uidHex, uint8_t fp_id) {
   int slot = findFreeSlot();
-  if (slot<0) return false;
+  if (slot < 0) return false;
   Rec r{};
   uidToFixed16(uidHex, r.uid);
   r.fp_id = fp_id;
@@ -385,10 +481,11 @@ bool storeNewRecord(const String &uidHex, uint8_t fp_id) {
 
 bool removeByUID(const String &uidHex) {
   int idx = findByUID(uidHex);
-  if (idx<0) return false;
-  Rec r; readRec(idx, r);
+  if (idx < 0) return false;
+  Rec r;
+  readRec(idx, r);
   // ลบในโมดูลลายนิ้วมือด้วย
-  if (r.fp_id>0) {
+  if (r.fp_id > 0) {
     finger.deleteModel(r.fp_id);
   }
   clearRec(idx);
@@ -419,7 +516,8 @@ void registerCardAndFingerprint() {
     int idxExisting = findByFPID(existing_fp);
     if (idxExisting >= 0) {
       // มีนิ้วนี้อยู่ในระบบแล้ว และผูกกับบัตรเดิมอยู่ → บล็อก
-      Rec rExist; readRec(idxExisting, rExist);
+      Rec rExist;
+      readRec(idxExisting, rExist);
       Serial.printf("Duplicate finger detected! Already linked to another card (FP_ID=%d). Abort.\n", existing_fp);
       tone(buzzerPin, 600, 400);
       return;
@@ -432,9 +530,11 @@ void registerCardAndFingerprint() {
 
   // หา fp_id ว่าง (เหมือนเดิม)
   uint8_t chosen_fp_id = 1;
-  bool used[200]; for (int i=0; i<200; i++) used[i] = false;
-  for (int i=0; i<MAX_RECORDS; i++) {
-    Rec r; readRec(i, r);
+  bool used[200];
+  for (int i = 0; i < 200; i++) used[i] = false;
+  for (int i = 0; i < MAX_RECORDS; i++) {
+    Rec r;
+    readRec(i, r);
     if (r.valid == VALID_FLAG && r.fp_id > 0 && r.fp_id < 200) used[r.fp_id] = true;
   }
   while (chosen_fp_id < 200 && used[chosen_fp_id]) chosen_fp_id++;
@@ -456,7 +556,9 @@ void registerCardAndFingerprint() {
   if (storeNewRecord(uidHex, chosen_fp_id)) {
     Serial.println("Card+Fingerprint registered successfully.");
     mySerial.println("Card Registered!");
-    tone(buzzerPin, 1600, 120); delay(200); tone(buzzerPin, 1600, 120);
+    tone(buzzerPin, 1600, 120);
+    delay(200);
+    tone(buzzerPin, 1600, 120);
   } else {
     Serial.println("EEPROM full. Cannot store new record.");
     tone(buzzerPin, 500, 500);
@@ -482,13 +584,14 @@ void deleteCardFlow() {
   }
 
   // โหลดเรคคอร์ดเพื่อรู้ fp_id ของเจ้าของบัตร
-  Rec r; readRec(idx, r);
+  Rec r;
+  readRec(idx, r);
 
   // ✅ ขั้นตอน “ยืนยันลายนิ้วมือก่อนลบ”
   Serial.printf("Verify fingerprint to delete (expect FP_ID=%d)\n", r.fp_id);
   unsigned long t0 = millis();
   int matched = -1;
-  while (millis() - t0 < 15000) {           // รอสูงสุด 15 วินาที
+  while (millis() - t0 < 15000) {  // รอสูงสุด 15 วินาที
     matched = matchFingerprint();
     if (matched >= 0) break;
     delay(50);
@@ -510,13 +613,15 @@ void deleteCardFlow() {
   // ลบเรคคอร์ดบัตรใน EEPROM
   clearRec(idx);
   Serial.println("Card + Fingerprint deleted");
-  tone(buzzerPin, 1200, 150); delay(150); tone(buzzerPin, 1200, 150);
+  tone(buzzerPin, 1200, 150);
+  delay(150);
+  tone(buzzerPin, 1200, 150);
 }
 
 
 void normalScanFlow() {
   // แตะบัตร → ตรวจว่าลงทะเบียนหรือยัง → ถ้าลงทะเบียน ต้องสแกนนิ้วให้ "ตรงกับ fp_id" ของบัตรนั้น
-  
+
   Serial.println("Scan card...");
 
   //if (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) return;
@@ -531,12 +636,16 @@ void normalScanFlow() {
     //mySerial.println("W");
     // ระฆัง + ไฟ
     tone(buzzerPin, 1000, 200);
-    digitalWrite(ledPin, HIGH); delay(200); digitalWrite(ledPin, LOW); delay(150);
+    digitalWrite(ledPin, HIGH);
+    delay(200);
+    digitalWrite(ledPin, LOW);
+    delay(150);
     tone(buzzerPin, 1000, 200);
     return;
   }
 
-  Rec r; readRec(idx, r);
+  Rec r;
+  readRec(idx, r);
   // ถ้าใช้ในระบบโหวต: block ถ้า voted=1 แล้ว
   if (r.voted == 1) {
     Serial.println("Already voted for this card holder.");
@@ -549,7 +658,7 @@ void normalScanFlow() {
   // จับนิ้วแล้ว match
   unsigned long t0 = millis();
   int matched = -1;
-  while (millis() - t0 < 15000) { // รอสูงสุด 15 วินาที
+  while (millis() - t0 < 15000) {  // รอสูงสุด 15 วินาที
     matched = matchFingerprint();
     if (matched >= 0) break;
     delay(50);
@@ -571,7 +680,9 @@ void normalScanFlow() {
   // ผ่านเงื่อนไข: บัตร+นิ้ว ตรงกัน → ถือว่าสำเร็จ
   mySerial.println("OK");
   tone(buzzerPin, 1500, 120);
-  digitalWrite(ledPin, HIGH); delay(120); digitalWrite(ledPin, LOW);
+  digitalWrite(ledPin, HIGH);
+  delay(120);
+  digitalWrite(ledPin, LOW);
 
   // ถ้าเป็นระบบโหวต: mark voted = 1
   setVotedByIndex(idx, 1);
@@ -579,22 +690,40 @@ void normalScanFlow() {
 
 // [ADD] วัด echo ครั้งเดียว
 inline unsigned long us_read_once() {
-  digitalWrite(TRIG_PIN, LOW);  delayMicroseconds(2);
-  digitalWrite(TRIG_PIN, HIGH); delayMicroseconds(10);
   digitalWrite(TRIG_PIN, LOW);
-  return pulseIn(ECHO_PIN, HIGH, US_TIMEOUT); // microseconds
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  return pulseIn(ECHO_PIN, HIGH, US_TIMEOUT);  // microseconds
 }
 
 // [ADD] อ่าน 3 ครั้งเอามัธยฐาน เพื่อลดสไปค์
 float measureDistanceCm() {
-  unsigned long a = us_read_once(); delayMicroseconds(150);
-  unsigned long b = us_read_once(); delayMicroseconds(150);
+  unsigned long a = us_read_once();
+  delayMicroseconds(150);
+  unsigned long b = us_read_once();
+  delayMicroseconds(150);
   unsigned long c = us_read_once();
   // sort a<=b<=c
-  if (a>b){ auto t=a;a=b;b=t; } if (b>c){ auto t=b;b=c;c=t; } if (a>b){ auto t=a;a=b;b=t; }
+  if (a > b) {
+    auto t = a;
+    a = b;
+    b = t;
+  }
+  if (b > c) {
+    auto t = b;
+    b = c;
+    c = t;
+  }
+  if (a > b) {
+    auto t = a;
+    a = b;
+    b = t;
+  }
   unsigned long us = b;
   if (us == 0) return NAN;
-  return (float)us / 58.0f; // cm
+  return (float)us / 58.0f;  // cm
 }
 
 // [ADD] งานหลัก Ultrasonic: อัปเดต nearState + ตัดสินใจหลับ
@@ -607,7 +736,7 @@ void ultrasonicTickForSleep() {
 
   // ถ้าอ่านไม่ได้: นับ FAR ต่อ และพิมพ์ log เป็นครั้งคราว
   if (isnan(cm)) {
-    farConsec  = min<uint8_t>(FAR_CONFIRM_N, farConsec + 1);
+    farConsec = min<uint8_t>(FAR_CONFIRM_N, farConsec + 1);
     nearConsec = 0;
 
     if (DEBUG_ULTRA && (millis() - lastUltraLogMs >= 1000)) {
@@ -617,30 +746,37 @@ void ultrasonicTickForSleep() {
   } else {
     // ตัดสินใจ newNear ด้วยฮิสเทอรีส
     bool wantNear = nearState;
-    if (!nearState && cm <= NEAR_ON_CM)  wantNear = true;
-    if ( nearState && cm >= NEAR_OFF_CM) wantNear = false;
+    if (!nearState && cm <= NEAR_ON_CM) wantNear = true;
+    if (nearState && cm >= NEAR_OFF_CM) wantNear = false;
 
-    if (wantNear) { nearConsec = min<uint8_t>(NEAR_CONFIRM_N, nearConsec + 1); farConsec = 0; }
-    else          { farConsec  = min<uint8_t>(FAR_CONFIRM_N,  farConsec + 1);  nearConsec = 0; }
+    if (wantNear) {
+      nearConsec = min<uint8_t>(NEAR_CONFIRM_N, nearConsec + 1);
+      farConsec = 0;
+    } else {
+      farConsec = min<uint8_t>(FAR_CONFIRM_N, farConsec + 1);
+      nearConsec = 0;
+    }
 
     // เปลี่ยนสถานะเมื่อ “ยืนยัน” ครบ N เฟรม
     bool newNear = nearState;
     if (!nearState && nearConsec >= NEAR_CONFIRM_N) newNear = true;
-    if ( nearState &&  farConsec >= FAR_CONFIRM_N)  newNear = false;
+    if (nearState && farConsec >= FAR_CONFIRM_N) newNear = false;
 
     // log ทุก 1s หรือเมื่อมีการสลับสถานะ
     if (DEBUG_ULTRA && (millis() - lastUltraLogMs >= 1000 || newNear != nearState)) {
-      Serial.print("[US] cm="); Serial.printf("%.1f", cm);
-      Serial.print(" near="); Serial.println(newNear ? 1 : 0);
+      Serial.print("[US] cm=");
+      Serial.printf("%.1f", cm);
+      Serial.print(" near=");
+      Serial.println(newNear ? 1 : 0);
       lastUltraLogMs = millis();
     }
 
     if (newNear != nearState) {
       mySerial.println(newNear ? "NEAR" : "FAR");  // แจ้ง ODROID ถ้าต่อ UART
       nearState = newNear;
-      if (newNear) lastNearSeenMs = millis();      // รีเฟรชเวลาเมื่อเห็นคน
+      if (newNear) lastNearSeenMs = millis();  // รีเฟรชเวลาเมื่อเห็นคน
     } else {
-      if (newNear) lastNearSeenMs = millis();      // ยังเห็นคนอยู่
+      if (newNear) lastNearSeenMs = millis();  // ยังเห็นคนอยู่
     }
   }
 
@@ -656,9 +792,11 @@ void ultrasonicTickForSleep() {
 #include "esp_system.h"
 
 void setup() {
-  rtc_gpio_hold_dis((gpio_num_t)WAKE_PIN);   // ปลด hold จากรอบก่อน (WAKE_PIN=33)
-  Serial.begin(115200);                      // เหลือแค่อันเดียว พอ
-  Serial.setTimeout(200);                    // กันค้างเวลา readStringUntil
+  rtc_gpio_hold_dis((gpio_num_t)WAKE_PIN);
+  pinMode(WAKE_PIN, INPUT_PULLDOWN);
+  attachInterrupt(digitalPinToInterrupt(WAKE_PIN), WAKE_isr, CHANGE);
+  Serial.begin(115200);    // เหลือแค่อันเดียว พอ
+  Serial.setTimeout(200);  // กันค้างเวลา readStringUntil
   mySerial.setTimeout(200);
 
   Wire.begin();
@@ -668,7 +806,7 @@ void setup() {
 
   // Ultrasonic
   pinMode(TRIG_PIN, OUTPUT);
-  pinMode(ECHO_PIN, INPUT);                   // GPIO34 เป็น input-only อยู่แล้ว
+  pinMode(ECHO_PIN, INPUT);  // GPIO34 เป็น input-only อยู่แล้ว
   digitalWrite(TRIG_PIN, LOW);
   lastNearSeenMs = millis();
 
@@ -676,7 +814,7 @@ void setup() {
   if (!headerOK()) {
     Serial.println("Init header...");
     writeHeader();
-    for (int i=0;i<MAX_RECORDS;i++) clearRec(i);
+    for (int i = 0; i < MAX_RECORDS; i++) clearRec(i);
   }
 
   SPI.begin();
@@ -697,7 +835,11 @@ void setup() {
   Serial.printf("MAX_RECORDS=%d, RECORD_SIZE=%d\n", MAX_RECORDS, RECORD_SIZE);
 
   printBootAndWakeInfo();
-  pinMode(WAKE_PIN, INPUT_PULLDOWN);         // กันลอยตอนบูต
+  pinMode(WAKE_PIN, INPUT_PULLDOWN);  // กันลอยตอนบูต
+
+  // ==== [ADD] attach edge logger & dump initial levels
+  attachInterrupt(digitalPinToInterrupt(WAKE_PIN), WAKE_isr, CHANGE);
+  dbgPrintWakePin("boot");
 
   lastUltraLogMs = millis();
 }
@@ -708,15 +850,13 @@ void loop() {
 
   if (switchReg == LOW) {
     // โหมดลงทะเบียน: บัตร + ลายนิ้วมือ (คู่กัน)
-    while (digitalRead(switchPin33)==LOW) delay(10); // รอปล่อยปุ่ม
+    while (digitalRead(switchPin33) == LOW) delay(10);  // รอปล่อยปุ่ม
     registerCardAndFingerprint();
     delay(300);
     return;
-  }
-
-  else if (switchDel == LOW) {
+  } else if (switchDel == LOW) {
     // โหมดลบเรคคอร์ด (บัตร) + ลบ template ในนิ้ว
-    while (digitalRead(switchPin32)==LOW) delay(10);
+    while (digitalRead(switchPin32) == LOW) delay(10);
     deleteCardFlow();
     delay(300);
     return;
@@ -728,38 +868,51 @@ void loop() {
   }
 
   // pipe ข้อความจากพอร์ตลูกโซ่ (option)
-    if (mySerial.available()) {
+  if (mySerial.available()) {
     String msg = mySerial.readStringUntil('\n');
 
     // ===== Added: Command "SLEEP!" from ODROID =====
-    String t = msg; t.trim();
+    String t = msg;
+    t.trim();
     if (t.equalsIgnoreCase("SLEEP!")) {
       mySerial.println("OK SLEEP");
       delay(30);
-      goDeepSleepNow();      // เข้าหลับทันที (จะไม่กลับจากฟังก์ชันนี้)
+      goDeepSleepNow();  // เข้าหลับทันที (จะไม่กลับจากฟังก์ชันนี้)
     }
 
-    Serial.println(msg);   // เดิม (ยังพิมพ์ log ต่อไปตามปกติ)
+    Serial.println(msg);  // เดิม (ยังพิมพ์ log ต่อไปตามปกติ)
   }
 
-    // [ADD] อัลตราโซนิกตัดสินใจหลับ
+  // อัลตราโซนิกตัดสินใจหลับ (ของเดิม)
   ultrasonicTickForSleep();
 
-  // [ADD] Console command: "ULTRA?" หรือ "U"
+  // Console commands (USB Serial): ULTRA?/U (เดิม) + W?/WTEST (เพิ่ม)
   if (Serial.available()) {
-    String cmd = Serial.readStringUntil('\n'); cmd.trim();
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+
     if (cmd.equalsIgnoreCase("ULTRA?") || cmd.equalsIgnoreCase("U")) {
       float cm = measureDistanceCm();
       bool ns = nearState;
       if (!isnan(cm)) {
-        if (!ns && cm <= NEAR_ON_CM)  ns = true;
-        if ( ns && cm >= NEAR_OFF_CM) ns = false;
+        if (!ns && cm <= NEAR_ON_CM) ns = true;
+        if (ns && cm >= NEAR_OFF_CM) ns = false;
       }
       Serial.print("[US:NOW] cm=");
       if (isnan(cm)) Serial.print("NaN");
       else Serial.printf("%.1f", cm);
       Serial.print(" near=");
       Serial.println(ns ? 1 : 0);
+    } else if (cmd.equalsIgnoreCase("W?")) {
+      // แสดงสถานะขาปลุกตอนนี้ (ต้องมีฟังก์ชัน dbgPrintWakePin เพิ่มไว้แล้ว)
+      dbgPrintWakePin("now");
+    } else if (cmd.equalsIgnoreCase("WTEST")) {
+      // กันหลับชั่วคราว 10s แล้วพิมพ์สถานะขาปลุกทุก ~300ms
+      uint32_t t0 = millis();
+      while (millis() - t0 < 10000) {
+        dbgPrintWakePin("probe");
+        delay(300);
+      }
     }
   }
 }
@@ -777,10 +930,12 @@ static const float MAX_VALID_CM = 300.0f;
 unsigned long us_read_echo_once_robust() {
   // กันกรณี ECHO ยังค้าง HIGH จากรอบก่อน
   // รอให้ LOW ก่อน (แต่จำกัดเวลา)
-  (void) pulseInLong(ECHO_PIN, LOW, 3000UL);
+  (void)pulseInLong(ECHO_PIN, LOW, 3000UL);
 
-  digitalWrite(TRIG_PIN, LOW);  delayMicroseconds(3);
-  digitalWrite(TRIG_PIN, HIGH); delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(3);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
   digitalWrite(TRIG_PIN, LOW);
 
   // วัดช่วง HIGH ของ ECHO
@@ -789,14 +944,30 @@ unsigned long us_read_echo_once_robust() {
 
 // วัดหลายครั้ง → มัธยฐาน → คัดกรองช่วง valid
 float measureDistanceCmRobust() {
-  unsigned long a = us_read_echo_once_robust(); delayMicroseconds(150);
-  unsigned long b = us_read_echo_once_robust(); delayMicroseconds(150);
+  unsigned long a = us_read_echo_once_robust();
+  delayMicroseconds(150);
+  unsigned long b = us_read_echo_once_robust();
+  delayMicroseconds(150);
   unsigned long c = us_read_echo_once_robust();
 
   // sort a<=b<=c
-  if (a>b){ auto t=a;a=b;b=t; } if (b>c){ auto t=b;b=c;c=t; } if (a>b){ auto t=a;a=b;b=t; }
+  if (a > b) {
+    auto t = a;
+    a = b;
+    b = t;
+  }
+  if (b > c) {
+    auto t = b;
+    b = c;
+    c = t;
+  }
+  if (a > b) {
+    auto t = a;
+    a = b;
+    b = t;
+  }
   unsigned long us = b;
-  if (us == 0) return NAN;        // timeout → ไม่เชื่อถือ
+  if (us == 0) return NAN;  // timeout → ไม่เชื่อถือ
 
   float cm = (float)us / 58.0f;
   if (cm < MIN_VALID_CM || cm > MAX_VALID_CM) return NAN;  // กรองค่าหลอก

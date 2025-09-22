@@ -29,7 +29,7 @@
 #include <avr/interrupt.h>
 
 // --- Sleep/Idle policy ---
-#define IDLE_SLEEP_MS 60000UL  // ว่าง 60s -> หลับลึก
+#define IDLE_SLEEP_MS 60000000UL  // ว่าง 60s -> หลับลึก
 unsigned long lastActivityMs = 0;
 
 // ===== SD / Audio =====
@@ -70,7 +70,7 @@ int currentChoice = -1;          // -1=ยังไม่เลือก, 0=ง�
 unsigned long confirmUntil = 0;  // แสดงหน้า Confirm แบบ non-blocking
 
 // ===== Timers =====
-const unsigned long interval = 5000;  // 5 วินาที กันสั่งเล่นถี่เกิน
+const unsigned long interval = 100;  // 5 วินาที กันสั่งเล่นถี่เกิน
 unsigned long lastPlayTime = 0;
 unsigned long lastPlayTime1 = 0;
 unsigned long lastPlayTime2 = 0;
@@ -451,7 +451,7 @@ private:
 
   void start(const Step* s, uint8_t n) {
     // ถ้ากำลังเล่น WAV อยู่ ให้ข้ามไม่เปิดบัซเซอร์ (กันชนกับ TMRpcm)
-    if (tmrpcm.isPlaying()) return;
+    //if (tmrpcm.isPlaying()) return;
     seq = s;
     count = n;
     idx = 0;
@@ -551,6 +551,7 @@ void vote(char k) {
     currentChoice = k - '0';
     drawVoteUI_base();
     buzzer.playClick();
+    Serial.write(currentChoice);
     //sendPreview();
   } else if (k == '*') {
     if (currentChoice >= 0) buzzer.playBack();
@@ -565,7 +566,8 @@ void vote(char k) {
       confirmUntil = millis() + 10000UL;
       currentChoice = -1;
       canVote = false;
-
+      tmrpcm.stopPlayback(); 
+      //playIfIdle("fv.wav");
 
     } else {
       buzzer.playError();
@@ -595,7 +597,7 @@ void afterWake() {
 
 // ============ SETUP / LOOP ============
 void setup() {
-  wdt_sanity_boot();
+  wdt_sanity_boot();pinMode(10, OUTPUT); 
   Serial.begin(9600);
 
   tmrpcm.speakerPin = 9;  // UNO/Nano ใช้ D9
@@ -609,13 +611,14 @@ void setup() {
   lcd.backlight();
 
   // เล่นไฟเปิดเครื่อง (ถ้าหาไฟล์ไม่เจอจะเงียบ)
-  tmrpcm.play((char*)"sawadh.wav");
+  tmrpcm.play((char*)"sa.wav");
   if (!tmrpcm.isPlaying()) {
-    tmrpcm.play((char*)"sawadh.wav");
+    tmrpcm.play((char*)"sa.wav");
   }
+  
 
   buzzer.init();
-  buzzer.playBoot();  // jingle เปิดเครื่อง
+  //buzzer.playBoot();  // jingle เปิดเครื่อง
 
   // เริ่มที่หน้า WAIT (Ready)
   canVote = false;
@@ -652,11 +655,12 @@ void loop() {
   }
 
   // อ่าน Serial: โปรโตคอลอักขระเดี่ยวจาก ESP32
-  int msg = -1;
-  while (Serial.available() > 0) {
+  int msg=-1 ;
+
+  while (Serial.available()) {
     noteActivity();
     msg = Serial.read();
-    Serial.print(F("ESP32: "));
+    Serial.print(F("ESP "));
     Serial.println((char)msg);
   }
 
@@ -667,7 +671,7 @@ void loop() {
   }
 
   // ใช้เฉพาะเมื่อมีอักขระจริง
-  if (msg != -1) {
+ if (msg != -1) {
     // หลีกเลี่ยงการ clear ระหว่างเล่นเสียง
     if (!tmrpcm.isPlaying()) {
       lcd.setCursor(0, 0);
@@ -675,33 +679,59 @@ void loop() {
       lcd.print(' ');
     }
 
-    if (msg == 'S') { playIfIdle("re.wav"); }  // กำลังอ่านบัตร
+    if (msg == 'S') { 
+      //playIfIdle("re.wav"); 
+       tmrpcm.play("re.wav");
+      }  // กำลังอ่านบัตร
     else if (msg == 'W') {                     // ยังไม่ลงทะเบียน/เพิกถอนสิทธิ์
       canVote = false;
       page = PAGE_WAIT;
       drawReadyUI_base();
-      playIfIdle("n.wav");
-    } else if (msg == 'O') {  // ยืนยันตัวตนสำเร็จ -> เปิดสิทธิ์
+      //playIfIdle("n.wav");
+      tmrpcm.play("n.wav");
+    }     
+    else if (msg == 'G') {                
+      //canVote = false;
+      //page = PAGE_WAIT;
+      //drawReadyUI_base();
+      //playIfIdle("f.wav");
+      tmrpcm.play("f.wav");
+    }
+    else if (msg == 'J') {                    
+      
+      //page = PAGE_WAIT;
+      //drawReadyUI_base();
+      //playIfIdle("q.wav");
+      tmrpcm.play("q.wav");
+    }  
+    else if (msg == 'P') {                  
+    
+     // page = PAGE_WAIT;
+      //drawReadyUI_base();
+      //playIfIdle("p.wav");
+      tmrpcm.play("p.wav");
+    }
+    else if (msg == 'L') {                     
+     
+      //page = PAGE_WAIT;
+      //drawReadyUI_base();
+      //playIfIdle("l.wav");
+      tmrpcm.play("l.wav");
+    } 
+    else if (msg == 'O') {  // ยืนยันตัวตนสำเร็จ -> เปิดสิทธิ์
       //canVote = true;
       //page = PAGE_VOTE;
       //drawVoteUI_base();
-      playIfIdle("c.wav");
+      //playIfIdle("c.wav");
+      tmrpcm.play("c.wav");
       //buzzer.playConfirm();
     } else if (msg == 'V') {  // พร้อมโหวต (ใช้ร่วมได้)
       canVote = true;
       page = PAGE_VOTE;
       drawVoteUI_base();
-      playIfIdle("ch.wav");
-    } /*else if (msg == 'R') {  // เข้าหน้าตั้งรหัส
-      fregis = true;
-      page = PAGE_REG_PASS;
-      lcd.noBlink();
-      lcd.clear();
-      lcd.setCursor(2, 0);
-      lcd.print(F("Enter pass:"));
-      lcd.setCursor(4, 1);
-      printMaskedAt(4, 1, enteredPass);
-    }*/
+      //playIfIdle("ch.wav");
+      tmrpcm.play("ch.wav");
+    }
     else if (msg == 'R') {
       // Toggle registration mode every time we receive 'R' from ESP32
       fregis = !fregis;
@@ -727,7 +757,10 @@ void loop() {
         drawReadyUI_base();  // กลับไปหน้า Ready to vote
       }
     }
-  }
+
+   
+ 
+  }    /**/
 
   // อนิเมชัน / หน้าคอนเฟิร์ม non-blocking
   if (page == PAGE_WAIT) animateReady();
@@ -785,7 +818,8 @@ void loop() {
   }
 
   // อัปเดตบัซเซอร์ทุกเฟรม (state machine)
-  buzzer.update();
+  buzzer.update(); 
+
 
   // ---------- Auto-sleep เมื่อว่าง ----------
   // อย่าหลับตอนกำลังเล่นเสียง

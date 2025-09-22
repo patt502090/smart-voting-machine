@@ -45,6 +45,16 @@ struct Rec {
 // ===== Added: Deep-sleep support =====
 #include "esp_sleep.h"
 
+// ===== [ADD TFT] Display & SD =====
+#include <TFT_eSPI.h>
+#include <TJpg_Decoder.h>
+#include <SD.h>
+
+#define SD_CS    2     // CS ของ SD (คุณทดสอบไว้ที่ 13 ใช้ต่อได้)
+#define TFT_CS   15      // CS ของจอ (ตาม User_Setup.h ที่ตั้งไว้)
+
+TFT_eSPI tft;            // ใช้พิน SPI/CS/DC/RST จาก User_Setup.h
+
 // ==== [ADD] Wake-pin debug helpers (no change to existing code) ====
 volatile uint32_t WAKE_edges = 0;
 volatile uint32_t WAKE_lastMs = 0;
@@ -199,6 +209,14 @@ Adafruit_Fingerprint finger = Adafruit_Fingerprint(&FingerSerial);
 #define SS_PIN 5
 #define RST_PIN 27
 MFRC522 rfid(SS_PIN, RST_PIN);
+
+// ===== [ADD TFT] Bus guard: กัน SPI ชนกันระหว่าง TFT/SD/RFID =====
+inline void spi_idle_all() {
+  pinMode(TFT_CS, OUTPUT); digitalWrite(TFT_CS, HIGH); // จอ
+  pinMode(SS_PIN,  OUTPUT); digitalWrite(SS_PIN,  HIGH); // RFID
+  pinMode(SD_CS,   OUTPUT); digitalWrite(SD_CS,   HIGH); // SD
+}
+
 
 // ---------- I/O ----------
 const int EEPROM_SIZE = 512;
@@ -795,12 +813,90 @@ void ultrasonicTickForSleep() {
 #include "driver/rtc_io.h"
 #include "esp_system.h"
 
+// ===== [ADD TFT] TJpg_Decoder callback วาดบล็อกลงจอ =====
+static uint16_t *lineBuf = nullptr;
+
+// ★★ แทนที่ฟังก์ชันเดิมอันนี้ทั้งก้อน ★★
+bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap) {
+  if (y >= tft.height() || x >= tft.width()) return 0;
+
+  if (!lineBuf) lineBuf = (uint16_t*)heap_caps_malloc(w * sizeof(uint16_t), MALLOC_CAP_8BIT);
+  if (!lineBuf) return 0;
+
+  for (uint16_t row = 0; row < h; row++) {
+    memcpy(lineBuf, bitmap + row * w, w * sizeof(uint16_t));
+    tft.pushImage(x, y + row, w, 1, lineBuf);
+  }
+  return 1;
+}
+
+// ===== [ADD TFT] วาด JPG ให้ “พอดีจอและอยู่กึ่งกลาง” =====
+bool drawJpgCenteredFromSD(const String& path) {
+  uint16_t jpgW, jpgH;
+  if (!TJpgDec.getJpgSize(&jpgW, &jpgH, path.c_str())) return false;
+
+  uint16_t scrW = tft.width(), scrH = tft.height();
+  float sx = (float)scrW / jpgW;
+  float sy = (float)scrH / jpgH;
+  float s  = min(sx, sy);
+
+  // TJpgDec สเกลได้แค่ 1/2/4/8 (downscale เท่านั้น)
+  uint8_t scale = 1;
+  if (s <= 0.125f) scale = 8;
+  else if (s <= 0.25f) scale = 4;
+  else if (s <= 0.5f) scale = 2;
+  else scale = 1;
+
+  TJpgDec.setJpgScale(scale);
+
+  uint16_t dw = jpgW / scale;
+  uint16_t dh = jpgH / scale;
+  int16_t  ox = (scrW > dw) ? (scrW - dw) / 2 : 0;
+  int16_t  oy = (scrH > dh) ? (scrH - dh) / 2 : 0;
+
+  // ก่อนแตะ SD ต้องปล่อย TFT CS สูง และ RFID CS สูง กันบัสชน
+  spi_idle_all();
+  digitalWrite(SD_CS, LOW);            // เลือก SD
+  tft.endWrite();                      // เผื่อ TFT_eSPI ค้าง bus
+
+  tft.fillScreen(TFT_BLACK);
+  bool ok = TJpgDec.drawJpg(ox, oy, path.c_str());
+
+  digitalWrite(SD_CS, HIGH);           // ปล่อย SD
+  return ok;
+}
+
+// ===== [ADD TFT] ฟังก์ชันแสดงรูปตามเบอร์ผู้สมัคร =====
+void showCandidateJpg(uint8_t n) {
+  // รองรับทั้ง .jpg และ .JPG
+  String path = "/" + String(n) + ".jpg";
+  if (!SD.exists(path)) {
+    String alt = "/" + String(n) + ".JPG";
+    if (SD.exists(alt)) path = alt;
+  }
+  bool ok = drawJpgCenteredFromSD(path);
+  if (!ok) {
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+    tft.drawString("Missing or bad:", 8, 96, 2);
+    tft.drawString(path, 8, 114, 2);
+  }
+}
+
+// ===== [ADD TFT] หน้ารอ/เคลียร์ =====
+void showIdleScreen(const char* msg = "Ready") {
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.drawString(msg, 10, 10, 2);
+}
+
 void setup() {
   rtc_gpio_hold_dis((gpio_num_t)WAKE_PIN);
   pinMode(WAKE_PIN, INPUT_PULLDOWN);
   attachInterrupt(digitalPinToInterrupt(WAKE_PIN), WAKE_isr, CHANGE);
-  Serial.begin(115200);    // เหลือแค่อันเดียว พอ
-  Serial.setTimeout(200);  // กันค้างเวลา readStringUntil
+
+  Serial.begin(115200);
+  Serial.setTimeout(200);
   mySerial.setTimeout(200);
 
   Wire.begin();
@@ -808,9 +904,39 @@ void setup() {
   // UART2 สำหรับคุยบอร์ดลูกโซ่
   mySerial.begin(9600, SERIAL_8N1, 16, 17);  // RX=16, TX=17
 
+  // ===== [ADD] เริ่ม SPI ก่อนแตะ SD/TFT/RFID =====
+  SPI.begin();                              // [MOVE UP] ต้องมาก่อน SD.begin()
+
+  // ===== [ADD] ดันทุก CS เป็น HIGH กัน SPI ชนตั้งแต่บูต =====
+  spi_idle_all();                           // ตั้ง TFT_CS/SS_PIN/SD_CS เป็น OUTPUT+HIGH
+
+  // ===== [ADD TFT] Init TFT =====
+  tft.init();
+  tft.setRotation(1);                       // 1 = แนวนอน 320x240
+  showIdleScreen("Mounting SD...");
+
+  // ===== [ADD TFT] ตั้ง callback JPEG =====
+  TJpgDec.setCallback(tft_output);
+
+  // ===== [ADD] Mount SD (แชร์ SPI) =====
+  spi_idle_all();                           // ปล่อยทุก CS ให้ว่างก่อนแตะ SD
+  digitalWrite(SD_CS, HIGH);                // ย้ำว่าปล่อย SD
+  if (!SD.begin(SD_CS)) {                   // ใช้ VSPI เดิม
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.drawString("SD mount failed", 10, 10, 2);
+    Serial.println("SD mount failed");
+  } else {
+    showIdleScreen("SD OK");
+  }
+
+  // ===== [ADD] Init RFID หลัง SD เพื่อกันชนบัส =====
+  spi_idle_all();                           // เคลียร์บัสก่อนเข้า RC522
+  rfid.PCD_Init();
+
   // Ultrasonic
   pinMode(TRIG_PIN, OUTPUT);
-  pinMode(ECHO_PIN, INPUT);  // GPIO34 เป็น input-only อยู่แล้ว
+  pinMode(ECHO_PIN, INPUT);                 // GPIO34 input-only
   digitalWrite(TRIG_PIN, LOW);
   lastNearSeenMs = millis();
 
@@ -820,9 +946,6 @@ void setup() {
     writeHeader();
     for (int i = 0; i < MAX_RECORDS; i++) clearRec(i);
   }
-
-  SPI.begin();
-  rfid.PCD_Init();
 
   pinMode(buzzerPin, OUTPUT);
   pinMode(switchPin33, INPUT_PULLUP);
@@ -839,32 +962,31 @@ void setup() {
   Serial.printf("MAX_RECORDS=%d, RECORD_SIZE=%d\n", MAX_RECORDS, RECORD_SIZE);
 
   printBootAndWakeInfo();
-  pinMode(WAKE_PIN, INPUT_PULLDOWN);  // กันลอยตอนบูต
+  pinMode(WAKE_PIN, INPUT_PULLDOWN);        // กันลอยตอนบูต
 
-  // ==== [ADD] attach edge logger & dump initial levels
+  // ==== attach edge logger & dump initial levels (คงเดิม) ====
   attachInterrupt(digitalPinToInterrupt(WAKE_PIN), WAKE_isr, CHANGE);
   dbgPrintWakePin("boot");
 
   lastUltraLogMs = millis();
 }
-
 void loop() {
-  // int switchReg = digitalRead(switchPin33);
-  // int switchDel = digitalRead(switchPin32);
+  int switchReg = digitalRead(switchPin33);
+  int switchDel = digitalRead(switchPin32);
 
-  // if (switchReg == LOW) {
-  //   // โหมดลงทะเบียน: บัตร + ลายนิ้วมือ (คู่กัน)
-  //   while (digitalRead(switchPin33) == LOW) delay(10);  // รอปล่อยปุ่ม
-  //   registerCardAndFingerprint();
-  //   delay(300);
-  //   return;
-  // } else if (switchDel == LOW) {
-  //   // โหมดลบเรคคอร์ด (บัตร) + ลบ template ในนิ้ว
-  //   while (digitalRead(switchPin32) == LOW) delay(10);
-  //   deleteCardFlow();
-  //   delay(300);
-  //   return;
-  // }
+  if (switchReg == LOW) {
+    // โหมดลงทะเบียน: บัตร + ลายนิ้วมือ (คู่กัน)
+    while (digitalRead(switchPin33) == LOW) delay(10);  // รอปล่อยปุ่ม
+    registerCardAndFingerprint();
+    delay(300);
+    return;
+  } else if (switchDel == LOW) {
+    // โหมดลบเรคคอร์ด (บัตร) + ลบ template ในนิ้ว
+    while (digitalRead(switchPin32) == LOW) delay(10);
+    deleteCardFlow();
+    delay(300);
+    return;
+  }
 
   // โหมดใช้งานปกติ: แตะบัตร → ต้องยืนยันนิ้วเจ้าของบัตร
   if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
@@ -883,6 +1005,33 @@ void loop() {
       delay(30);
       goDeepSleepNow();  // เข้าหลับทันที (จะไม่กลับจากฟังก์ชันนี้)
     }
+
+    // ===== [ADD] TFT sync from UNO: SEL:<n>, SEL:CLEAR, CF:<n> =====
+    String m = msg;
+    m.trim();
+    if (m.startsWith("SEL:")) {
+      if (m.equalsIgnoreCase("SEL:CLEAR")) {
+        // ล้างกลับหน้า idle
+        showIdleScreen("Ready");
+      } else {
+        int n = m.substring(4).toInt();   // หลัง "SEL:"
+        if (n >= 0 && n <= 9) {
+          showCandidateJpg((uint8_t)n);   // แสดง /n.jpg จาก SD
+        } else {
+          // เลขนอกช่วง → ขึ้นข้อความเตือนเบา ๆ
+          showIdleScreen("Bad SEL");
+        }
+      }
+    } else if (m.startsWith("CF:")) {
+      int n = m.substring(3).toInt();     // หลัง "CF:"
+      if (n >= 0 && n <= 9) {
+        // ยืนยันแล้ว: แสดงรูปเดิมอีกครั้ง (หรือจะทำหน้า Confirm เฉพาะก็ได้)
+        showCandidateJpg((uint8_t)n);
+      } else {
+        showIdleScreen("Bad CF");
+      }
+    }
+    // ===== [END ADD] =====
 
     Serial.println(msg);  // เดิม (ยังพิมพ์ log ต่อไปตามปกติ)
   }
@@ -947,6 +1096,9 @@ unsigned long us_read_echo_once_robust() {
 }
 
 // วัดหลายครั้ง → มัธยฐาน → คัดกรองช่วง valid
+
+// --- prototypes (place near other forward-declares) ---
+unsigned long us_read_echo_once_robust();
 float measureDistanceCmRobust() {
   unsigned long a = us_read_echo_once_robust();
   delayMicroseconds(150);

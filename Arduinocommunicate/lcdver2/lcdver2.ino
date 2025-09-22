@@ -22,6 +22,17 @@
 #include <SD.h>
 #include <avr/wdt.h>
 
+#define ESP_INT_PIN 3   // INT1 (D3) จาก ESP32
+
+#include <avr/power.h>   
+
+#include <avr/sleep.h>
+#include <avr/interrupt.h>
+
+// --- Sleep/Idle policy ---
+#define IDLE_SLEEP_MS 60000UL   // ว่าง 60s -> หลับลึก
+unsigned long lastActivityMs = 0;
+
 // ===== SD / Audio =====
 #define SD_ChipSelectPin 4
 TMRpcm tmrpcm;
@@ -64,6 +75,35 @@ unsigned long lastPlayTime4 = 0;
 unsigned long lastPlayTime5 = 0;
 unsigned long lastPlayTime6 = 0;
 unsigned long lastPlayTime7 = 0;
+
+volatile bool wokeFromEsp = false;
+
+void isrEsp() { wokeFromEsp = true; }
+
+void goSleepPowerDown() {
+  // (ออปชัน) ลดไฟก่อนหลับ
+  // ADCSRA &= ~_BV(ADEN);   // ปิด ADC
+  // power_adc_disable();
+
+  set_sleep_mode(SLEEP_MODE_PWR_DOWN);
+  sleep_enable();
+
+  noInterrupts();
+  EIFR = bit(INTF1);  // เคลียร์ธง INT1 กันเด้งตื่นทันที
+
+  // ปิด Brown-Out Detector ระหว่างหลับ (กินไฟต่ำกว่า)
+#if defined(BODS) && defined(BODSE)
+  MCUCR |= _BV(BODS) | _BV(BODSE);
+  MCUCR = (MCUCR & ~_BV(BODSE)) | _BV(BODS);
+#endif
+  interrupts();
+
+  sleep_cpu();        // ← หลับจริง
+
+  // ====== ตื่นแล้ว ======
+  sleep_disable();
+  // power_adc_enable();  // ถ้าปิดไว้ก็เปิดคืน
+}
 
 // ===== CGRAM icons =====
 byte I_TL[8]  = { B11100, B10000, B10000, B10000, B10000, B10000, B10000, B10000 };
@@ -304,6 +344,7 @@ BuzzerSFX buzzer;
 void onConfirmVote(int choice) {
   Serial.print(F("CF:")); Serial.println(choice);
   buzzer.playFanfare(); // ในตัวมันเช็ค tmrpcm.isPlaying() แล้ว
+  noteActivity();
 }
 
 // ===== Watchdog helpers =====
@@ -351,27 +392,65 @@ void printMaskedAt(uint8_t x, uint8_t y, const String& s) {
   for (uint8_t i = s.length(); i < 4; i++) lcd.print(' ');
 }
 
+void sendPreview() {
+    if (currentChoice < 0) {
+      Serial.println(F("SEL:CLEAR"));        // ยังไม่เลือก/ล้าง
+    } else {
+      Serial.print(F("SEL:"));
+      Serial.println(currentChoice);         // 0..9
+    }
+    noteActivity();
+  }
+
 // ===== Vote handler =====
 void vote(char k) {
-  if (k >= '0' && k <= '9') {
-    currentChoice = k - '0';
-    drawVoteUI_base();
-    buzzer.playClick();  // มี gate ภายใน
-  } else if (k == '*') {
-    if (currentChoice >= 0) buzzer.playBack();
-    currentChoice = -1;
-    drawVoteUI_base();
-  } else if (k == '#') {
-    if (currentChoice >= 0) {
-      page = PAGE_CONFIRM;
-      drawConfirmUI();
-      onConfirmVote(currentChoice);
-      confirmUntil = millis() + 1000UL;
+    if (k >= '0' && k <= '9') {
+      currentChoice = k - '0';
+      drawVoteUI_base();
+      buzzer.playClick();
+      sendPreview();                 // <<<< ส่ง “SEL:<n>”
+    } else if (k == '*') {
+      if (currentChoice >= 0) buzzer.playBack();
       currentChoice = -1;
-    } else {
-      buzzer.playError();
+      drawVoteUI_base();
+      sendPreview();                 // <<<< ส่ง “SEL:CLEAR”
+    } else if (k == '#') {
+      if (currentChoice >= 0) {
+        page = PAGE_CONFIRM;
+        drawConfirmUI();
+        onConfirmVote(currentChoice);  // <<<< ของเดิม: ส่ง CF:<n>
+        confirmUntil = millis() + 1000UL;
+        currentChoice = -1;
+        // (ไม่ต้องส่ง SEL ที่นี่—เดี๋ยวกลับหน้าโหวตค่อยส่งเองถ้าต้องการ)
+      } else {
+        buzzer.playError();
+      }
     }
   }
+
+inline void noteActivity() { lastActivityMs = millis(); }
+
+void prepareBeforeSleep() {
+  // ปิดไฟจอ ลดไฟ (ตัวคอนโทรลเลอร์ยังอยู่ ไม่ต้อง re-init)
+  lcd.noBacklight();
+  // ถ้ากำลังเล่นเสียงอยู่ ให้หยุดก่อน (กัน popping)
+  if (tmrpcm.isPlaying()) tmrpcm.stopPlayback();
+  delay(5);
+}
+
+void afterWake() {
+  // ตื่นแล้ว เปิดจอ + วาด UI หลักใหม่ (กันจอค้าง)
+  lcd.backlight();
+  page = PAGE_VOTE;
+  drawVoteUI_base();
+
+  // ให้เวลา ESP ส่ง “คำทัก/ซิงก์” (เช่น WAKE/SEL ล่าสุด)
+  delay(20);
+  while (Serial.available()) {
+    String s = Serial.readStringUntil('\n');
+    // ถ้าต้องการ แปล s ที่นี่ได้ (ตอนนี้ขอผ่าน)
+  }
+  noteActivity();
 }
 
 // ============ SETUP / LOOP ============
@@ -405,12 +484,19 @@ void setup() {
   kpd.begin(makeKeymap(keys));
   kpd.setDebounceTime(25);
   kpd.setHoldTime(500);
+
+  // === สายปลุกจาก ESP32 ===
+  pinMode(ESP_INT_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(ESP_INT_PIN), isrEsp, FALLING);
+
+  noteActivity();  // เริ่มนับเวลาตั้งแต่บูต
 }
 
 void loop() {
   // อ่านคีย์จาก keypad
   char k = kpd.getKey();
   if (k) {
+    noteActivity();
     if (page == PAGE_VOTE || page == PAGE_CONFIRM) {
       vote(k);
     } else if (page == PAGE_REG_PASS) {
@@ -421,9 +507,16 @@ void loop() {
   // อ่าน Serial: โปรโตคอลอักขระเดี่ยวจาก ESP32
   int msg = -1;
   while (Serial.available() > 0) {
+    noteActivity();
     msg = Serial.read();
     Serial.print(F("ESP32: "));
     Serial.println((char)msg);
+  }
+
+  // [ADD] ถ้าโดนพัลส์ปลุกจาก ESP ขณะ “ตื่นอยู่” ให้รีเฟรช activity เฉย ๆ
+  if (wokeFromEsp) {            // (แฟล็กมาจาก ISR ที่ D3)
+    wokeFromEsp = false;
+    noteActivity();
   }
 
   // ใช้เฉพาะเมื่อมีอักขระจริง
@@ -487,4 +580,15 @@ void loop() {
 
   // อัปเดตบัซเซอร์ทุกเฟรม (state machine)
   buzzer.update();
+
+  // ---------- [ADD] Auto-sleep เมื่อว่าง ----------
+  // อย่าหลับตอนกำลังเล่นเสียง
+  if (!tmrpcm.isPlaying()) {
+    if ((millis() - lastActivityMs) >= IDLE_SLEEP_MS) {
+      prepareBeforeSleep();     // ปิด backlight/หยุดเสียง ฯลฯ
+      wokeFromEsp = false;      // เคลียร์แฟล็กก่อนหลับ
+      goSleepPowerDown();       // หลับลึก (ตื่นด้วย INT1 จาก ESP32)
+      afterWake();              // ตื่นแล้วเปิดจอ + วาด UI ใหม่
+    }
+  }
 }

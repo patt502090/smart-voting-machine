@@ -4,7 +4,7 @@
 #include <TFT_eSPI.h>
 #include <JPEGDecoder.h>
 
-#define SD_CS 5
+#define SD_CS 13
 #define TFT_CS 15
 
 TFT_eSPI tft;

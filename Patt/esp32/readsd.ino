@@ -3,7 +3,7 @@
 #include <SD.h>
 #include <TFT_eSPI.h>
 
-#define SD_CS 5          // CS ของ SD การ์ด
+#define SD_CS 13        // CS ของ SD การ์ด
 #define TFT_CS 15        // ถ้ามีขา CS ของจอ ให้ตั้งไว้เพื่อดัน HIGH กันบัสชน
 
 TFT_eSPI tft;

@@ -405,7 +405,7 @@ def main():
                 near_cnt += 1; far_cnt = 0
             else:
                 near_cnt = 0; far_cnt += 1
-                else:
+        else:
             first_seen_ms = 0
             dwell_elapsed = 0
             near_cnt = 0; far_cnt += 1

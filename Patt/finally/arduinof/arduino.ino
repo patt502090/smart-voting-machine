@@ -21,16 +21,22 @@
 #include <SPI.h>
 #include <SD.h>
 #include <avr/wdt.h>
+#include <TM1638plus.h>
 
-#define ESP_INT_PIN 3   // INT1 (D3) จาก ESP32
+#define STB A0
+#define CLK A1
+#define DIO A2
 
-#include <avr/power.h>   
+TM1638plus tm(STB, CLK, DIO, false);  // ต้องใส่ bool argument
 
+#define ESP_INT_PIN 3  // INT1 (D3) จาก ESP32
+
+#include <avr/power.h>
 #include <avr/sleep.h>
 #include <avr/interrupt.h>
 
 // --- Sleep/Idle policy ---
-#define IDLE_SLEEP_MS 60000UL   // ว่าง 60s -> หลับลึก
+#define IDLE_SLEEP_MS 60000UL  // ว่าง 60s -> หลับลึก
 unsigned long lastActivityMs = 0;
 
 // ===== SD / Audio =====
@@ -60,14 +66,19 @@ byte colPins[COLS] = { 4, 5, 6, 7 };  // PCF8574 P4..P7 = COL0..COL3
 Keypad_I2C kpd(makeKeymap(keys), rowPins, colPins, ROWS, COLS, KEYPAD_ADDR);
 
 // ===== State/UI =====
-enum Page { PAGE_VOTE, PAGE_CONFIRM, PAGE_REG_PASS };
-Page page = PAGE_VOTE;
+enum Page { PAGE_WAIT,
+            PAGE_VOTE,
+            PAGE_CONFIRM,
+            PAGE_REG_PASS };
+Page page = PAGE_WAIT;
+bool canVote = false;  // จะเป็น true ก็ต่อเมื่อได้รับ 'O' จาก ESP32
+
 int currentChoice = -1;          // -1=ยังไม่เลือก, 0=งด, 1..9=ผู้สมัคร
 unsigned long confirmUntil = 0;  // แสดงหน้า Confirm แบบ non-blocking
 
 // ===== Timers =====
-const unsigned long interval = 5000;  // 5 วินาที กันสั่งเล่นถี่เกิน
-unsigned long lastPlayTime  = 0;
+const unsigned long interval = 100;  // 5 วินาที กันสั่งเล่นถี่เกิน
+unsigned long lastPlayTime = 0;
 unsigned long lastPlayTime1 = 0;
 unsigned long lastPlayTime2 = 0;
 unsigned long lastPlayTime3 = 0;
@@ -77,42 +88,36 @@ unsigned long lastPlayTime6 = 0;
 unsigned long lastPlayTime7 = 0;
 
 volatile bool wokeFromEsp = false;
-
-void isrEsp() { wokeFromEsp = true; }
+void isrEsp() {
+  wokeFromEsp = true;
+}
 
 void goSleepPowerDown() {
-  // (ออปชัน) ลดไฟก่อนหลับ
-  // ADCSRA &= ~_BV(ADEN);   // ปิด ADC
-  // power_adc_disable();
-
   set_sleep_mode(SLEEP_MODE_PWR_DOWN);
   sleep_enable();
 
   noInterrupts();
-  EIFR = bit(INTF1);  // เคลียร์ธง INT1 กันเด้งตื่นทันที
-
-  // ปิด Brown-Out Detector ระหว่างหลับ (กินไฟต่ำกว่า)
+  EIFR = bit(INTF1);  // เคลียร์ธง INT1
 #if defined(BODS) && defined(BODSE)
   MCUCR |= _BV(BODS) | _BV(BODSE);
   MCUCR = (MCUCR & ~_BV(BODSE)) | _BV(BODS);
 #endif
   interrupts();
 
-  sleep_cpu();        // ← หลับจริง
+  sleep_cpu();  // หลับจริง
 
   // ====== ตื่นแล้ว ======
   sleep_disable();
-  // power_adc_enable();  // ถ้าปิดไว้ก็เปิดคืน
 }
 
 // ===== CGRAM icons =====
-byte I_TL[8]  = { B11100, B10000, B10000, B10000, B10000, B10000, B10000, B10000 };
-byte I_TR[8]  = { B00111, B00001, B00001, B00001, B00001, B00001, B00001, B00001 };
-byte I_BL[8]  = { B10000, B10000, B10000, B10000, B10000, B10000, B10000, B11100 };
-byte I_BR[8]  = { B00001, B00001, B00001, B00001, B00001, B00001, B00001, B00111 };
-byte I_H[8]   = { B11111, B00000, B00000, B00000, B00000, B00000, B00000, B11111 };
-byte I_V[8]   = { B10001, B10001, B10001, B10001, B10001, B10001, B10001, B10001 };
-byte I_AR[8]  = { B00100, B00110, B00111, B11111, B00111, B00110, B00100, B00000 };   // ▶
+byte I_TL[8] = { B11100, B10000, B10000, B10000, B10000, B10000, B10000, B10000 };
+byte I_TR[8] = { B00111, B00001, B00001, B00001, B00001, B00001, B00001, B00001 };
+byte I_BL[8] = { B10000, B10000, B10000, B10000, B10000, B10000, B10000, B11100 };
+byte I_BR[8] = { B00001, B00001, B00001, B00001, B00001, B00001, B00001, B00111 };
+byte I_H[8] = { B11111, B00000, B00000, B00000, B00000, B00000, B00000, B11111 };
+byte I_V[8] = { B10001, B10001, B10001, B10001, B10001, B10001, B10001, B10001 };
+byte I_AR[8] = { B00100, B00110, B00111, B11111, B00111, B00110, B00100, B00000 };   // ▶
 byte I_CHK[8] = { B00000, B00001, B00011, B10110, B11100, B01000, B00000, B00000 };  // ✓
 
 void loadIcons() {
@@ -129,39 +134,52 @@ void loadIcons() {
 void drawFrame() {
   lcd.clear();
   // มุม
-  lcd.setCursor(0, 0);  lcd.write((byte)0);
-  lcd.setCursor(19, 0); lcd.write((byte)1);
-  lcd.setCursor(0, 3);  lcd.write((byte)2);
-  lcd.setCursor(19, 3); lcd.write((byte)3);
+  lcd.setCursor(0, 0);
+  lcd.write((byte)0);
+  lcd.setCursor(19, 0);
+  lcd.write((byte)1);
+  lcd.setCursor(0, 3);
+  lcd.write((byte)2);
+  lcd.setCursor(19, 3);
+  lcd.write((byte)3);
   // ขอบบน/ล่าง
   for (int x = 1; x < 19; x++) {
-    lcd.setCursor(x, 0); lcd.write((byte)4);
-    lcd.setCursor(x, 3); lcd.write((byte)4);
+    lcd.setCursor(x, 0);
+    lcd.write((byte)4);
+    lcd.setCursor(x, 3);
+    lcd.write((byte)4);
   }
   // ขอบซ้าย/ขวา
   for (int y = 1; y < 3; y++) {
-    lcd.setCursor(0, y);  lcd.write((byte)5);
-    lcd.setCursor(19, y); lcd.write((byte)5);
+    lcd.setCursor(0, y);
+    lcd.write((byte)5);
+    lcd.setCursor(19, y);
+    lcd.write((byte)5);
   }
 }
 
 // ===== UI positions =====
 const uint8_t POS_SPINNER_X = 18, POS_SPINNER_Y = 0;  // มุมขวาบน
-const uint8_t POS_ARROW_X   = 1,  POS_ARROW_Y   = 2;  // ▶
-const uint8_t POS_HINT_X    = 2,  POS_HINT_Y    = 2;  // "#=Confirm  *=Clear"
-const uint8_t POS_TITLE_X   = 2,  POS_TITLE_Y   = 1;  // "Select:"
-const uint8_t BOX_LEFT_X    = 10;                     // กล่องเลข [n]
-const uint8_t BOX_TOP_Y     = 0;
+const uint8_t POS_ARROW_X = 1, POS_ARROW_Y = 2;       // ▶
+const uint8_t POS_HINT_X = 2, POS_HINT_Y = 2;         // "#=Confirm  *=Clear"
+const uint8_t POS_TITLE_X = 2, POS_TITLE_Y = 1;       // "Select:"
+const uint8_t BOX_LEFT_X = 10;                        // กล่องเลข [n]
+const uint8_t BOX_TOP_Y = 0;
 
 // ===== Anim (non-blocking) =====
-const char  spinFrames[4]   = { '|', '/', '-', '\\' };
-uint8_t     spinIdx         = 0;
-unsigned long lastSpinMs    = 0;
+const char spinFrames[4] = { '|', '/', '-', '\\' };
+uint8_t spinIdx = 0;
+unsigned long lastSpinMs = 0;
 const unsigned long SPIN_MS = 160;
 
-bool boxOn                  = true;
-unsigned long lastBlinkMs   = 0;
-const unsigned long BLINK_MS= 380;
+bool boxOn = true;
+unsigned long lastBlinkMs = 0;
+const unsigned long BLINK_MS = 380;
+
+// ===== Ready (wait auth) UI =====
+uint8_t readyDots = 0;
+unsigned long lastReadyMs = 0;
+const unsigned long READY_MS = 350;
 
 void drawChoiceBox(bool show) {
   // เคลียร์พื้นที่ 10..14 x 0..2 ก่อน
@@ -172,19 +190,31 @@ void drawChoiceBox(bool show) {
   if (currentChoice <= 0) {  // 0=งด → "00"
     lcd.setCursor(12, 1);
     if (show) lcd.print(F("00"));
-    else      lcd.print(F("  "));
+    else lcd.print(F("  "));
     return;
   }
   if (show) {
     // วาดกรอบ
-    lcd.setCursor(10, 0); lcd.write((byte)0);
-    for (int x = 11; x <= 13; x++) { lcd.setCursor(x, 0); lcd.write((byte)4); }
-    lcd.setCursor(14, 0); lcd.write((byte)1);
-    lcd.setCursor(10, 1); lcd.write((byte)5);
-    lcd.setCursor(14, 1); lcd.write((byte)5);
-    lcd.setCursor(10, 2); lcd.write((byte)2);
-    for (int x = 11; x <= 13; x++) { lcd.setCursor(x, 2); lcd.write((byte)4); }
-    lcd.setCursor(14, 2); lcd.write((byte)3);
+    lcd.setCursor(10, 0);
+    lcd.write((byte)0);
+    for (int x = 11; x <= 13; x++) {
+      lcd.setCursor(x, 0);
+      lcd.write((byte)4);
+    }
+    lcd.setCursor(14, 0);
+    lcd.write((byte)1);
+    lcd.setCursor(10, 1);
+    lcd.write((byte)5);
+    lcd.setCursor(14, 1);
+    lcd.write((byte)5);
+    lcd.setCursor(10, 2);
+    lcd.write((byte)2);
+    for (int x = 11; x <= 13; x++) {
+      lcd.setCursor(x, 2);
+      lcd.write((byte)4);
+    }
+    lcd.setCursor(14, 2);
+    lcd.write((byte)3);
     // ตัวเลขกลางกล่อง
     lcd.setCursor(12, 1);
     lcd.print(currentChoice);
@@ -212,17 +242,22 @@ void drawVoteUI_base() {
 
   // ข้อความสถานะ
   if (currentChoice < 0) {
-    lcd.setCursor(2, 0); lcd.print(F("Choose 1..9     "));
+    lcd.setCursor(2, 0);
+    lcd.print(F("Choose 1..9     "));
   } else if (currentChoice == 0) {
-    lcd.setCursor(2, 0); lcd.print(F("Choice: Abstain "));
+    lcd.setCursor(2, 0);
+    lcd.print(F("Choice: Abstain "));
   } else {
-    lcd.setCursor(2, 0); lcd.print(F("Choice:         "));
+    lcd.setCursor(2, 0);
+    lcd.print(F("Choice:         "));
   }
   drawChoiceBox(currentChoice >= 0);
 
   // รีเซ็ตอนิเมชัน
-  spinIdx = 0; lastSpinMs = millis();
-  boxOn   = true; lastBlinkMs = millis();
+  spinIdx = 0;
+  lastSpinMs = millis();
+  boxOn = true;
+  lastBlinkMs = millis();
   lcd.setCursor(POS_SPINNER_X, POS_SPINNER_Y);
   lcd.print(spinFrames[spinIdx]);
 }
@@ -244,6 +279,60 @@ void animateDuringSelect() {
   }
 }
 
+// ---------- READY UI ----------
+void drawReadyUI_base() {
+  loadIcons();
+  drawFrame();
+  lcd.noBlink();
+
+  // สปินเนอร์มุมขวาบน
+  spinIdx = 0;
+  lastSpinMs = millis();
+  lcd.setCursor(POS_SPINNER_X, POS_SPINNER_Y);
+  lcd.print(spinFrames[spinIdx]);
+
+  // ข้อความหลัก
+  //lcd.clear();
+  lcd.setCursor(4, 1);
+  lcd.print(F("Ready to vote"));
+  // ข้อความย่อย
+  lcd.setCursor(2, 2);
+  lcd.print(F("Waiting for ESP32 (O)"));
+
+  // ล้างกล่องตัวเลขที่อาจค้าง
+  for (uint8_t y = 0; y <= 2; y++) {
+    lcd.setCursor(BOX_LEFT_X, BOX_TOP_Y + y);
+    lcd.print(F("     "));
+  }
+
+  readyDots = 0;
+  lastReadyMs = millis();
+}
+
+void animateReady() {
+  unsigned long now = millis();
+  // spinner
+  if (now - lastSpinMs >= SPIN_MS) {
+    lastSpinMs = now;
+    spinIdx = (spinIdx + 1) & 0x03;
+    lcd.setCursor(POS_SPINNER_X, POS_SPINNER_Y);
+    lcd.print(spinFrames[spinIdx]);
+  }
+  // จุด ... ต่อท้าย "Ready to vote"
+  if (now - lastReadyMs >= READY_MS) {
+    lastReadyMs = now;
+    readyDots = (readyDots + 1) % 4;  // 0..3
+    // ลบปลายบรรทัดก่อน
+    lcd.setCursor(17, 1);
+    lcd.print(F("    "));
+    // เขียนจุด
+    lcd.setCursor(17, 1);
+    if (readyDots == 1) lcd.print(F("."));
+    else if (readyDots == 2) lcd.print(F(".."));
+    else if (readyDots == 3) lcd.print(F("..."));
+  }
+}
+
 void drawConfirmUI() {
   lcd.noBlink();
   loadIcons();
@@ -251,13 +340,19 @@ void drawConfirmUI() {
   lcd.setCursor(2, 1);
   lcd.print(F("Confirmed:"));
   if (currentChoice == 0) {
-    lcd.setCursor(13, 1); lcd.print(F("Abstain"));
+    lcd.setCursor(13, 1);
+    lcd.print(F("Abstain"));
   } else {
-    lcd.setCursor(13, 1); lcd.print(F("No.")); lcd.print(currentChoice);
+    lcd.setCursor(13, 1);
+    lcd.print(F("No."));
+    lcd.print(currentChoice);
   }
-  lcd.setCursor(1, 2);  lcd.write((byte)7);  // ✓
-  lcd.setCursor(18, 2); lcd.write((byte)7);
-  lcd.setCursor(5, 3);  lcd.print(F("Saved! Thank you"));
+  lcd.setCursor(1, 2);
+  lcd.write((byte)7);  // ✓
+  lcd.setCursor(18, 2);
+  lcd.write((byte)7);
+  lcd.setCursor(5, 3);
+  lcd.print(F("Saved! Thank you"));
 }
 
 /* ===== BUZZER SFX (Arcade pack) ===== */
@@ -266,15 +361,31 @@ public:
   void init() {
     pinMode(BUZZER_PIN, OUTPUT);
     digitalWrite(BUZZER_PIN, LOW);
-    seq = nullptr; count = idx = phase = 0; phaseEnd = 0;
+    seq = nullptr;
+    count = idx = phase = 0;
+    phaseEnd = 0;
   }
-  void playBoot()    { start(SEQ_BOOT,    4); }
-  void playClick()   { start(SEQ_CLICK,   1); }
-  void playClickHi() { start(SEQ_CLICK_HI,1); }
-  void playBack()    { start(SEQ_BACK,    2); }
-  void playError()   { start(SEQ_ERROR,   3); }
-  void playConfirm() { start(SEQ_CONFIRM, 2); }
-  void playFanfare() { start(SEQ_FANFARE, 4); }
+  void playBoot() {
+    start(SEQ_BOOT, 4);
+  }
+  void playClick() {
+    start(SEQ_CLICK, 1);
+  }
+  void playClickHi() {
+    start(SEQ_CLICK_HI, 1);
+  }
+  void playBack() {
+    start(SEQ_BACK, 2);
+  }
+  void playError() {
+    start(SEQ_ERROR, 3);
+  }
+  void playConfirm() {
+    start(SEQ_CONFIRM, 2);
+  }
+  void playFanfare() {
+    start(SEQ_FANFARE, 4);
+  }
 
   void update() {
     if (!seq || idx >= count) return;
@@ -284,32 +395,53 @@ public:
     if (phase == 0) {  // start ON
 #if BUZZER_PASSIVE
       if (st.freq == 0) noTone(BUZZER_PIN);
-      else              tone(BUZZER_PIN, st.freq);
+      else tone(BUZZER_PIN, st.freq);
 #else
       digitalWrite(BUZZER_PIN, HIGH);
 #endif
-      phase = 1; phaseEnd = now + st.dur; return;
+      phase = 1;
+      phaseEnd = now + st.dur;
+      return;
     }
-    if (phase == 1 && (long)(now - phaseEnd) >= 0) { // end ON -> GAP
+    if (phase == 1 && (long)(now - phaseEnd) >= 0) {  // end ON -> GAP
 #if BUZZER_PASSIVE
       noTone(BUZZER_PIN);
 #else
       digitalWrite(BUZZER_PIN, LOW);
 #endif
-      phase = 2; phaseEnd = now + st.gap; return;
+      phase = 2;
+      phaseEnd = now + st.gap;
+      return;
     }
-    if (phase == 2 && (long)(now - phaseEnd) >= 0) { // next
-      idx++; phase = 0; if (idx >= count) { seq = nullptr; }
+    if (phase == 2 && (long)(now - phaseEnd) >= 0) {  // next
+      idx++;
+      phase = 0;
+      if (idx >= count) { seq = nullptr; }
     }
   }
 
 private:
-  struct Step { uint16_t freq; uint16_t dur; uint16_t gap; };  // ms
+  struct Step {
+    uint16_t freq;
+    uint16_t dur;
+    uint16_t gap;
+  };  // ms
 
   // โน้ต (Hz)
   enum {
-    N_C5=523, N_D5=587, N_E5=659, N_F5=698, N_G5=784, N_A5=880, N_B5=988,
-    N_C6=1047, N_D6=1175, N_E6=1319, N_F6=1397, N_G6=1568, N_A6=1760
+    N_C5 = 523,
+    N_D5 = 587,
+    N_E5 = 659,
+    N_F5 = 698,
+    N_G5 = 784,
+    N_A5 = 880,
+    N_B5 = 988,
+    N_C6 = 1047,
+    N_D6 = 1175,
+    N_E6 = 1319,
+    N_F6 = 1397,
+    N_G6 = 1568,
+    N_A6 = 1760
   };
 
   static const Step SEQ_BOOT[4];
@@ -320,35 +452,45 @@ private:
   static const Step SEQ_CONFIRM[2];
   static const Step SEQ_FANFARE[4];
 
-  const Step* seq; uint8_t count, idx, phase; unsigned long phaseEnd;
+  const Step* seq;
+  uint8_t count, idx, phase;
+  unsigned long phaseEnd;
 
   void start(const Step* s, uint8_t n) {
     // ถ้ากำลังเล่น WAV อยู่ ให้ข้ามไม่เปิดบัซเซอร์ (กันชนกับ TMRpcm)
-    if (tmrpcm.isPlaying()) return;
-    seq = s; count = n; idx = 0; phase = 0; phaseEnd = 0;
+    //if (tmrpcm.isPlaying()) return;
+    seq = s;
+    count = n;
+    idx = 0;
+    phase = 0;
+    phaseEnd = 0;
   }
 };
 
 // นิยามโน้ตจริง ๆ
-const BuzzerSFX::Step BuzzerSFX::SEQ_BOOT[4]      = {{BuzzerSFX::N_C5,  90, 15},{BuzzerSFX::N_E5,  90, 15},{BuzzerSFX::N_G5,110,15},{BuzzerSFX::N_C6,150,0}};
-const BuzzerSFX::Step BuzzerSFX::SEQ_CLICK[1]     = {{1500, 25, 8}};
-const BuzzerSFX::Step BuzzerSFX::SEQ_CLICK_HI[1]  = {{1900, 18, 5}};
-const BuzzerSFX::Step BuzzerSFX::SEQ_BACK[2]      = {{BuzzerSFX::N_E5, 70, 15},{BuzzerSFX::N_C5,110,0}};
-const BuzzerSFX::Step BuzzerSFX::SEQ_ERROR[3]     = {{400, 140, 35},{320, 140, 35},{250, 180, 0}};
-const BuzzerSFX::Step BuzzerSFX::SEQ_CONFIRM[2]   = {{BuzzerSFX::N_A5,120,25},{BuzzerSFX::N_C6,140,0}};
-const BuzzerSFX::Step BuzzerSFX::SEQ_FANFARE[4]   = {{BuzzerSFX::N_G5,90,15},{BuzzerSFX::N_B5,90,15},{BuzzerSFX::N_D6,110,15},{BuzzerSFX::N_G6,160,0}};
+const BuzzerSFX::Step BuzzerSFX::SEQ_BOOT[4] = { { BuzzerSFX::N_C5, 90, 15 }, { BuzzerSFX::N_E5, 90, 15 }, { BuzzerSFX::N_G5, 110, 15 }, { BuzzerSFX::N_C6, 150, 0 } };
+const BuzzerSFX::Step BuzzerSFX::SEQ_CLICK[1] = { { 1500, 25, 8 } };
+const BuzzerSFX::Step BuzzerSFX::SEQ_CLICK_HI[1] = { { 1900, 18, 5 } };
+const BuzzerSFX::Step BuzzerSFX::SEQ_BACK[2] = { { BuzzerSFX::N_E5, 70, 15 }, { BuzzerSFX::N_C5, 110, 0 } };
+const BuzzerSFX::Step BuzzerSFX::SEQ_ERROR[3] = { { 400, 140, 35 }, { 320, 140, 35 }, { 250, 180, 0 } };
+const BuzzerSFX::Step BuzzerSFX::SEQ_CONFIRM[2] = { { BuzzerSFX::N_A5, 120, 25 }, { BuzzerSFX::N_C6, 140, 0 } };
+const BuzzerSFX::Step BuzzerSFX::SEQ_FANFARE[4] = { { BuzzerSFX::N_G5, 90, 15 }, { BuzzerSFX::N_B5, 90, 15 }, { BuzzerSFX::N_D6, 110, 15 }, { BuzzerSFX::N_G6, 160, 0 } };
 
 BuzzerSFX buzzer;
 
 // ===== Hook: เรียกเมื่อยืนยัน =====
 void onConfirmVote(int choice) {
-  Serial.print(F("CF:")); Serial.println(choice);
-  buzzer.playFanfare(); // ในตัวมันเช็ค tmrpcm.isPlaying() แล้ว
+  Serial.print(F("CF:"));
+  Serial.println(choice);
+  buzzer.playFanfare();  // ในตัวมันเช็ค tmrpcm.isPlaying() แล้ว
   noteActivity();
 }
 
 // ===== Watchdog helpers =====
-void wdt_sanity_boot() { MCUSR = 0; wdt_disable(); }
+void wdt_sanity_boot() {
+  MCUSR = 0;
+  wdt_disable();
+}
 
 [[noreturn]] void reset_via_wdt() {
   wdt_enable(WDTO_15MS);
@@ -381,86 +523,108 @@ bool playIfIdle(const char* path) {
 
 // สำหรับหน้าตั้งรหัส
 String enteredPass = "";
-String savedPass   = "1234";
-bool   fregis      = false;
-bool   regisstatus = false;
+String savedPass = "1234";
+bool fregis = false;
+bool regisstatus = false;
 
 void printMaskedAt(uint8_t x, uint8_t y, const String& s) {
   lcd.setCursor(x, y);
   for (uint8_t i = 0; i < s.length(); i++) lcd.print('*');
-  // ลบที่เหลือ (กัน ghost char)
   for (uint8_t i = s.length(); i < 4; i++) lcd.print(' ');
 }
 
 void sendPreview() {
-    if (currentChoice < 0) {
-      Serial.println(F("SEL:CLEAR"));        // ยังไม่เลือก/ล้าง
-    } else {
-      Serial.print(F("SEL:"));
-      Serial.println(currentChoice);         // 0..9
-    }
-    noteActivity();
+  if (currentChoice < 0) {
+    // ยังไม่เลือก / ถูก clear
+    Serial.println(F("SEL:CLEAR"));  // เดิม (debug/compat)
+    Serial.println(F("CLR"));        // ใหม่: ล้างจอ TFT
+  } else if (currentChoice == 0) {
+    // 0 = งดออกเสียง
+    Serial.println(F("SEL:0"));           // เดิม
+    Serial.println(F("TXT:Abstain"));     // ใหม่: แสดงข้อความ "Abstain" บน TFT
+    // ถ้าต้องการให้มีรูป 0.jpg ด้วย ก็สั่ง IMG:0 เพิ่ม
+    // Serial.println(F("IMG:0"));
+  } else {
+    // 1..9 = ผู้สมัคร
+    Serial.print(F("SEL:"));
+    Serial.println(currentChoice);         // เดิม
+    Serial.print(F("IMG:"));               // ใหม่: แสดงรูป /<n>.jpg
+    Serial.println(currentChoice);
   }
+  noteActivity();
+}
+
+inline void noteActivity() {
+  lastActivityMs = millis();
+}
 
 // ===== Vote handler =====
 void vote(char k) {
-    if (k >= '0' && k <= '9') {
-      currentChoice = k - '0';
-      drawVoteUI_base();
-      buzzer.playClick();
-      sendPreview();                 // <<<< ส่ง “SEL:<n>”
-    } else if (k == '*') {
-      if (currentChoice >= 0) buzzer.playBack();
-      currentChoice = -1;
-      drawVoteUI_base();
-      sendPreview();                 // <<<< ส่ง “SEL:CLEAR”
-    } else if (k == '#') {
-      if (currentChoice >= 0) {
-        page = PAGE_CONFIRM;
-        drawConfirmUI();
-        onConfirmVote(currentChoice);  // <<<< ของเดิม: ส่ง CF:<n>
-        confirmUntil = millis() + 1000UL;
-        currentChoice = -1;
-        // (ไม่ต้องส่ง SEL ที่นี่—เดี๋ยวกลับหน้าโหวตค่อยส่งเองถ้าต้องการ)
-      } else {
-        buzzer.playError();
-      }
-    }
+  if (!canVote) {
+    buzzer.playError();
+    return;
   }
 
-inline void noteActivity() { lastActivityMs = millis(); }
+  if (k >= '0' && k <= '9') {
+    currentChoice = k - '0';
+    drawVoteUI_base();
+    buzzer.playClick();
+    sendPreview();   // → จะส่ง SEL:n ไป ESP32
+  } else if (k == '*') {
+    if (currentChoice >= 0) buzzer.playBack();
+    currentChoice = -1;
+    drawVoteUI_base();
+    sendPreview();
+  } else if (k == '#') {
+    if (currentChoice >= 0) {
+      page = PAGE_CONFIRM;
+      drawConfirmUI();
+      onConfirmVote(currentChoice);  // ส่ง CF:<n>
+      confirmUntil = millis() + 10000UL;
+      currentChoice = -1;
+      canVote = false;
+      tmrpcm.stopPlayback(); 
+      //playIfIdle("fv.wav");
+      Serial.println(F("SEL:CLEAR"));
+      Serial.println(F("TXT:Saved! Thank you")); 
+
+    } else {
+      buzzer.playError();
+    }
+  }
+}
 
 void prepareBeforeSleep() {
-  // ปิดไฟจอ ลดไฟ (ตัวคอนโทรลเลอร์ยังอยู่ ไม่ต้อง re-init)
   lcd.noBacklight();
-  // ถ้ากำลังเล่นเสียงอยู่ ให้หยุดก่อน (กัน popping)
   if (tmrpcm.isPlaying()) tmrpcm.stopPlayback();
   delay(5);
 }
 
 void afterWake() {
-  // ตื่นแล้ว เปิดจอ + วาด UI หลักใหม่ (กันจอค้าง)
   lcd.backlight();
-  page = PAGE_VOTE;
-  drawVoteUI_base();
+  page = canVote ? PAGE_VOTE : PAGE_WAIT;
+  if (page == PAGE_VOTE) drawVoteUI_base();
+  else {
+    drawReadyUI_base();
+    Serial.println(F("SEL:CLEAR"));   // <-- เพิ่มตรงนี้
+  }
 
-  // ให้เวลา ESP ส่ง “คำทัก/ซิงก์” (เช่น WAKE/SEL ล่าสุด)
   delay(20);
   while (Serial.available()) {
     String s = Serial.readStringUntil('\n');
-    // ถ้าต้องการ แปล s ที่นี่ได้ (ตอนนี้ขอผ่าน)
   }
   noteActivity();
 }
 
 // ============ SETUP / LOOP ============
 void setup() {
-  wdt_sanity_boot();
+  wdt_sanity_boot();pinMode(10, OUTPUT); 
   Serial.begin(9600);
+  Serial.setTimeout(50);
 
   tmrpcm.speakerPin = 9;  // UNO/Nano ใช้ D9
-   tmrpcm.setVolume(5);  // 0..7 (แล้วแต่ไฟล์/ลำโพง)
-   tmrpcm.quality(1);
+  tmrpcm.setVolume(5);    // 0..7
+  tmrpcm.quality(1);
 
   initSD_orReset();
 
@@ -468,18 +632,23 @@ void setup() {
   lcd.init();
   lcd.backlight();
 
-  // เล่นไฟเปิดเครื่อง (ถ้าหาไฟล์ไม่เจอจะเงียบเฉยๆ)
-  tmrpcm.play((char*)"sawadh.wav");
+  // เล่นไฟเปิดเครื่อง (ถ้าหาไฟล์ไม่เจอจะเงียบ)
+  tmrpcm.play((char*)"sa.wav");
   if (!tmrpcm.isPlaying()) {
-    tmrpcm.play((char*)"sawadh.wav");
+    tmrpcm.play((char*)"sa.wav");
   }
+  
 
   buzzer.init();
-  buzzer.playBoot();  // jingle เปิดเครื่อง (มี gate ภายใน)
+  //buzzer.playBoot();  // jingle เปิดเครื่อง
 
-  page = PAGE_VOTE;
+  // เริ่มที่หน้า WAIT (Ready)
+  canVote = false;
   currentChoice = -1;
-  drawVoteUI_base();
+  page = PAGE_WAIT;
+  drawReadyUI_base();
+  Serial.println(F("SEL:CLEAR"));   // แจ้ง ESP32 ให้ล้างรูป/ข้อความบน TFT
+  Serial.println(F("CLR")); 
 
   kpd.begin(makeKeymap(keys));
   kpd.setDebounceTime(25);
@@ -494,62 +663,106 @@ void setup() {
 
 void loop() {
   // อ่านคีย์จาก keypad
+  // อ่านคีย์จาก keypad
   char k = kpd.getKey();
   if (k) {
     noteActivity();
-    if (page == PAGE_VOTE || page == PAGE_CONFIRM) {
-      vote(k);
-    } else if (page == PAGE_REG_PASS) {
-      // จัดการในส่วน reg pass ด้านล่าง
+
+    // === NEW: A/B/C/D ให้คลิกโทนสูงเสมอ แล้วจบเลย ===
+    if (k == 'A' || k == 'B' || k == 'C' || k == 'D') {
+      buzzer.playClickHi();
+      return;
+    }
+
+    // ถ้ายังไม่ได้รับสิทธิ์ → เมินคีย์ (ยกเว้นหน้า REG_PASS)
+    if (!canVote && page != PAGE_REG_PASS) {
+      buzzer.playError();
+    } else {
+      if (page == PAGE_VOTE || page == PAGE_CONFIRM) {
+        vote(k);
+      } else if (page == PAGE_REG_PASS) {
+        // จัดการในส่วน reg pass ด้านล่าง
+      }
     }
   }
 
   // อ่าน Serial: โปรโตคอลอักขระเดี่ยวจาก ESP32
-  int msg = -1;
-  while (Serial.available() > 0) {
+  // ===== รับข้อความจาก ESP32 แบบเป็นบรรทัด =====
+  while (Serial.available()) {
+    String line = Serial.readStringUntil('\n');
+    line.trim();
     noteActivity();
-    msg = Serial.read();
-    Serial.print(F("ESP32: "));
-    Serial.println((char)msg);
-  }
 
-  // [ADD] ถ้าโดนพัลส์ปลุกจาก ESP ขณะ “ตื่นอยู่” ให้รีเฟรช activity เฉย ๆ
-  if (wokeFromEsp) {            // (แฟล็กมาจาก ISR ที่ D3)
-    wokeFromEsp = false;
-    noteActivity();
-  }
+    if (line.equalsIgnoreCase("S")) {
+      // กำลังอ่านบัตร
+      tmrpcm.play("re.wav");
 
-  // ใช้เฉพาะเมื่อมีอักขระจริง
-  if (msg != -1) {
-    // หลีกเลี่ยงการ clear ระหว่างเล่นเสียง
-    if (!tmrpcm.isPlaying()) {
-      lcd.setCursor(0, 0);
-      lcd.print((char)msg);
-      lcd.print(' ');
+    } else if (line.equalsIgnoreCase("W")) {
+      // ยังไม่ลงทะเบียน/เพิกถอนสิทธิ์
+      canVote = false;
+      page = PAGE_WAIT;
+      drawReadyUI_base();
+      currentChoice = -1; 
+      tmrpcm.play("n.wav");
+      Serial.println(F("SEL:CLEAR"));
+      Serial.println(F("CLR"));
+
+    } else if (line.equalsIgnoreCase("OK")) {
+      // บัตร+นิ้วผ่าน (ถ้าต้องการให้เปิดสิทธิ์โหวตทันที ให้ปลดคอมเมนต์ 3 บรรทัดด้านล่าง)
+      tmrpcm.play("c.wav");
+      // canVote = true;
+      // page = PAGE_VOTE;
+      // drawVoteUI_base();
+
+    } else if (line.equalsIgnoreCase("V")) {
+      // พร้อมโหวต (อีกทางเลือกจาก ESP32)
+      canVote = true;
+      page = PAGE_VOTE;
+      drawVoteUI_base();
+      tmrpcm.play("ch.wav");
+      Serial.println(F("TXT:Select 1..9 | #=Confirm | *=Clear"));
+
+    } else if (line.equalsIgnoreCase("R")) {
+      // Toggle โหมดลงทะเบียน (คงพฤติกรรมเดิม)
+      fregis = !fregis;
+      regisstatus = false;
+      enteredPass = "";
+
+      if (fregis) {
+        page = PAGE_REG_PASS;
+        lcd.noBlink();
+        lcd.clear();
+        lcd.setCursor(2, 0);
+        lcd.print(F("Enter pass:"));
+        lcd.setCursor(4, 1);
+        printMaskedAt(4, 1, enteredPass);
+        Serial.println(F("SEL:CLEAR"));
+      } else {
+        canVote = false;   // ออกจากลงทะเบียนแล้วยังไม่ให้โหวต
+        page = PAGE_WAIT;
+        drawReadyUI_base();
+        Serial.println(F("SEL:CLEAR"));
+      }
     }
 
-    if      (msg == 'S') { playIfIdle("re.wav"); }   // กำลังอ่านบัตร
-    else if (msg == 'W') { playIfIdle("n.wav"); }    // คุณยังไม่ลงทะเบียน
-    else if (msg == 'O') { playIfIdle("c.wav"); }    // ยืนยันตัวตนสำเร็จ
-    else if (msg == 'V') { playIfIdle("ch.wav"); }   // ผ่านตรวจสอบ + พร้อมโหวต
-    else if (msg == 'R') {                           // เข้าหน้าตั้งรหัส
-      fregis = true; page = PAGE_REG_PASS;
-      lcd.noBlink(); lcd.clear();
-      lcd.setCursor(2, 0); lcd.print(F("Enter pass:"));
-      lcd.setCursor(4, 1); printMaskedAt(4, 1, enteredPass);
-    }
+    // (ออปชัน) ถ้าต้องการ debug เฉพาะบน Serial Monitor ให้เปิดอันนี้
+    // แต่ “อย่า” echo ออกไปหา ESP32 ซ้ำ
+    // Serial.print(F("[ESP32] ")); Serial.println(line);
   }
 
   // อนิเมชัน / หน้าคอนเฟิร์ม non-blocking
+  if (page == PAGE_WAIT) animateReady();
   if (page == PAGE_VOTE) animateDuringSelect();
   if (page == PAGE_CONFIRM && (long)(millis() - confirmUntil) >= 0) {
-    page = PAGE_VOTE;
-    drawVoteUI_base();
+    // หลังโชว์ "Confirmed" ถ้ายังมีสิทธิ -> กลับหน้าโหวต, ไม่งั้นกลับหน้า READY
+    page = canVote ? PAGE_VOTE : PAGE_WAIT;
+    if (page == PAGE_VOTE) drawVoteUI_base();
+    else drawReadyUI_base();
   }
 
   // หน้า "ตั้งรหัส" (เมื่อ fregis == true)
   if (fregis && page == PAGE_REG_PASS) {
-    char kk = k; // ใช้คีย์ที่อ่านไว้ข้างบน
+    char kk = k;  // ใช้คีย์ที่อ่านไว้ข้างบน
     if (kk) {
       if (kk >= '0' && kk <= '9') {
         if (enteredPass.length() < 4) {
@@ -563,32 +776,47 @@ void loop() {
         }
       } else if (kk == '#') {
         if (enteredPass.length() == 4) {
-          savedPass   = enteredPass;
-          enteredPass = "";
-          fregis = false; regisstatus = true;
-          lcd.clear();
-          lcd.setCursor(2, 0); lcd.print(F("Pass Saved!"));
-          // กลับสู่หน้าโหวต
-          page = PAGE_VOTE;
-          drawVoteUI_base();
+          if (enteredPass == savedPass) {
+            // รหัสถูกต้อง -> แจ้งผู้ใช้และส่งสัญญาณไป ESP32
+            lcd.clear();
+            lcd.setCursor(2, 0);
+            lcd.print(F("You can register."));
+            // (ออปชัน) บรรทัดล่างช่วยอธิบาย
+            lcd.setCursor(1, 2);
+            lcd.print(F("Waiting for ESP32..."));
+            Serial.write('R');  // แจ้ง ESP32 ว่า "พร้อมลงทะเบียน"
+
+            // คงอยู่ในหน้า REG_PASS จนกว่า ESP32 จะตอบกลับ 'R'
+            regisstatus = true;  // ใช้เป็นแฟล็กว่าพร้อมออกจากหน้านี้แล้ว
+            // ไม่ต้องเปลี่ยน page/fregis ที่นี่
+          } else {
+            // รหัสผิด
+            lcd.setCursor(0, 2);
+            lcd.print(F("Wrong pass       "));
+            // (ออปชัน) ล้างรหัสที่พิมพ์ไปแล้ว
+            enteredPass = "";
+            printMaskedAt(4, 1, enteredPass);
+          }
         } else {
-          lcd.setCursor(0, 2); lcd.print(F("Must be 4 digits "));
+          lcd.setCursor(0, 2);
+          lcd.print(F("Must be 4 digits "));
         }
       }
     }
   }
 
   // อัปเดตบัซเซอร์ทุกเฟรม (state machine)
-  buzzer.update();
+  buzzer.update(); 
 
-  // ---------- [ADD] Auto-sleep เมื่อว่าง ----------
+
+  // ---------- Auto-sleep เมื่อว่าง ----------
   // อย่าหลับตอนกำลังเล่นเสียง
   if (!tmrpcm.isPlaying()) {
     if ((millis() - lastActivityMs) >= IDLE_SLEEP_MS) {
-      prepareBeforeSleep();     // ปิด backlight/หยุดเสียง ฯลฯ
-      wokeFromEsp = false;      // เคลียร์แฟล็กก่อนหลับ
-      goSleepPowerDown();       // หลับลึก (ตื่นด้วย INT1 จาก ESP32)
-      afterWake();              // ตื่นแล้วเปิดจอ + วาด UI ใหม่
+      prepareBeforeSleep();  // ปิด backlight/หยุดเสียง ฯลฯ
+      wokeFromEsp = false;   // เคลียร์แฟล็กก่อนหลับ
+      goSleepPowerDown();    // หลับลึก (ตื่นด้วย INT1 จาก ESP32)
+      afterWake();           // ตื่นแล้วเปิดจอ + วาด UI ใหม่
     }
   }
 }

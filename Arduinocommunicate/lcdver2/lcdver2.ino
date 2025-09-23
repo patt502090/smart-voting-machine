@@ -21,6 +21,13 @@
 #include <SPI.h>
 #include <SD.h>
 #include <avr/wdt.h>
+#include <TM1638plus.h>
+
+#define STB A0
+#define CLK A1
+#define DIO A2
+
+TM1638plus tm(STB, CLK, DIO, false);  // ต้องใส่ bool argument
 
 #define ESP_INT_PIN 3  // INT1 (D3) จาก ESP32
 

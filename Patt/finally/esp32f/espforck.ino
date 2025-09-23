@@ -5,8 +5,8 @@
 #define WAKE_PIN 33
 
 // ==== must be the very first lines ====
-struct Rec;                    // forward-declare type Rec
-extern const int UID_HEX_MAX;  // forward-declare constant used by Rec
+const int UID_HEX_MAX = 16; 
+struct Rec;
 
 void readRec(int idx, Rec &r);         // tell IDE not to autogenerate wrong prototypes
 void writeRec(int idx, const Rec &r);  // uses incomplete type by reference (OK)
@@ -280,7 +280,6 @@ const int FINGER_TX = 25;  // ESP32 TX1 pin to sensor RX
 const uint32_t MAGIC = 0x564F5445UL;  // 'VOTE'
 const uint8_t VERSION = 1;
 const int HDR_SIZE = 16;
-const int UID_HEX_MAX = 16;
 const int RECORD_SIZE = 20;
 const int BASE = HDR_SIZE;
 const uint8_t VALID_FLAG = 0xA5;
@@ -366,7 +365,6 @@ int findFreeSlot() {
   return -1;
 }
 
-#define UID_HEX_MAX 16
 bool sameUID16(const char a[UID_HEX_MAX], const char b[UID_HEX_MAX]) {
   for (int i = 0; i < UID_HEX_MAX; ++i)
     if (a[i] != b[i]) return false;
@@ -380,7 +378,6 @@ void uidToFixed16(const String &uidHex, char out16[UID_HEX_MAX]) {
     out16[i] = (i < uidHex.length()) ? uidHex.charAt(i) : 0x00;
   }
 }
-#undef UID_HEX_MAX
 
 int findByUID(const String &uidHex) {
   char key[UID_HEX_MAX];
@@ -556,6 +553,10 @@ inline void rc522_hard_reset() {
   digitalWrite(RST_PIN, HIGH);
   delay(5);
 }
+
+// ===== ESP32 tone() shim (no sound; compile-safe) =====
+inline void tone(int /*pin*/, unsigned int /*freq*/, unsigned long /*duration*/=0) {}
+inline void noTone(int /*pin*/) {}
 
 // ---------- High-level flows ----------
 void registerCardAndFingerprint() {
@@ -803,6 +804,64 @@ float measureDistanceCm() {
   return (float)us / 58.0f;  // cm
 }
 
+// ===== [ADD] Robust ultrasonic helpers =====
+#ifndef PULSEIN_LONG_TIMEOUT_US
+#define PULSEIN_LONG_TIMEOUT_US 50000UL  // สำรอง ถ้าไลบรารีเก่า
+#endif
+
+// เกณฑ์กรองค่าที่เชื่อถือได้
+static const float MIN_VALID_CM = 5.0f;
+static const float MAX_VALID_CM = 300.0f;
+
+// อ่าน echo แบบ robust: รอให้ ECHO เป็น LOW ก่อนทุกครั้ง, ใช้ pulseInLong
+unsigned long us_read_echo_once_robust() {
+  // กันกรณี ECHO ยังค้าง HIGH จากรอบก่อน
+  // รอให้ LOW ก่อน (แต่จำกัดเวลา)
+  (void)pulseInLong(ECHO_PIN, LOW, 3000UL);
+
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(3);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+
+  // วัดช่วง HIGH ของ ECHO
+  return pulseInLong(ECHO_PIN, HIGH, US_TIMEOUT);
+}
+
+// วัดหลายครั้ง → มัธยฐาน → คัดกรองช่วง valid
+float measureDistanceCmRobust() {
+  unsigned long a = us_read_echo_once_robust();
+  delayMicroseconds(150);
+  unsigned long b = us_read_echo_once_robust();
+  delayMicroseconds(150);
+  unsigned long c = us_read_echo_once_robust();
+
+  // sort a<=b<=c
+  if (a > b) {
+    auto t = a;
+    a = b;
+    b = t;
+  }
+  if (b > c) {
+    auto t = b;
+    b = c;
+    c = t;
+  }
+  if (a > b) {
+    auto t = a;
+    a = b;
+    b = t;
+  }
+  unsigned long us = b;
+  if (us == 0) return NAN;  // timeout → ไม่เชื่อถือ
+
+  float cm = (float)us / 58.0f;
+  if (cm < MIN_VALID_CM || cm > MAX_VALID_CM) return NAN;  // กรองค่าหลอก
+  return cm;
+}
+
+
 // [ADD] งานหลัก Ultrasonic: อัปเดต nearState + ตัดสินใจหลับ
 // ===== [REPLACE CALL INSIDE YOUR TICK] =====
 void ultrasonicTickForSleep() {
@@ -868,17 +927,13 @@ void ultrasonicTickForSleep() {
 #include "driver/rtc_io.h"
 #include "esp_system.h"
 
-// [ADD] TJpg callback → push ลงจอแบบแถวต่อแถว (ปลอดภัยกับหน่วยความจำ)
-static uint16_t *lineBuf = nullptr;
+// แทนฟังก์ชัน tft_output เดิมทั้งหมด
 bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap) {
-  if (y >= tft.height() || x >= tft.width()) return 0;
-  if (!lineBuf) lineBuf = (uint16_t *)heap_caps_malloc(w * sizeof(uint16_t), MALLOC_CAP_8BIT);
-  if (!lineBuf) return 0;
+  if (y >= tft.height() || x >= tft.width()) return false;
   for (uint16_t row = 0; row < h; row++) {
-    memcpy(lineBuf, bitmap + row * w, w * sizeof(uint16_t));
-    tft.pushImage(x, y + row, w, 1, lineBuf);
+    tft.pushImage(x, y + row, w, 1, bitmap + row * w);
   }
-  return 1;
+  return true;
 }
 
 // [ADD] วาดรูปให้พอดีกลางจอ
@@ -1072,7 +1127,7 @@ void handleU2Line(const String &raw) {
     }
     return;
   }
-  // ดีบั๊กข้อความอื่น ๆ (เก็บไว้ดูก่อน)
+  // ดีบั๊กข้อความอื่น ๆ
   Serial.println(raw);
 }
 
@@ -1119,15 +1174,7 @@ void loop() {
       goDeepSleepNow();  // ไม่กลับจากฟังก์ชันนี้
     }
 
-    if (msg.startsWith("SEL:")) {
-      if (msg.equalsIgnoreCase("SEL:CLEAR")) {
-        showIdleScreen("Ready");
-      } else {
-        int n = msg.substring(4).toInt();                     // หลัง "SEL:"
-        if (n >= 0 && n <= 99) showCandidateJpg((uint8_t)n);  // เปิด /n.jpg หรือ /n.JPG
-        else showIdleScreen("Bad SEL");
-      }
-    }
+    handleU2Line(msg);
 
     // log debug จากบอร์ดลูก
     Serial.println(msg);
@@ -1163,61 +1210,4 @@ void loop() {
       }
     }
   }
-}
-
-// ===== [ADD] Robust ultrasonic helpers =====
-#ifndef PULSEIN_LONG_TIMEOUT_US
-#define PULSEIN_LONG_TIMEOUT_US 50000UL  // สำรอง ถ้าไลบรารีเก่า
-#endif
-
-// เกณฑ์กรองค่าที่เชื่อถือได้
-static const float MIN_VALID_CM = 5.0f;
-static const float MAX_VALID_CM = 300.0f;
-
-// อ่าน echo แบบ robust: รอให้ ECHO เป็น LOW ก่อนทุกครั้ง, ใช้ pulseInLong
-unsigned long us_read_echo_once_robust() {
-  // กันกรณี ECHO ยังค้าง HIGH จากรอบก่อน
-  // รอให้ LOW ก่อน (แต่จำกัดเวลา)
-  (void)pulseInLong(ECHO_PIN, LOW, 3000UL);
-
-  digitalWrite(TRIG_PIN, LOW);
-  delayMicroseconds(3);
-  digitalWrite(TRIG_PIN, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(TRIG_PIN, LOW);
-
-  // วัดช่วง HIGH ของ ECHO
-  return pulseInLong(ECHO_PIN, HIGH, US_TIMEOUT);
-}
-
-// วัดหลายครั้ง → มัธยฐาน → คัดกรองช่วง valid
-float measureDistanceCmRobust() {
-  unsigned long a = us_read_echo_once_robust();
-  delayMicroseconds(150);
-  unsigned long b = us_read_echo_once_robust();
-  delayMicroseconds(150);
-  unsigned long c = us_read_echo_once_robust();
-
-  // sort a<=b<=c
-  if (a > b) {
-    auto t = a;
-    a = b;
-    b = t;
-  }
-  if (b > c) {
-    auto t = b;
-    b = c;
-    c = t;
-  }
-  if (a > b) {
-    auto t = a;
-    a = b;
-    b = t;
-  }
-  unsigned long us = b;
-  if (us == 0) return NAN;  // timeout → ไม่เชื่อถือ
-
-  float cm = (float)us / 58.0f;
-  if (cm < MIN_VALID_CM || cm > MAX_VALID_CM) return NAN;  // กรองค่าหลอก
-  return cm;
 }

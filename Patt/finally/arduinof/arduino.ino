@@ -710,9 +710,9 @@ void loop() {
     } else if (line.equalsIgnoreCase("OK")) {
       // บัตร+นิ้วผ่าน (ถ้าต้องการให้เปิดสิทธิ์โหวตทันที ให้ปลดคอมเมนต์ 3 บรรทัดด้านล่าง)
       tmrpcm.play("c.wav");
-      // canVote = true;
-      // page = PAGE_VOTE;
-      // drawVoteUI_base();
+      canVote = true;
+      page = PAGE_VOTE;
+      drawVoteUI_base();
 
     } else if (line.equalsIgnoreCase("V")) {
       // พร้อมโหวต (อีกทางเลือกจาก ESP32)

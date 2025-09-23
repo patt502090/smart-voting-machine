@@ -109,13 +109,10 @@ LOCK_AE     = get_env_int("LOCK_AE", 0)
 EXPOSURE    = os.getenv("EXPOSURE", "")
 GAIN        = os.getenv("GAIN", "")
 
-# Backend select (macOS/ Linux)
+# Backend for mac
 backend = 0
-if isinstance(SRC, int):
-    if sys.platform == "darwin":
-        backend = cv2.CAP_AVFOUNDATION
-    elif sys.platform.startswith("linux"):
-        backend = cv2.CAP_V4L2
+if sys.platform == "darwin" and isinstance(SRC, int):
+    backend = cv2.CAP_AVFOUNDATION
 
 # -------------------- Helpers --------------------
 def _fire(url, payload):
@@ -242,10 +239,6 @@ def try_camera_options(cap):
         cap.set(cv2.CAP_PROP_FRAME_WIDTH,  CAM_W)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_H)
         cap.set(cv2.CAP_PROP_FPS,          CAM_FPS)
-        
-        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))  # ใช้ MJPEG ถ้ากล้องรองรับ
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)                            # ลดบัฟเฟอร์เฟรม
-        cap.set(cv2.CAP_PROP_CONVERT_RGB, 1)                           # ให้ไดรเวอร์แปลงเป็น BGR
     except Exception:
         pass
 

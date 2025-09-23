@@ -5,15 +5,21 @@
 #define WAKE_PIN 33
 
 // ==== must be the very first lines ====
-struct Rec;                    // forward-declare type Rec
-extern const int UID_HEX_MAX;  // forward-declare constant used by Rec
+static constexpr int UID_HEX_MAX = 16;
 
+struct Rec;
 void readRec(int idx, Rec &r);         // tell IDE not to autogenerate wrong prototypes
 void writeRec(int idx, const Rec &r);  // uses incomplete type by reference (OK)
+
+// ==== ด้านบนไฟล์ (globals) ====
+#define SAFE_PIN 0   // กดลง LOW ตอนบูตเพื่อ skip SD/TFT
+
+bool SAFE_MODE = false;
 
 
 #include "driver/rtc_io.h"  // สำหรับ rtc_gpio_get_level()
 #include "esp_system.h"
+#include "esp_heap_caps.h"
 
 // ประกาศล่วงหน้าค่าคงที่ที่ struct ใช้ (ถ้าคุณมีเวอร์ชันเป็น #define อยู่แล้ว ข้ามได้)
 #if 0  // DISABLE: duplicates UID_HEX_MAX (we already #define it at top)
@@ -22,6 +28,7 @@ const int      UID_HEX_MAX = 16;
 
 // ต้อง “นิยาม” struct Rec ให้เสร็จก่อนฟังก์ชัน readRec()/writeRec()
 // (forward declare เฉยๆ ไม่พอ เพราะฟังก์ชันแตะฟิลด์ใน struct)
+// ==== constants (place near the top, before struct Rec) ====
 #if 0  // DISABLE: duplicate struct Rec (already defined at top)
 struct Rec {
   char     uid[UID_HEX_MAX];
@@ -50,7 +57,7 @@ struct Rec {
 #include <TJpg_Decoder.h>
 #include <SD.h>
 
-#define SD_CS    2     // CS ของ SD (คุณทดสอบไว้ที่ 13 ใช้ต่อได้)
+#define SD_CS    13     // CS ของ SD (คุณทดสอบไว้ที่ 13 ใช้ต่อได้)
 #define TFT_CS   15      // CS ของจอ (ตาม User_Setup.h ที่ตั้งไว้)
 
 TFT_eSPI tft;            // ใช้พิน SPI/CS/DC/RST จาก User_Setup.h
@@ -90,8 +97,6 @@ void dbgPrintWakePin(const char *tag) {
 // *GPIO35 เป็นขา RTC input ได้ ปลุกด้วย ext1 ได้
 
 // ==== forward declarations to satisfy compile order (ADD ONLY) ====
-struct Rec;                    // ให้คอมไพเลอร์รู้จักชื่อ Rec ล่วงหน้า (ใช้กับ & ได้)
-extern const int UID_HEX_MAX;  // บอกว่าจะมีค่าคงที่ชื่อนี้ประกาศจริงด้านล่าง
 
 
 // ===== [ADD] Ultrasonic (HC-SR04) for auto-sleep =====
@@ -217,13 +222,39 @@ inline void spi_idle_all() {
   pinMode(SD_CS,   OUTPUT); digitalWrite(SD_CS,   HIGH); // SD
 }
 
+// ===== Bus lock helpers for RC522 on shared VSPI =====
+inline void bus_acquire_for_rfid() {
+  // ปล่อยจอ/SD ออกจากบัสก่อน (กันจอค้าง CS ต่ำ)
+  // ถ้าใช้ TFT_eSPI: endWrite จะปล่อย CS ของจอ
+  tft.endWrite();                // <-- ปล่อยธุรกรรมของจอ (ถ้าค้างอยู่)
+  pinMode(TFT_CS, OUTPUT); digitalWrite(TFT_CS, HIGH);
+  pinMode(SD_CS,  OUTPUT); digitalWrite(SD_CS,  HIGH);
+
+  // ย้ำว่า SS ของ RC522 = HIGH ก่อนเริ่ม (กันเศษเดิม)
+  pinMode(SS_PIN, OUTPUT); digitalWrite(SS_PIN, HIGH);
+  // ตั้งความถี่สำหรับ RC522 (<= 10MHz)
+  SPI.beginTransaction(SPISettings(8000000, MSBFIRST, SPI_MODE0));
+  // เลือก RC522
+  digitalWrite(SS_PIN, LOW);
+}
+
+inline void bus_release_after_rfid() {
+  // ปล่อย RC522 ออกจากบัส
+  digitalWrite(SS_PIN, HIGH);
+  SPI.endTransaction();
+
+  // ปล่อยทุกตัวกลับ idle
+  digitalWrite(TFT_CS, HIGH);
+  digitalWrite(SD_CS,  HIGH);
+}
+
 
 // ---------- I/O ----------
 const int EEPROM_SIZE = 512;
 const int buzzerPin = 12;
 const int switchPin33 = 14;  // สวิตช์ Register
 const int switchPin32 = 32;  // สวิตช์ Delete
-const int ledPin = 13;
+// const int ledPin = 13;
 
 // ---------- Finger UART Pins (ปรับให้ตรงบอร์ดคุณ) ----------
 const int FINGER_RX = 26;  // ESP32 RX1 pin to sensor TX
@@ -255,7 +286,6 @@ const int FINGER_TX = 25;  // ESP32 TX1 pin to sensor RX
 const uint32_t MAGIC = 0x564F5445UL;  // 'VOTE'
 const uint8_t VERSION = 1;
 const int HDR_SIZE = 16;
-const int UID_HEX_MAX = 16;
 const int RECORD_SIZE = 20;
 const int BASE = HDR_SIZE;
 const uint8_t VALID_FLAG = 0xA5;
@@ -263,6 +293,7 @@ const uint8_t EMPTY_FLAG = 0xFF;
 const int MAX_RECORDS = (EEPROM_SIZE - BASE) / RECORD_SIZE;  // ~= 24
 
 // ---------- Utils ----------
+// ==== constants (place near the top, before struct Rec) ====
 struct Rec {
   char uid[UID_HEX_MAX];  // ไม่รับ '\0' เสมอ ให้เก็บเป็น 16 ชาร์ (ถ้าน้อยกว่าก็ 0x00 padding)
   uint8_t fp_id;
@@ -341,7 +372,6 @@ int findFreeSlot() {
   return -1;
 }
 
-#define UID_HEX_MAX 16
 bool sameUID16(const char a[UID_HEX_MAX], const char b[UID_HEX_MAX]) {
   for (int i = 0; i < UID_HEX_MAX; ++i)
     if (a[i] != b[i]) return false;
@@ -355,7 +385,6 @@ void uidToFixed16(const String &uidHex, char out16[UID_HEX_MAX]) {
     out16[i] = (i < uidHex.length()) ? uidHex.charAt(i) : 0x00;
   }
 }
-#undef UID_HEX_MAX
 
 int findByUID(const String &uidHex) {
   char key[UID_HEX_MAX];
@@ -520,10 +549,20 @@ void registerCardAndFingerprint() {
   Serial.println("Registration mode... Tap a new card");
 
   // รอการ์ด
-  while (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) { delay(50); }
-  String uidHex = readRFIDasHex();
+  while (true) {
+    bool ok = false;
+    bus_acquire_for_rfid();
+    if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) ok = true;
+    bus_release_after_rfid();
+    if (ok) break;
+    delay(50);
+  }
+  String uidHex;
+  bus_acquire_for_rfid();
+  uidHex = readRFIDasHex();
   rfid.PICC_HaltA();
   rfid.PCD_StopCrypto1();
+  bus_release_after_rfid();
 
   if (findByUID(uidHex) >= 0) {
     Serial.println("This card is already registered.");
@@ -591,12 +630,20 @@ void registerCardAndFingerprint() {
 
 void deleteCardFlow() {
   Serial.println("Delete mode... Tap a card to delete");
-  while (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) {
+  while (true) {
+    bool ok = false;
+    bus_acquire_for_rfid();
+    if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) ok = true;
+    bus_release_after_rfid();
+    if (ok) break;
     delay(50);
   }
-  String uidHex = readRFIDasHex();
+  String uidHex;
+  bus_acquire_for_rfid();
+  uidHex = readRFIDasHex();
   rfid.PICC_HaltA();
   rfid.PCD_StopCrypto1();
+  bus_release_after_rfid();
 
   int idx = findByUID(uidHex);
   if (idx < 0) {
@@ -641,26 +688,39 @@ void deleteCardFlow() {
 }
 
 
+// =============== REPLACE WHOLE FUNCTION ===============
 void normalScanFlow() {
   // แตะบัตร → ตรวจว่าลงทะเบียนหรือยัง → ถ้าลงทะเบียน ต้องสแกนนิ้วให้ "ตรงกับ fp_id" ของบัตรนั้น
-
   Serial.println("Scan card...");
+  mySerial.println("S");  // แจ้งจอ/บอร์ดลูกว่าเริ่มสแกน
 
-  //if (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) return;
-  mySerial.println("S");
-  String uidHex = readRFIDasHex();
-  rfid.PICC_HaltA();
-  rfid.PCD_StopCrypto1();
+  // 1) รอการ์ดและอ่าน UID ให้สำเร็จจริง โดยล็อคบัสทุกครั้ง
+  String uidHex;
+  while (true) {
+    bool ok = false;
 
+    bus_acquire_for_rfid();  // <<< ล็อคบัส ปล่อย TFT/SD ให้ว่าง แล้วดึง SS ของ RC522 ลง
+    if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
+      uidHex = readRFIDasHex();   // อ่านเป็น HEX
+      rfid.PICC_HaltA();          // ปล่อยการ์ด
+      rfid.PCD_StopCrypto1();     // ปิด crypto
+      ok = true;
+    }
+    bus_release_after_rfid();     // <<< ปล่อยบัสคืน (ดันทุก CS = HIGH)
+
+    if (ok) break;                // อ่านได้แล้วออกจากลูป
+    delay(20);                    // ยังไม่ได้ → รอแป๊บกันบัสถี่เกิน
+  }
+
+  // 2) เช็คใน EEPROM ว่าการ์ดนี้ลงทะเบียนหรือยัง
   int idx = findByUID(uidHex);
   if (idx < 0) {
     Serial.println("Unknown card");
     //mySerial.println("W");
-    // ระฆัง + ไฟ
     tone(buzzerPin, 1000, 200);
-    digitalWrite(ledPin, HIGH);
+    // digitalWrite(ledPin, HIGH);
     delay(200);
-    digitalWrite(ledPin, LOW);
+    // digitalWrite(ledPin, LOW);
     delay(150);
     tone(buzzerPin, 1000, 200);
     return;
@@ -668,7 +728,8 @@ void normalScanFlow() {
 
   Rec r;
   readRec(idx, r);
-  // ถ้าใช้ในระบบโหวต: block ถ้า voted=1 แล้ว
+
+  // ถ้าเป็นระบบโหวต: บล็อกบัตรที่โหวตไปแล้ว
   if (r.voted == 1) {
     Serial.println("Already voted for this card holder.");
     mySerial.println("W");
@@ -676,21 +737,23 @@ void normalScanFlow() {
     return;
   }
 
+  // 3) ยืนยันลายนิ้วมือให้ตรง FP_ID ของบัตรนี้
   Serial.printf("Card OK. Please verify fingerprint (expect FP_ID=%d)\n", r.fp_id);
-  // จับนิ้วแล้ว match
   unsigned long t0 = millis();
   int matched = -1;
-  while (millis() - t0 < 15000) {  // รอสูงสุด 15 วินาที
+  while (millis() - t0 < 15000) {     // รอสูงสุด 15 วินาที
     matched = matchFingerprint();
     if (matched >= 0) break;
     delay(50);
   }
+
   if (matched < 0) {
     Serial.println("Fingerprint not matched / timeout.");
     mySerial.println("W");
     tone(buzzerPin, 600, 400);
     return;
   }
+
   Serial.printf("Matched fingerID=%d\n", matched);
   if (matched != r.fp_id) {
     Serial.println("Fingerprint does not belong to this card.");
@@ -699,16 +762,17 @@ void normalScanFlow() {
     return;
   }
 
-  // ผ่านเงื่อนไข: บัตร+นิ้ว ตรงกัน → ถือว่าสำเร็จ
+  // 4) ผ่านทุกเงื่อนไข
   mySerial.println("OK");
   tone(buzzerPin, 1500, 120);
-  digitalWrite(ledPin, HIGH);
+  // digitalWrite(ledPin, HIGH);
   delay(120);
-  digitalWrite(ledPin, LOW);
+  // digitalWrite(ledPin, LOW);
 
   // ถ้าเป็นระบบโหวต: mark voted = 1
   setVotedByIndex(idx, 1);
 }
+// =============== END REPLACEMENT ===============
 
 // [ADD] วัด echo ครั้งเดียว
 inline unsigned long us_read_once() {
@@ -898,6 +962,12 @@ void setup() {
   Serial.begin(115200);
   Serial.setTimeout(200);
   mySerial.setTimeout(200);
+  pinMode(SAFE_PIN, INPUT_PULLUP);
+  SAFE_MODE = (digitalRead(SAFE_PIN) == LOW);
+  Serial.println();
+  Serial.println("=== BOOT ===");
+  Serial.printf("SAFE_MODE=%d\n", SAFE_MODE);
+  Serial.flush();
 
   Wire.begin();
 
@@ -931,8 +1001,10 @@ void setup() {
   }
 
   // ===== [ADD] Init RFID หลัง SD เพื่อกันชนบัส =====
-  spi_idle_all();                           // เคลียร์บัสก่อนเข้า RC522
+  spi_idle_all();
+  bus_acquire_for_rfid();
   rfid.PCD_Init();
+  bus_release_after_rfid();
 
   // Ultrasonic
   pinMode(TRIG_PIN, OUTPUT);
@@ -950,8 +1022,8 @@ void setup() {
   pinMode(buzzerPin, OUTPUT);
   pinMode(switchPin33, INPUT_PULLUP);
   pinMode(switchPin32, INPUT_PULLUP);
-  pinMode(ledPin, OUTPUT);
-  digitalWrite(ledPin, LOW);
+  // pinMode(ledPin, OUTPUT);
+  // digitalWrite(ledPin, LOW);
 
   if (!fingerBegin()) {
     Serial.println("Fingerprint module not found. Check wiring.");
@@ -970,6 +1042,8 @@ void setup() {
 
   lastUltraLogMs = millis();
 }
+
+
 void loop() {
   int switchReg = digitalRead(switchPin33);
   int switchDel = digitalRead(switchPin32);
@@ -989,7 +1063,14 @@ void loop() {
   }
 
   // โหมดใช้งานปกติ: แตะบัตร → ต้องยืนยันนิ้วเจ้าของบัตร
+  bool cardReady = false;
+  bus_acquire_for_rfid();
   if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
+    cardReady = true;
+  }
+  bus_release_after_rfid();
+
+  if (cardReady) {
     normalScanFlow();
   }
 

@@ -4,37 +4,12 @@
 present.py — Face-near wake helper (English UI + dwell + progress + success toast)
 Optimized for kiosk/booth use (e.g., Odroid + USB cam).
 
-ENV (optional):
-  CAM_SRC=0|1|/dev/videoX|rtsp://...      default 1
-  CAM_W=640 CAM_H=360 CAM_FPS=15
-  SHOW=1 DRAW=1
-  ROI_XF=0.20 ROI_YF=0.15 ROI_WF=0.60 ROI_HF=0.70
-  NEAR_M=1.5            # meters threshold to WAKE (default 1.5 m)
-  MIN_DWELL_MS=1500     # must stay in-ROI continuously >= ms to WAKE
-  NEAR_KEEP=1 FAR_KEEP=8
-  COOLDOWN_S=8
-  HAAR_SCALE=1.1 HAAR_NEIGH=6 HAAR_MINSZ=70
-  FACE_WIDTH_M=0.16 CALIB_PIX_AT_0_5M=240
-  GPIO_WAKE_CMD='gpio -1 write 36 1; sleep 0.5; gpio -1 write 36 0'
-  SIMULATE_GPIO=0
-  WAKE_URL=... SLEEP_URL=... AI_TOKEN=...
-  APP_TITLE='Smart Voting Machine'
-  BANNER_TXT='Please stand inside the frame to wake the screen'
-  LOGO_PATH=./logo_university.png LOGO_MAXW=160 LOGO_ANCHOR=top-right|top-left
-  ACCENT_BRG=220
-  SUCCESS_TOAST_S=1.4    # seconds to show success banner
-
-  # Lighting / camera tweaks (optional; best-effort per backend):
-  CLAHE=1                # apply CLAHE to ROI grayscale (improves contrast)
-  CLAHE_CLIP=2.0         # CLAHE clip limit
-  CLAHE_GRID=8           # CLAHE grid size (NxN)
-  GAMMA=1.0              # >1.0 brightens mid-tones, <1.0 darkens
-  LOCK_AE=0              # 1 to try to disable auto-exposure after warmup
-  EXPOSURE=-6            # manual exposure value (backend dependent)
-  GAIN=0                 # manual gain (if supported)
+Adds:
+- Auto camera detection on Linux (/dev/video* + indices 0..9)
+- Safe GUI fallback (SHOW auto-disables if no GUI backend)
 """
 
-import os, sys, time, threading, subprocess
+import os, sys, time, threading, subprocess, glob
 import cv2
 import numpy as np
 import requests
@@ -43,7 +18,7 @@ import requests
 def get_env_int(key, default): return int(os.getenv(key, str(default)))
 def get_env_float(key, default): return float(os.getenv(key, str(default)))
 
-SRC = os.getenv("CAM_SRC", "1"); SRC = int(SRC) if SRC.isdigit() else SRC
+SRC = os.getenv("CAM_SRC", "auto")   # <--- default is "auto" now
 CAM_W  = get_env_int("CAM_W", 640)
 CAM_H  = get_env_int("CAM_H", 360)
 CAM_FPS= get_env_int("CAM_FPS", 15)
@@ -108,14 +83,6 @@ GAMMA       = get_env_float("GAMMA", 1.0)
 LOCK_AE     = get_env_int("LOCK_AE", 0)
 EXPOSURE    = os.getenv("EXPOSURE", "")
 GAIN        = os.getenv("GAIN", "")
-
-# Backend select (macOS/ Linux)
-backend = 0
-if isinstance(SRC, int):
-    if sys.platform == "darwin":
-        backend = cv2.CAP_AVFOUNDATION
-    elif sys.platform.startswith("linux"):
-        backend = cv2.CAP_V4L2
 
 # -------------------- Helpers --------------------
 def _fire(url, payload):
@@ -198,16 +165,15 @@ def place_logo(vis, logo):
 
 def gov_colors(brg=220):
     brg = int(np.clip(brg, 160, 255))
-    header   = (60, 60, 80)          # deep slate
-    accent   = (min(255, int(brg*0.8)), brg, min(255, int(brg*0.9)))  # teal-ish
+    header   = (60, 60, 80)
+    accent   = (min(255, int(brg*0.8)), brg, min(255, int(brg*0.9)))
     pillIdle = (90, 90, 110)
     pillNear = (70, 180, 180)
     pillCool = (120, 160, 200)
-    # Progress palette (high contrast)
-    prog_bg  = (40, 40, 55)          # dark
-    prog_fg  = (80, 220, 120)        # vivid green
-    prog_bd  = (30, 180, 90)         # border
-    success_bg = (60, 180, 90)       # toast green
+    prog_bg  = (40, 40, 55)
+    prog_fg  = (80, 220, 120)
+    prog_bd  = (30, 180, 90)
+    success_bg = (60, 180, 90)
     return header, accent, pillIdle, pillNear, pillCool, prog_bg, prog_fg, prog_bd, success_bg
 
 # -------------------- Face detector --------------------
@@ -222,46 +188,91 @@ def faces_detect(gray_roi):
 
 # --------- Lighting preprocess (CLAHE + gamma) ----------
 def preprocess_gray(gray):
-    # CLAHE improves local contrast (faces under harsh light)
     if CLAHE:
         clahe = cv2.createCLAHE(clipLimit=max(0.5, CLAHE_CLIP),
                                 tileGridSize=(max(2, CLAHE_GRID), max(2, CLAHE_GRID)))
         gray = clahe.apply(gray)
-    # Gamma (post-CLAHE) for mid-tones
     if abs(GAMMA - 1.0) > 1e-3:
-        # LUT is faster
         inv = 1.0 / max(1e-6, GAMMA)
         lut = np.array([((i/255.0) ** inv) * 255 for i in range(256)]).astype("uint8")
         gray = cv2.LUT(gray, lut)
     return gray
 
-# --------- Camera controls (best-effort; backend-dependent) ----------
+# --------- Camera controls (best-effort) ----------
 def try_camera_options(cap):
-    # Some V4L backends accept these; others ignore silently.
     try:
         cap.set(cv2.CAP_PROP_FRAME_WIDTH,  CAM_W)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_H)
         cap.set(cv2.CAP_PROP_FPS,          CAM_FPS)
-        
-        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))  # ใช้ MJPEG ถ้ากล้องรองรับ
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)                            # ลดบัฟเฟอร์เฟรม
-        cap.set(cv2.CAP_PROP_CONVERT_RGB, 1)                           # ให้ไดรเวอร์แปลงเป็น BGR
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        cap.set(cv2.CAP_PROP_CONVERT_RGB, 1)
     except Exception:
         pass
-
-    # Give auto exposure a few frames to settle, then optionally lock.
-    # Many V4L drivers: CAP_PROP_AUTO_EXPOSURE: 0.25=auto, 0.75=manual (OpenCV weird scale)
     if LOCK_AE:
-        try:
-            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)  # manual
-        except Exception:
-            pass
+        try: cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)  # manual
+        except Exception: pass
         if EXPOSURE != "":
             try: cap.set(cv2.CAP_PROP_EXPOSURE, float(EXPOSURE))
             except Exception: pass
         if GAIN != "":
             try: cap.set(cv2.CAP_PROP_GAIN, float(GAIN))
             except Exception: pass
+
+# --------- Auto camera detection (Linux-friendly) ----------
+def select_backend(candidate):
+    if isinstance(candidate, int) and sys.platform.startswith("linux"):
+        return cv2.CAP_V4L2
+    if isinstance(candidate, int) and sys.platform == "darwin":
+        return cv2.CAP_AVFOUNDATION
+    return 0
+
+def test_camera(candidate):
+    backend = select_backend(candidate)
+    cap = cv2.VideoCapture(candidate, backend) if backend else cv2.VideoCapture(candidate)
+    if not cap or not cap.isOpened():
+        if cap: cap.release()
+        return None
+    try_camera_options(cap)
+    ok, _ = cap.read()
+    if not ok:
+        cap.release()
+        return None
+    return cap
+
+def autodetect_camera():
+    # 1) explicit env SRC if not "auto"
+    if SRC != "auto":
+        cand = int(SRC) if (isinstance(SRC, str) and SRC.isdigit()) else SRC
+        cap = test_camera(cand)
+        if cap: 
+            print(f"[INFO] Using camera: {cand}")
+            return cand, cap
+        raise RuntimeError(f"Cannot open camera: {cand}")
+
+    print("[INFO] Auto-detecting camera ports...")
+    candidates = []
+
+    if sys.platform.startswith("linux"):
+        # /dev/video* first
+        devs = sorted(glob.glob("/dev/video*"))
+        candidates.extend(devs)
+        # also try indices 0..9
+        candidates.extend(list(range(0,10)))
+    else:
+        # non-Linux: just try 0..5
+        candidates.extend(list(range(0,6)))
+
+    tried = []
+    for cand in candidates:
+        tried.append(str(cand))
+        cap = test_camera(cand)
+        if cap:
+            print(f"[INFO] Found working camera: {cand}")
+            return cand, cap
+
+    print("[ERROR] Tried candidates:", ", ".join(tried))
+    raise RuntimeError("No working camera found")
 
 # -------------------- Main --------------------
 def main():
@@ -275,13 +286,11 @@ def main():
     print(f"[INFO] GPIO cmd: {GPIO_WAKE_CMD}  SIMULATE={SIMULATE_GPIO}")
     print(f"[INFO] Lighting: CLAHE={CLAHE} (clip={CLAHE_CLIP}, grid={CLAHE_GRID})  GAMMA={GAMMA}  LOCK_AE={LOCK_AE}")
 
-    cap = cv2.VideoCapture(SRC, backend) if backend else cv2.VideoCapture(SRC)
-    try_camera_options(cap)
+    # ---- pick camera (auto) ----
+    cam_id, cap = autodetect_camera()
 
-    ok, _ = cap.read()
-    if not ok:
-        cap.release()
-        raise RuntimeError(f"Cannot open camera: {SRC}")
+    # warm-up
+    warmup_frames = 8
 
     rx = int(CAM_W*ROI_XF); ry = int(CAM_H*ROI_YF)
     rw = int(CAM_W*ROI_WF); rh = int(CAM_H*ROI_HF)
@@ -300,13 +309,19 @@ def main():
     if LOGO_PATH and os.path.exists(LOGO_PATH):
         logo = cv2.imread(LOGO_PATH, cv2.IMREAD_UNCHANGED)
 
-    if SHOW: cv2.namedWindow("SmartKiosk", cv2.WINDOW_NORMAL)
-
-    warmup_frames = 8  # let AE settle before we consider LOCK_AE
+    # ---- safe GUI open ----
+    global SHOW
+    if SHOW:
+        try:
+            cv2.namedWindow("SmartKiosk", cv2.WINDOW_NORMAL)
+        except cv2.error:
+            print("[WARN] OpenCV GUI backend not available. Forcing SHOW=0.")
+            SHOW = 0
 
     while True:
         ok, frame = cap.read()
         if not ok: break
+
         if warmup_frames > 0:
             warmup_frames -= 1
             if warmup_frames == 0 and LOCK_AE:
@@ -328,13 +343,12 @@ def main():
 
         dets = faces_detect(gray)
 
-        # pick largest (closest) face in ROI
+        # pick largest face in ROI
         best = None; best_w = 0
         for (x,y,w,h) in dets:
             if w > best_w:
                 best = (x,y,w,h); best_w = w
 
-        # valid only if width big enough (i.e., near enough)
         near_valid = (best is not None) and (best_w >= NEAR_PX)
 
         now_s  = time.time()
@@ -443,12 +457,19 @@ def main():
             white = np.full_like(overlay, 255)
             cv2.addWeighted(white, 0.18, overlay, 0.82, 0, vis)
 
+        # ---- safe imshow ----
         if SHOW:
-            cv2.imshow("SmartKiosk", vis)
-            if (cv2.waitKey(1) & 0xFF) in (27, ord('q')): break
+            try:
+                cv2.imshow("SmartKiosk", vis)
+                if (cv2.waitKey(1) & 0xFF) in (27, ord('q')): break
+            except cv2.error:
+                print("[WARN] imshow() failed. Running headless (SHOW=0).")
+                SHOW = 0
 
     cap.release()
-    if SHOW: cv2.destroyAllWindows()
+    if SHOW:
+        try: cv2.destroyAllWindows()
+        except cv2.error: pass
 
 # -------------------- Entry --------------------
 if __name__ == "__main__":

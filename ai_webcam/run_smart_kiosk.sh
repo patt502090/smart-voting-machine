@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # --- config: ปรับตามต้องการ ---
-SCRIPT="final(odroid).py"   # ชื่อไฟล์ Python ของคุณ
+SCRIPT="final(odroid)v2.py"   # ชื่อไฟล์ Python ของคุณ
 VENV_DIR=".venv"           # ถ้าใช้ virtualenv, ถ้าไม่ก็ leave empty
 CAM_DEV_DEFAULT="/dev/video0"
 CAM_W_DEFAULT=1280         # แนะนำลดจาก 2560 -> 1280 เพื่อให้ Odroid ไหว

@@ -11,6 +11,11 @@ struct Rec;
 void readRec(int idx, Rec &r);         // tell IDE not to autogenerate wrong prototypes
 void writeRec(int idx, const Rec &r);  // uses incomplete type by reference (OK)
 
+// ==== ด้านบนไฟล์ (globals) ====
+#define SAFE_PIN 0   // กดลง LOW ตอนบูตเพื่อ skip SD/TFT
+
+bool SAFE_MODE = false;
+
 
 #include "driver/rtc_io.h"  // สำหรับ rtc_gpio_get_level()
 #include "esp_system.h"
@@ -957,6 +962,12 @@ void setup() {
   Serial.begin(115200);
   Serial.setTimeout(200);
   mySerial.setTimeout(200);
+  pinMode(SAFE_PIN, INPUT_PULLUP);
+  SAFE_MODE = (digitalRead(SAFE_PIN) == LOW);
+  Serial.println();
+  Serial.println("=== BOOT ===");
+  Serial.printf("SAFE_MODE=%d\n", SAFE_MODE);
+  Serial.flush();
 
   Wire.begin();
 
@@ -1031,6 +1042,8 @@ void setup() {
 
   lastUltraLogMs = millis();
 }
+
+
 void loop() {
   int switchReg = digitalRead(switchPin33);
   int switchDel = digitalRead(switchPin32);

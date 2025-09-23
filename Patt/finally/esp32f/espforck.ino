@@ -217,6 +217,32 @@ inline void spi_idle_all() {
   pinMode(SD_CS,   OUTPUT); digitalWrite(SD_CS,   HIGH); // SD
 }
 
+// ===== Bus lock helpers for RC522 on shared VSPI =====
+inline void bus_acquire_for_rfid() {
+  // ปล่อยจอ/SD ออกจากบัสก่อน (กันจอค้าง CS ต่ำ)
+  // ถ้าใช้ TFT_eSPI: endWrite จะปล่อย CS ของจอ
+  tft.endWrite();                // <-- ปล่อยธุรกรรมของจอ (ถ้าค้างอยู่)
+  pinMode(TFT_CS, OUTPUT); digitalWrite(TFT_CS, HIGH);
+  pinMode(SD_CS,  OUTPUT); digitalWrite(SD_CS,  HIGH);
+
+  // ย้ำว่า SS ของ RC522 = HIGH ก่อนเริ่ม (กันเศษเดิม)
+  pinMode(SS_PIN, OUTPUT); digitalWrite(SS_PIN, HIGH);
+  // ตั้งความถี่สำหรับ RC522 (<= 10MHz)
+  SPI.beginTransaction(SPISettings(8000000, MSBFIRST, SPI_MODE0));
+  // เลือก RC522
+  digitalWrite(SS_PIN, LOW);
+}
+
+inline void bus_release_after_rfid() {
+  // ปล่อย RC522 ออกจากบัส
+  digitalWrite(SS_PIN, HIGH);
+  SPI.endTransaction();
+
+  // ปล่อยทุกตัวกลับ idle
+  digitalWrite(TFT_CS, HIGH);
+  digitalWrite(SD_CS,  HIGH);
+}
+
 
 // ---------- I/O ----------
 const int EEPROM_SIZE = 512;
@@ -521,9 +547,12 @@ void registerCardAndFingerprint() {
 
   // รอการ์ด
   while (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) { delay(50); }
-  String uidHex = readRFIDasHex();
+  String uidHex;
+  bus_acquire_for_rfid();
+  uidHex = readRFIDasHex();
   rfid.PICC_HaltA();
   rfid.PCD_StopCrypto1();
+  bus_release_after_rfid();
 
   if (findByUID(uidHex) >= 0) {
     Serial.println("This card is already registered.");
@@ -931,8 +960,10 @@ void setup() {
   }
 
   // ===== [ADD] Init RFID หลัง SD เพื่อกันชนบัส =====
-  spi_idle_all();                           // เคลียร์บัสก่อนเข้า RC522
+  spi_idle_all();
+  bus_acquire_for_rfid();
   rfid.PCD_Init();
+  bus_release_after_rfid();
 
   // Ultrasonic
   pinMode(TRIG_PIN, OUTPUT);
@@ -989,7 +1020,14 @@ void loop() {
   }
 
   // โหมดใช้งานปกติ: แตะบัตร → ต้องยืนยันนิ้วเจ้าของบัตร
+  bool cardReady = false;
+  bus_acquire_for_rfid();
   if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
+    cardReady = true;
+  }
+  bus_release_after_rfid();
+
+  if (cardReady) {
     normalScanFlow();
   }
 

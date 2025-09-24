@@ -1267,7 +1267,7 @@ void setup()
     attachInterrupt(digitalPinToInterrupt(WAKE_PIN), WAKE_isr, CHANGE);
 
     // --- Serial / I2C / UART2 ---
-    Serial.begin(115200);
+    Serial.begin(9600);
     Serial.setTimeout(200);
     mySerial.setTimeout(200);
     Wire.begin();

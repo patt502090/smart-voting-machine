@@ -928,31 +928,88 @@ void ultrasonicTickForSleep() {
 #include "esp_system.h"
 
 // แทนฟังก์ชัน tft_output เดิมทั้งหมด
+// Callback ของ TJpgDec ที่รองรับการครอปทุกทิศ (x/y อาจติดลบได้)
 bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap) {
-  if (y >= tft.height() || x >= tft.width()) return false;
-  for (uint16_t row = 0; row < h; row++) {
-    tft.pushImage(x, y + row, w, 1, bitmap + row * w);
+  int16_t W = tft.width();
+  int16_t H = tft.height();
+
+  // ตัดแถวที่อยู่นอกจอด้านบน/ล่าง
+  if (y >= H || (y + (int16_t)h) <= 0) return true;
+
+  // แถวต่อแถว (เพื่อคลิปซ้าย/ขวาได้ละเอียดยิ่งขึ้น)
+  for (int16_t row = 0; row < (int16_t)h; row++) {
+    int16_t yy = y + row;
+    if (yy < 0 || yy >= H) continue;               // นอกจอแนวตั้ง ข้าม
+
+    int16_t xx = x;
+    int16_t ww = (int16_t)w;
+    uint16_t *src = bitmap + row * w;
+
+    // คลิปลบซ้าย
+    if (xx < 0) {
+      int16_t skip = -xx;
+      if (skip >= ww) continue;                    // ทั้งแถวอยู่นอกจอ
+      xx = 0;
+      ww -= skip;
+      src += skip;
+    }
+    // คลิปล้นขวา
+    if (xx + ww > W) {
+      int16_t keep = W - xx;
+      if (keep <= 0) continue;
+      ww = keep;
+    }
+
+    if (ww > 0) tft.pushImage(xx, yy, (uint16_t)ww, 1, src);
   }
   return true;
 }
 
+// วาด JPEG พอดีจอ เริ่มที่ (0,0) โดยไม่จัดกึ่งกลาง/ไม่ครอบ
+bool drawJpgExactFromSD(const String &path) {
+  TJpgDec.setJpgScale(1);  // ไม่ลดสเกล (ไฟล์คุณ 240x320 พอดีจอแล้ว)
+  digitalWrite(SD_CS, HIGH);
+  digitalWrite(SS_PIN, HIGH);
+  digitalWrite(TFT_CS, LOW);
+
+  // ล้างจอ (จะเริ่มวาดจาก 0,0 ทับไปเลย)
+  tft.fillScreen(TFT_BLACK);
+
+  bool ok = TJpgDec.drawSdJpg(0, 0, path.c_str());  // <<< จุดสำคัญ: (0,0)
+
+  digitalWrite(TFT_CS, HIGH);
+  return ok;
+}
+
 // [ADD] วาดรูปให้พอดีกลางจอ
-bool drawJpgCenteredFromSD(const String &path) {
+// วาด JPEG ให้ "เต็มจอ" แบบครอบ (cover) ด้วยการ downscale 1/2/4/8 แล้วเลื่อนศูนย์กลาง
+bool drawJpgCoverFromSD(const String &path) {
   uint16_t jw, jh;
   if (!TJpgDec.getJpgSize(&jw, &jh, path.c_str())) return false;
 
   uint16_t sw = tft.width(), sh = tft.height();
-  float sx = (float)sw / jw, sy = (float)sh / jh;
-  float s = min(sx, sy);
+
+  // เลือก scale (1/2/4/8) ที่ทำให้รูปหลังสเกล >= จอ ทั้งสองมิติ (เพื่อ cover)
+  uint8_t candidates[4] = {1, 2, 4, 8};
   uint8_t scale = 1;
-  if (s <= 0.125f) scale = 8;
-  else if (s <= 0.25f) scale = 4;
-  else if (s <= 0.5f) scale = 2;
+  bool ok = false;
+  for (uint8_t i = 0; i < 4; i++) {
+    uint8_t s = candidates[i];
+    uint16_t dw = jw / s;
+    uint16_t dh = jh / s;
+    if (dw >= sw && dh >= sh) { scale = s; ok = true; break; }
+  }
+  if (!ok) {
+    // ไม่มีสเกลที่ครอบเต็ม (เช่นไฟล์เล็กกว่าจอมาก) -> ใช้ scale=1 (จะไม่เต็มเป๊ะ)
+    scale = 1;
+  }
   TJpgDec.setJpgScale(scale);
 
   uint16_t dw = jw / scale, dh = jh / scale;
-  int16_t ox = (sw > dw) ? (sw - dw) / 2 : 0;
-  int16_t oy = (sh > dh) ? (sh - dh) / 2 : 0;
+
+  // origin ติดลบเมื่อ dw/dh > จอ → ให้ครอบกลางจอ
+  int16_t ox = (int16_t)((int32_t)sw - (int32_t)dw) / 2;
+  int16_t oy = (int16_t)((int32_t)sh - (int32_t)dh) / 2;
 
   // ปล่อยบัสอื่นก่อนใช้จอ
   digitalWrite(SD_CS, HIGH);
@@ -960,10 +1017,10 @@ bool drawJpgCenteredFromSD(const String &path) {
   digitalWrite(TFT_CS, LOW);
 
   tft.fillScreen(TFT_BLACK);
-  bool ok = TJpgDec.drawSdJpg(ox, oy, path.c_str());
+  bool res = TJpgDec.drawSdJpg(ox, oy, path.c_str()); // ox/oy อาจติดลบได้ (เราคลิปใน callback แล้ว)
 
   digitalWrite(TFT_CS, HIGH);
-  return ok;
+  return res;
 }
 
 // [ADD] ช่วยแสดงรูปตามหมายเลข (รองรับ .jpg/.JPG)
@@ -985,7 +1042,7 @@ void showCandidateJpg(uint8_t n) {
     digitalWrite(TFT_CS, HIGH);
     return;
   }
-  drawJpgCenteredFromSD(path);
+  drawJpgExactFromSD(path);
 }
 
 void showIdleScreen(const char *msg = "Ready") {
@@ -1035,41 +1092,48 @@ void setup() {
   spi_idle_all();  // ดันทุก CS = HIGH
 
   // --- SD Card: ลอง 10 MHz -> 4 MHz ---
-  bool sdOK = false;
-  {
-    // ปล่อยบัสจากอุปกรณ์อื่นไว้ก่อน
-    digitalWrite(TFT_CS, HIGH);
-    digitalWrite(SS_PIN, HIGH);
+  // --- SD Card: เริ่มแบบปลอดภัย ไม่ดึง CS ลงเอง ---
+bool sdOK = false;
+{
+  // ให้แน่ใจว่า CS ทุกตัวเป็น OUTPUT และ HIGH
+  pinMode(SD_CS,  OUTPUT);
+  pinMode(TFT_CS, OUTPUT);
+  pinMode(SS_PIN, OUTPUT);
+  digitalWrite(SD_CS,  HIGH);  // <-- สำคัญ: ปล่อย HIGH
+  digitalWrite(TFT_CS, HIGH);
+  digitalWrite(SS_PIN, HIGH);
 
-    digitalWrite(SD_CS, LOW);
-    if (SD.begin(SD_CS, SPI, 10000000)) {  // 10 MHz
-      if (SD.cardType() != CARD_NONE) sdOK = true;
-      else SD.end();
+  // เริ่มที่ความถี่ต่ำก่อน (เสถียรสุด) แล้วค่อยเพิ่ม
+  if (SD.begin(SD_CS, SPI, 1000000)) {            // 1 MHz
+    sdOK = (SD.cardType() != CARD_NONE);
+    if (!sdOK) SD.end();
+  }
+  if (!sdOK) {
+    if (SD.begin(SD_CS, SPI, 4000000)) {          // 4 MHz
+      sdOK = (SD.cardType() != CARD_NONE);
+      if (!sdOK) SD.end();
     }
-    digitalWrite(SD_CS, HIGH);
-
-    if (!sdOK) {
-      delay(5);
-      digitalWrite(SD_CS, LOW);
-      if (SD.begin(SD_CS, SPI, 4000000)) {  // 4 MHz fallback
-        if (SD.cardType() != CARD_NONE) sdOK = true;
-        else SD.end();
-      }
-      digitalWrite(SD_CS, HIGH);
-    }
-
-    if (sdOK) {
-      Serial.printf("SD OK, type=%u, size=%llu MB\n",
-                    (unsigned)SD.cardType(),
-                    (unsigned long long)(SD.cardSize() / (1024ULL * 1024ULL)));
-    } else {
-      Serial.println("SD mount failed (tried 10MHz, then 4MHz)");
+  }
+  if (!sdOK) {
+    if (SD.begin(SD_CS, SPI, 10000000)) {         // 10 MHz (ถ้าการ์ดดี)
+      sdOK = (SD.cardType() != CARD_NONE);
+      if (!sdOK) SD.end();
     }
   }
 
+  if (sdOK) {
+    Serial.printf("SD OK, type=%u, size=%llu MB\n",
+                  (unsigned)SD.cardType(),
+                  (unsigned long long)(SD.cardSize() / (1024ULL * 1024ULL)));
+  } else {
+    Serial.println("SD mount failed (tried 1/4/10 MHz)");
+  }
+}
+
   // --- TFT + TJpg callback ---
   tft.init();
-  tft.setRotation(1);  // แนวนอน 320x240
+  tft.setSwapBytes(true); 
+  tft.setRotation(0);  // แนวนอน 320x240
   TJpgDec.setCallback(tft_output);
   showIdleScreen(sdOK ? "SD OK" : "No SD");
 

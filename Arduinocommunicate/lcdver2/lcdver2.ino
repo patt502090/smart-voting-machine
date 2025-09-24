@@ -36,7 +36,7 @@ TM1638plus tm(STB, CLK, DIO, false);  // ต้องใส่ bool argument
 #include <avr/interrupt.h>
 
 // --- Sleep/Idle policy ---
-#define IDLE_SLEEP_MS 60000000UL  // ว่าง 60s -> หลับลึก
+#define IDLE_SLEEP_MS 60000UL  // ว่าง 60s -> หลับลึก
 unsigned long lastActivityMs = 0;
 
 // ===== SD / Audio =====
@@ -658,6 +658,8 @@ void loop() {
     if (!canVote && page != PAGE_REG_PASS) {
       buzzer.playError();
     } else {
+        Serial.print(F("CF:"));
+        Serial.println(k);
       if (page == PAGE_VOTE || page == PAGE_CONFIRM) {
         vote(k);
       } else if (page == PAGE_REG_PASS) {

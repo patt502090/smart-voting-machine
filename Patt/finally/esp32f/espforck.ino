@@ -114,6 +114,32 @@ void dbgPrintWakePin(const char *tag) {
   Serial.println(WAKE_lastMs);
 }
 
+
+// ==== [ADD] Election state from UNO ====
+enum U2State { U2_PREOPEN, U2_OPEN, U2_CLOSED, U2_RTCERR };
+U2State u2State = U2_PREOPEN, u2Last = (U2State)255;
+
+// เปิด/ปิดสิทธิ์โหวต (ฝั่ง ESP จะสั่ง UNO ต่อด้วย "V"/"W")
+void applyU2State(U2State s) {
+  u2State = s;
+  if (u2State == U2_OPEN) {
+    // บอกบอร์ดลูกให้เข้าโหมดโหวต
+    mySerial.println("V");
+    // แจ้งบนจอ
+    showIdleScreen("OPEN");
+  } else if (u2State == U2_PREOPEN) {
+    mySerial.println("W");
+    showIdleScreen("PREOPEN");
+  } else if (u2State == U2_CLOSED) {
+    mySerial.println("W");
+    showIdleScreen("CLOSED");
+  } else { // RTCERR
+    mySerial.println("W");
+    showIdleScreen("RTC ERR");
+  }
+}
+
+
 // ใช้ GPIO35 เป็นขาปลุก (ต่อมาจาก ODROID PIN_33 ผ่าน R อนุกรม ~1k)
 // *GPIO35 เป็นขา RTC input ได้ ปลุกด้วย ext1 ได้
 
@@ -1139,21 +1165,55 @@ void setup() {
 
 // [ADD] ฟังก์ชันรับคำสั่งจากบอร์ดลูกโซ่
 void handleU2Line(const String &raw) {
-  String m = raw;
-  m.trim();
-  if (m.startsWith("SEL:")) {
-    if (m.equalsIgnoreCase("SEL:CLEAR")) {
-      showIdleScreen("Ready");
-    } else {
-      int n = m.substring(4).toInt();  // หลัง "SEL:"
-      if (n >= 0 && n <= 99) showCandidateJpg((uint8_t)n);
-      else showIdleScreen("Bad SEL");
+    String m = raw; m.trim();
+    if (m.length() == 0) return;
+  
+    // ---- ภาพ / เคลียร์ / ข้อความสั้น ----
+    if (m.startsWith("SEL:")) {
+      if (m.equalsIgnoreCase("SEL:CLEAR")) {
+        showIdleScreen("Ready");
+      } else {
+        int n = m.substring(4).toInt();  // หลัง "SEL:"
+        if (n >= 0 && n <= 99) showCandidateJpg((uint8_t)n);
+        else showIdleScreen("Bad SEL");
+      }
+      return;
     }
-    return;
+    if (m.startsWith("IMG:")) {
+      int n = m.substring(4).toInt();
+      showCandidateJpg((uint8_t)n);
+      return;
+    }
+    if (m.equalsIgnoreCase("CLR")) {
+      showIdleScreen("Ready");
+      return;
+    }
+    if (m.startsWith("TXT:")) {
+      String t = m.substring(4);
+      showIdleScreen(t.c_str());
+      return;
+    }
+  
+    // ---- สถานะช่วงเวลาเลือกตั้งจาก UNO (RTC DS1307 ฝั่ง UNO) ----
+    if (m.startsWith("STATE:")) {
+      // รูปแบบที่ UNO ส่ง: STATE:PREOPEN | STATE:OPEN | STATE:CLOSED
+      // เพิ่มพิเศษ: STATE:OPEN:FORCE | STATE:CLOSED:FORCE | STATE:RTCERR
+      U2State ns = u2State;
+      if (m.indexOf("PREOPEN") >= 0) ns = U2_PREOPEN;
+      else if (m.indexOf("OPEN") >= 0) ns = U2_OPEN;
+      else if (m.indexOf("CLOSED") >= 0) ns = U2_CLOSED;
+      else if (m.indexOf("RTCERR") >= 0) ns = U2_RTCERR;
+  
+      if (ns != u2Last) {
+        u2Last = ns;
+        applyU2State(ns);
+      }
+      return;
+    }
+  
+    // ---- อย่างอื่นๆ ก็พิมพ์ log ไว้เฉยๆ ----
+    Serial.println(raw);
   }
-  // ดีบั๊กข้อความอื่น ๆ
-  Serial.println(raw);
-}
 
 // ===== วางฟังก์ชันนี้ "ถัดจาก" ปิดวงเล็บของ setup() =====
 void loop() {

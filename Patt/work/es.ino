@@ -40,6 +40,32 @@ struct Rec {
 #include <EEPROM.h>
 #include <Adafruit_Fingerprint.h>
 
+// ===== UI (no-image) =====
+enum UIState
+{
+  UI_BOOT,
+  UI_READY,
+  UI_SCAN_CARD,
+  UI_CARD_OK,
+  UI_CARD_FAIL,
+  UI_SCAN_FINGER,
+  UI_FINGER_OK,
+  UI_FINGER_FAIL,
+  UI_CONFIRM,
+  UI_THANKS,
+  UI_ERROR,
+  UI_SLEEP,
+  UI_WAKE
+};
+static bool uiShownScanCard = false;
+static uint32_t uiScanCardShownAt = 0;
+
+UIState g_lastState = UI_READY;
+static String g_lastSubtitle;                       // จำ subtitle ล่าสุด
+static uint32_t g_lastPaintMs = 0;                  // ไว้คุมคูลดาวน์ (ถ้าต้องการ)
+static const uint16_t SAME_STATE_COOLDOWN_MS = 350; // กันสั่น (ปรับได้/จะปิดก็ได้)
+static bool isShowingPhoto = false;
+
 // [ADD] จอ + SD + JPG decoder
 #include <TFT_eSPI.h>
 #include <TJpg_Decoder.h>
@@ -110,24 +136,6 @@ void dbgPrintWakePin(const char *tag)
   Serial.print("  lastMs=");
   Serial.println(WAKE_lastMs);
 }
-
-// ===== UI (no-image) =====
-enum UIState
-{
-  UI_BOOT,
-  UI_READY,
-  UI_SCAN_CARD,
-  UI_CARD_OK,
-  UI_CARD_FAIL,
-  UI_SCAN_FINGER,
-  UI_FINGER_OK,
-  UI_FINGER_FAIL,
-  UI_CONFIRM,
-  UI_THANKS,
-  UI_ERROR,
-  UI_SLEEP,
-  UI_WAKE
-};
 
 // --------- Helpers: geometry & text ----------
 void fillGradientV(uint16_t c1, uint16_t c2)
@@ -546,10 +554,31 @@ void paintScreenToSprite(UIState s, const char *subtitle, bool popIcon = false, 
 }
 
 // --------- Main painter ----------
-UIState g_lastState = UI_READY;
 
 void showUIx(UIState s, const char *subtitle = nullptr, UITrans tr = TR_SLIDE_L)
 {
+  if (isShowingPhoto)
+    return;
+  // แปลง subtitle เป็น String เพื่อเทียบ
+  const String sub = subtitle ? String(subtitle) : String();
+
+  // ===== 1) ถ้า state และ subtitle เหมือนเดิม เป๊ะ → ไม่วาดซ้ำ =====
+  const uint32_t now = millis();
+  if (s == g_lastState && sub == g_lastSubtitle)
+  {
+    // (ออปชัน) อนุญาตคูลดาวน์กันสั่น: แม้ state/ข้อความเท่าเดิม ก็ไม่วาดจนกว่าจะพ้นเวลา
+    if (SAME_STATE_COOLDOWN_MS == 0 || (now - g_lastPaintMs) < SAME_STATE_COOLDOWN_MS)
+    {
+      return;
+    }
+  }
+
+  // ===== 2) อัปเดตค่า “ล่าสุด” =====
+  g_lastState = s;
+  g_lastSubtitle = sub;
+  g_lastPaintMs = now;
+
+  // ===== 3) วาดจริง (โค้ดเดิมของคุณด้านล่างเหมือนเดิม) =====
   const int W = tft.width(), H = tft.height();
 
   if (spr.created())
@@ -571,16 +600,14 @@ void showUIx(UIState s, const char *subtitle = nullptr, UITrans tr = TR_SLIDE_L)
     float k = easeInOutQuad((float)(i + 1) / POP_FR);
     spr.fillSprite(TFT_BLACK);
     paintScreenToSprite(s, subtitle, true, k);
-    // แสดงตรงๆ ไม่ต้องยุ่ง CS
     spr.pushSprite(0, 0);
     delay(12);
   }
 
-  // เตรียมเฟรมสุดท้าย
+  // เฟรมสุดท้าย + slide-in
   spr.fillSprite(TFT_BLACK);
   paintScreenToSprite(s, subtitle, false, 1.0f);
 
-  // Slide-in
   if (tr == TR_NONE)
   {
     spr.pushSprite(0, 0);
@@ -600,14 +627,12 @@ void showUIx(UIState s, const char *subtitle = nullptr, UITrans tr = TR_SLIDE_L)
         y = (int)((1.0f - k) * H);
       else if (tr == TR_SLIDE_DOWN)
         y = (int)(-(1.0f - k) * H);
-
       spr.pushSprite(x, y);
       delay(14);
     }
   }
 
-  g_lastState = s;
-  // เปิดเอฟเฟกต์กรอบเฉพาะหน้าที่กำลังสแกน
+  // เปิดเอฟเฟกต์กรอบเฉพาะหน้าสแกน
   bool scanState = (s == UI_SCAN_CARD || s == UI_SCAN_FINGER);
   uiSetScanning(scanState);
 }
@@ -1396,9 +1421,11 @@ void normalScanFlow()
   showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_SLIDE_UP);
 
   // --- อ่าน UID (คงสไตล์เดิม: อ่านเลย ไม่ยื้อรอ) ---
+  bus_acquire_for_rfid();
   String uidHex = readRFIDasHex();
   rfid.PICC_HaltA();
   rfid.PCD_StopCrypto1();
+  bus_release_after_rfid();
 
   // --- ตรวจว่าการ์ดอยู่ในระบบ? ---
   int idx = findByUID(uidHex);
@@ -1731,16 +1758,28 @@ bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap)
 // วาด JPEG พอดีจอ เริ่มที่ (0,0) โดยไม่จัดกึ่งกลาง/ไม่ครอบ
 bool drawJpgExactFromSD(const String &path)
 {
-  TJpgDec.setJpgScale(1); // ไม่ลดสเกล (ไฟล์คุณ 240x320 พอดีจอแล้ว)
+  uint16_t jw, jh;
+  if (!TJpgDec.getJpgSize(&jw, &jh, path.c_str()))
+  {
+    // แจ้งบนจอว่าไม่รองรับ (มักเป็น Progressive JPEG)
+    digitalWrite(SD_CS, HIGH);
+    digitalWrite(SS_PIN, HIGH);
+    digitalWrite(TFT_CS, LOW);
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+    tft.drawString("Unsupported JPG", 10, 10, 2);
+    tft.drawString("Likely Progressive", 10, 28, 2);
+    tft.drawString(path, 10, 46, 2);
+    digitalWrite(TFT_CS, HIGH);
+    return false;
+  }
+
+  TJpgDec.setJpgScale(1);
   digitalWrite(SD_CS, HIGH);
   digitalWrite(SS_PIN, HIGH);
   digitalWrite(TFT_CS, LOW);
-
-  // ล้างจอ (จะเริ่มวาดจาก 0,0 ทับไปเลย)
   tft.fillScreen(TFT_BLACK);
-
-  bool ok = TJpgDec.drawSdJpg(0, 0, path.c_str()); // <<< จุดสำคัญ: (0,0)
-
+  bool ok = TJpgDec.drawSdJpg(0, 0, path.c_str());
   digitalWrite(TFT_CS, HIGH);
   return ok;
 }
@@ -1799,23 +1838,36 @@ bool drawJpgCoverFromSD(const String &path)
 // [ADD] ช่วยแสดงรูปตามหมายเลข (รองรับ .jpg/.JPG)
 void showCandidateJpg(uint8_t n)
 {
-  String path = "/" + String(n) + ".jpg";
-  if (!SD.exists(path))
+  String p_plain = "/" + String(n) + ".jpg";
+  String p_plainU = "/" + String(n) + ".JPG";
+  char buf[16];
+  snprintf(buf, sizeof(buf), "/%02u.jpg", n);
+  String p_pad = String(buf);
+  snprintf(buf, sizeof(buf), "/%02u.JPG", n);
+  String p_padU = String(buf);
+
+  String path;
+  if (SD.exists(p_plain))
+    path = p_plain;
+  else if (SD.exists(p_plainU))
+    path = p_plainU;
+  else if (SD.exists(p_pad))
+    path = p_pad;
+  else if (SD.exists(p_padU))
+    path = p_padU;
+
+  if (path.length() == 0)
   {
-    String alt = "/" + String(n) + ".JPG";
-    if (SD.exists(alt))
-      path = alt;
-  }
-  if (!SD.exists(path))
-  {
-    // ไม่มีไฟล์ → บอกบนจอ
     digitalWrite(SD_CS, HIGH);
     digitalWrite(SS_PIN, HIGH);
     digitalWrite(TFT_CS, LOW);
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_YELLOW, TFT_BLACK);
     tft.drawString("Missing:", 8, 96, 2);
-    tft.drawString(path, 8, 114, 2);
+    tft.drawString("/" + String(n) + ".jpg", 8, 114, 2);
+    char miss[16];
+    snprintf(miss, sizeof(miss), "/%02u.jpg", n);
+    tft.drawString(String("or ") + miss, 8, 132, 2);
     digitalWrite(TFT_CS, HIGH);
     return;
   }
@@ -1983,24 +2035,30 @@ void handleU2Line(const String &raw)
   {
     if (m.equalsIgnoreCase("SEL:CLEAR"))
     {
-      showIdleScreen("Ready");
+      isShowingPhoto = false;                                 // ปลดล็อก
+      uiSetScanning(true);                                    // จะให้กรอบสแกนทำงานต่อก็ได้
+      showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_SLIDE_UP); // กลับไปหน้าหลัก
     }
     else
     {
       int n = m.substring(4).toInt(); // หลัง "SEL:"
       if (n >= 0 && n <= 99)
+      {
+        isShowingPhoto = true; // ล็อกไม่ให้ UI ทับ
+        uiSetScanning(false);  // ปิดกรอบแอนิเมชันบนหน้ารูป
         showCandidateJpg((uint8_t)n);
+      }
       else
+      {
+        isShowingPhoto = true;
+        uiSetScanning(false);
         showIdleScreen("Bad SEL");
+      }
     }
     return;
   }
-  // ดีบั๊กข้อความอื่น ๆ
   Serial.println(raw);
 }
-
-static bool uiShownScanCard = false;
-static uint32_t uiScanCardShownAt = 0;
 
 // ===== วางฟังก์ชันนี้ "ถัดจาก" ปิดวงเล็บของ setup() =====
 void loop()

@@ -5,8 +5,8 @@ set -euo pipefail
 SCRIPT="final(odroid)v2.py"   # ชื่อไฟล์ Python ของคุณ
 VENV_DIR=".venv"           # ถ้าใช้ virtualenv, ถ้าไม่ก็ leave empty
 CAM_DEV_DEFAULT="/dev/video0"
-CAM_W_DEFAULT=1280         # แนะนำลดจาก 2560 -> 1280 เพื่อให้ Odroid ไหว
-CAM_H_DEFAULT=720
+CAM_W_DEFAULT=1980         # แนะนำลดจาก 2560 -> 1280 เพื่อให้ Odroid ไหว
+CAM_H_DEFAULT=1080
 SHOW_DEFAULT=0             # 0 = headless (no GUI), 1 = show window (only if GUI supported)
 # ----------------------------------
 

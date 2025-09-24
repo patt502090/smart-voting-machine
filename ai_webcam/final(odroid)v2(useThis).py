@@ -47,8 +47,8 @@ def get_env_int(key, default): return int(os.getenv(key, str(default)))
 def get_env_float(key, default): return float(os.getenv(key, str(default)))
 
 SRC = os.getenv("CAM_SRC", "auto")
-CAM_W  = get_env_int("CAM_W", 640)
-CAM_H  = get_env_int("CAM_H", 360)
+CAM_W  = get_env_int("CAM_W", 1980)
+CAM_H  = get_env_int("CAM_H", 1080)
 CAM_FPS= get_env_int("CAM_FPS", 15)
 
 SHOW   = get_env_int("SHOW", 1)

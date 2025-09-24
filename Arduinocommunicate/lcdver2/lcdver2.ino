@@ -36,7 +36,7 @@ TM1638plus tm(STB, CLK, DIO, false);  // ต้องใส่ bool argument
 #include <avr/interrupt.h>
 
 // --- Sleep/Idle policy ---
-#define IDLE_SLEEP_MS 60000000UL  // ว่าง 60s -> หลับลึก
+#define IDLE_SLEEP_MS 60000UL  // ว่าง 60s -> หลับลึก
 unsigned long lastActivityMs = 0;
 
 // ===== SD / Audio =====
@@ -573,7 +573,7 @@ void vote(char k) {
       confirmUntil = millis() + 10000UL;
       currentChoice = -1;
       canVote = false;
-      tmrpcm.stopPlayback(); 
+      tmrpcm.stopPlayback();
       //playIfIdle("fv.wav");
 
     } else {
@@ -604,7 +604,8 @@ void afterWake() {
 
 // ============ SETUP / LOOP ============
 void setup() {
-  wdt_sanity_boot();pinMode(10, OUTPUT); 
+  wdt_sanity_boot();
+  pinMode(10, OUTPUT);
   Serial.begin(9600);
 
   tmrpcm.speakerPin = 9;  // UNO/Nano ใช้ D9
@@ -622,7 +623,7 @@ void setup() {
   if (!tmrpcm.isPlaying()) {
     tmrpcm.play((char*)"sa.wav");
   }
-  
+
 
   buzzer.init();
   //buzzer.playBoot();  // jingle เปิดเครื่อง
@@ -649,10 +650,16 @@ void loop() {
   char k = kpd.getKey();
   if (k) {
     noteActivity();
+    if (k == 'A' || k == 'B' || k == 'C' || k == 'D') {
+      buzzer.playClickHi();
+      return;
+    }
     // ถ้ายังไม่ได้รับสิทธิ์ → เมินคีย์ (ให้ feedback เป็น error beep)
     if (!canVote && page != PAGE_REG_PASS) {
       buzzer.playError();
     } else {
+        Serial.print(F("CF:"));
+        Serial.println(k);
       if (page == PAGE_VOTE || page == PAGE_CONFIRM) {
         vote(k);
       } else if (page == PAGE_REG_PASS) {
@@ -662,7 +669,7 @@ void loop() {
   }
 
   // อ่าน Serial: โปรโตคอลอักขระเดี่ยวจาก ESP32
-  int msg=-1 ;
+  int msg = -1;
 
   while (Serial.available()) {
     noteActivity();
@@ -678,7 +685,7 @@ void loop() {
   }
 
   // ใช้เฉพาะเมื่อมีอักขระจริง
- if (msg != -1) {
+  if (msg != -1) {
     // หลีกเลี่ยงการ clear ระหว่างเล่นเสียง
     if (!tmrpcm.isPlaying()) {
       lcd.setCursor(0, 0);
@@ -686,50 +693,46 @@ void loop() {
       lcd.print(' ');
     }
 
-    if (msg == 'S') { 
-      //playIfIdle("re.wav"); 
-       tmrpcm.play("re.wav");
-      }  // กำลังอ่านบัตร
-    else if (msg == 'W') {                     // ยังไม่ลงทะเบียน/เพิกถอนสิทธิ์
+    if (msg == 'S') {
+      //playIfIdle("re.wav");
+      tmrpcm.play("re.wav");
+    }                       // กำลังอ่านบัตร
+    else if (msg == 'W') {  // ยังไม่ลงทะเบียน/เพิกถอนสิทธิ์
       canVote = false;
       page = PAGE_WAIT;
       drawReadyUI_base();
       //playIfIdle("n.wav");
       tmrpcm.play("n.wav");
-    }     
-    else if (msg == 'G') {                
+    } else if (msg == 'G') {
       //canVote = false;
       //page = PAGE_WAIT;
       //drawReadyUI_base();
       //playIfIdle("f.wav");
       tmrpcm.play("f.wav");
-    }
-    else if (msg == 'J') {                    
-      
+    } else if (msg == 'J') {
+
       //page = PAGE_WAIT;
       //drawReadyUI_base();
       //playIfIdle("q.wav");
       tmrpcm.play("q.wav");
-    }  
-    else if (msg == 'P') {                  
-    
-     // page = PAGE_WAIT;
+    } else if (msg == 'P') {
+
+      // page = PAGE_WAIT;
       //drawReadyUI_base();
       //playIfIdle("p.wav");
       tmrpcm.play("p.wav");
-    }
-    else if (msg == 'L') {                     
-     
+    } else if (msg == 'L') {
+
       //page = PAGE_WAIT;
       //drawReadyUI_base();
       //playIfIdle("l.wav");
       tmrpcm.play("l.wav");
-    } 
-    else if (msg == 'O') {  // ยืนยันตัวตนสำเร็จ -> เปิดสิทธิ์
-      //canVote = true;
-      //page = PAGE_VOTE;
-      //drawVoteUI_base();
-      //playIfIdle("c.wav");
+    } else if (msg == 'O') {  // ยืนยันตัวตนสำเร็จ -> เปิดสิทธิ์
+
+      tmrpcm.play("c.wav");
+      canVote = true;
+      page = PAGE_VOTE;
+      drawVoteUI_base();
       tmrpcm.play("c.wav");
       //buzzer.playConfirm();
     } else if (msg == 'V') {  // พร้อมโหวต (ใช้ร่วมได้)
@@ -738,8 +741,7 @@ void loop() {
       drawVoteUI_base();
       //playIfIdle("ch.wav");
       tmrpcm.play("ch.wav");
-    }
-    else if (msg == 'R') {
+    } else if (msg == 'R') {
       // Toggle registration mode every time we receive 'R' from ESP32
       fregis = !fregis;
 
@@ -765,9 +767,9 @@ void loop() {
       }
     }
 
-   
- 
-  }    /**/
+
+
+  } /**/
 
   // อนิเมชัน / หน้าคอนเฟิร์ม non-blocking
   if (page == PAGE_WAIT) animateReady();
@@ -825,7 +827,7 @@ void loop() {
   }
 
   // อัปเดตบัซเซอร์ทุกเฟรม (state machine)
-  buzzer.update(); 
+  buzzer.update();
 
 
   // ---------- Auto-sleep เมื่อว่าง ----------

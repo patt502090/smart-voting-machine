@@ -54,6 +54,31 @@ struct Rec {
 // [ADD] สร้างอ็อบเจ็กต์จอ
 TFT_eSPI tft;
 
+// ===== [ADD HERE] JPEG file scanner helpers =====
+bool isJpg(const String& s){ String x=s; x.toLowerCase(); return x.endsWith(".jpg")||x.endsWith(".jpeg"); }
+
+const int MAX_FILES = 64;
+String files[MAX_FILES];
+int fileCount = 0;
+
+void scanRootJpegs(){
+  fileCount = 0;
+  File root = SD.open("/");
+  if(!root || !root.isDirectory()) return;
+  for(File f = root.openNextFile(); f; f = root.openNextFile()){
+    if(f.isDirectory()) continue;
+    String name = f.name();
+    if(name.startsWith(".") || name.startsWith("._")) continue;
+    if(!name.startsWith("/")) name = "/" + name;
+    if(isJpg(name) && fileCount < MAX_FILES) files[fileCount++] = name;
+  }
+  // sort ชื่อไฟล์
+  for(int i=0;i<fileCount;i++)
+    for(int j=i+1;j<fileCount;j++)
+      if(files[j].compareTo(files[i]) < 0) { String t=files[i]; files[i]=files[j]; files[j]=t; }
+}
+// ===== [END ADD] =====
+
 
 // ===== Added: Deep-sleep support =====
 #include "esp_sleep.h"
@@ -704,9 +729,12 @@ void normalScanFlow() {
 
   //if (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) return;
   mySerial.println("S");
-  String uidHex = readRFIDasHex();
+  String uidHex;
+  rfid_bus_begin();
+  uidHex = readRFIDasHex();
   rfid.PICC_HaltA();
   rfid.PCD_StopCrypto1();
+  rfid_bus_end();
 
   int idx = findByUID(uidHex);
   if (idx < 0) {
@@ -1034,44 +1062,40 @@ void setup() {
   SPI.begin(18, 19, 23, SD_CS);
   spi_idle_all();  // ดันทุก CS = HIGH
 
-  // --- SD Card: ลอง 10 MHz -> 4 MHz ---
-  bool sdOK = false;
-  {
-    // ปล่อยบัสจากอุปกรณ์อื่นไว้ก่อน
-    digitalWrite(TFT_CS, HIGH);
-    digitalWrite(SS_PIN, HIGH);
+  // --- TFT + SD (แชร์ SPI เดียวกัน) ---
+  pinMode(TFT_CS, OUTPUT);
+  digitalWrite(TFT_CS, HIGH);          // กันบัสชนตอนเมานต์ SD
 
-    digitalWrite(SD_CS, LOW);
-    if (SD.begin(SD_CS, SPI, 10000000)) {  // 10 MHz
-      if (SD.cardType() != CARD_NONE) sdOK = true;
-      else SD.end();
-    }
-    digitalWrite(SD_CS, HIGH);
+  tft.init();
+  tft.setRotation(1);                  // 1 = แนวนอน 320x240
+  TJpgDec.setCallback(tft_output);
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+  tft.drawString("Mounting SD...", 10, 10);
 
-    if (!sdOK) {
-      delay(5);
-      digitalWrite(SD_CS, LOW);
-      if (SD.begin(SD_CS, SPI, 4000000)) {  // 4 MHz fallback
-        if (SD.cardType() != CARD_NONE) sdOK = true;
-        else SD.end();
-      }
-      digitalWrite(SD_CS, HIGH);
-    }
+  // เมานต์ SD โดยใช้ SPI instance เดียวกับจอ
+  if (!SD.begin(SD_CS, tft.getSPIinstance())) {
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.drawString("SD mount failed", 10, 10);
+    Serial.println("SD mount failed");
+  } else {
+    uint8_t ct = SD.cardType();
+    const char* type = (ct==CARD_MMC)?"MMC":(ct==CARD_SD)?"SDSC":(ct==CARD_SDHC)?"SDHC":"UNKNOWN";
+    uint64_t sizeMB = SD.cardSize() / (1024ULL*1024ULL);
+    Serial.printf("Mounted: %s, %llu MB\n", type, sizeMB);
 
-    if (sdOK) {
-      Serial.printf("SD OK, type=%u, size=%llu MB\n",
-                    (unsigned)SD.cardType(),
-                    (unsigned long long)(SD.cardSize() / (1024ULL * 1024ULL)));
+    // สแกนไฟล์รูปในราก แล้วแสดงแบบเต็มหน้าจอรูปแรก
+    scanRootJpegs();                           // ต้องมีฟังก์ชันนี้จากสไนเป็ต JPEGDecoder
+    if (fileCount > 0) {
+      tft.fillScreen(TFT_BLACK);
+      drawJpgCenteredFromSD(files[0]);      // แสดงรูปแรกแบบกึ่งกลาง/เต็มหน้าจอ
     } else {
-      Serial.println("SD mount failed (tried 10MHz, then 4MHz)");
+      tft.fillScreen(TFT_BLACK);
+      tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      tft.drawString("No JPG in /", 10, 10);
     }
   }
-
-  // --- TFT + TJpg callback ---
-  tft.init();
-  tft.setRotation(1);  // แนวนอน 320x240
-  TJpgDec.setCallback(tft_output);
-  showIdleScreen(sdOK ? "SD OK" : "No SD");
 
   // --- RC522 init (ปล่อยบัสจริง + รีเซ็ต RST ก่อน) ---
   Serial.println("Init RC522...");

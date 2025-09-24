@@ -40,26 +40,6 @@ struct Rec {
 #include <EEPROM.h>
 #include <Adafruit_Fingerprint.h>
 
-#ifdef ARDUINO_ARCH_ESP32
-#include <HardwareSerial.h>
-
-// --- ต้องประกาศ enum ก่อน เพื่อกัน auto-prototype ของ IDE ---
-enum U2State
-{
-    U2_PREOPEN,
-    U2_OPEN,
-    U2_CLOSED,
-    U2_RTCERR
-};
-
-// --- forward declarations ที่ applyU2State ใช้ ---
-extern HardwareSerial mySerial;                 // นิยามจริงอยู่ด้านล่าง: HardwareSerial mySerial(2);
-void showIdleScreen(const char *msg = "Ready"); // นิยามจริงอยู่ด้านล่าง
-
-// --- ใส่ prototype เอง เพื่อล๊อกไม่ให้ IDE สร้างผิดตำแหน่ง ---
-void applyU2State(U2State s);
-#endif
-
 // [ADD] จอ + SD + JPG decoder
 #include <TFT_eSPI.h>
 #include <TJpg_Decoder.h>
@@ -72,48 +52,6 @@ void applyU2State(U2State s);
 
 // [ADD] สร้างอ็อบเจ็กต์จอ
 TFT_eSPI tft;
-
-// ===== [ADD HERE] JPEG file scanner helpers =====
-bool isJpg(const String &s)
-{
-    String x = s;
-    x.toLowerCase();
-    return x.endsWith(".jpg") || x.endsWith(".jpeg");
-}
-
-const int MAX_FILES = 64;
-String files[MAX_FILES];
-int fileCount = 0;
-
-void scanRootJpegs()
-{
-    fileCount = 0;
-    File root = SD.open("/");
-    if (!root || !root.isDirectory())
-        return;
-    for (File f = root.openNextFile(); f; f = root.openNextFile())
-    {
-        if (f.isDirectory())
-            continue;
-        String name = f.name();
-        if (name.startsWith(".") || name.startsWith("._"))
-            continue;
-        if (!name.startsWith("/"))
-            name = "/" + name;
-        if (isJpg(name) && fileCount < MAX_FILES)
-            files[fileCount++] = name;
-    }
-    // sort ชื่อไฟล์
-    for (int i = 0; i < fileCount; i++)
-        for (int j = i + 1; j < fileCount; j++)
-            if (files[j].compareTo(files[i]) < 0)
-            {
-                String t = files[i];
-                files[i] = files[j];
-                files[j] = t;
-            }
-}
-// ===== [END ADD] =====
 
 // ===== Added: Deep-sleep support =====
 #include "esp_sleep.h"
@@ -252,37 +190,40 @@ void printBootAndWakeInfo()
 }
 
 // เข้าหลับทันที แล้วปลุกเมื่อ WAKE_PIN=HIGH จาก ODROID
-void goDeepSleepNow() {
+void goDeepSleepNow()
+{
     Serial.println("-> Deep-sleep now. Waiting for ODROID wake (GPIO HIGH)...");
     delay(30);
-  
+
     // ปิด I/O ที่อาจดีดกลับ
     pinMode(12, INPUT);
     pinMode(4, INPUT);
-  
+
     // เอา interrupt ของขาปลุกออกก่อน
     detachInterrupt(digitalPinToInterrupt(WAKE_PIN));
-  
+
     // ตั้งค่าพินปลุกในสองโดเมนให้สะอาด
     rtc_gpio_hold_dis((gpio_num_t)WAKE_PIN);
-    pinMode(WAKE_PIN, INPUT);               // digital
-    rtc_gpio_deinit((gpio_num_t)WAKE_PIN);  // RTC
+    pinMode(WAKE_PIN, INPUT);              // digital
+    rtc_gpio_deinit((gpio_num_t)WAKE_PIN); // RTC
     rtc_gpio_init((gpio_num_t)WAKE_PIN);
     rtc_gpio_set_direction((gpio_num_t)WAKE_PIN, RTC_GPIO_MODE_INPUT_ONLY);
     rtc_gpio_pulldown_en((gpio_num_t)WAKE_PIN);
     rtc_gpio_pullup_dis((gpio_num_t)WAKE_PIN);
-  
+
     // ถ้าขาปลุก HIGH อยู่แล้ว ให้ข้ามหลับ (กันเด้ง)
-    if (rtc_gpio_get_level((gpio_num_t)WAKE_PIN) == 1) {
-      Serial.println("[SLEEP] WAKE_PIN is HIGH already -> skip sleep");
-      return;
+    if (rtc_gpio_get_level((gpio_num_t)WAKE_PIN) == 1)
+    {
+        Serial.println("[SLEEP] WAKE_PIN is HIGH already -> skip sleep");
+        return;
     }
-  
+
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
     esp_sleep_enable_ext1_wakeup(1ULL << WAKE_PIN, ESP_EXT1_WAKEUP_ANY_HIGH);
-  
+
     esp_deep_sleep_start();
-  }
+}
+
 // ---------- Serial / UART ----------
 HardwareSerial mySerial(2);     // UART2 : ใช้คุยกับบอร์ด/จออีกตัว ตามที่คุณใช้อยู่ (TX=17, RX=16 ด้านล่าง)
 HardwareSerial FingerSerial(1); // UART1 : ใช้คุยกับโมดูลลายนิ้วมือ
@@ -878,12 +819,9 @@ void normalScanFlow()
 
     // if (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) return;
     mySerial.println("S");
-    String uidHex;
-    rfid_bus_begin();
-    uidHex = readRFIDasHex();
+    String uidHex = readRFIDasHex();
     rfid.PICC_HaltA();
     rfid.PCD_StopCrypto1();
-    rfid_bus_end();
 
     int idx = findByUID(uidHex);
     if (idx < 0)
@@ -1143,39 +1081,107 @@ void ultrasonicTickForSleep()
 #include "esp_system.h"
 
 // แทนฟังก์ชัน tft_output เดิมทั้งหมด
+// Callback ของ TJpgDec ที่รองรับการครอปทุกทิศ (x/y อาจติดลบได้)
 bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap)
 {
-    if (y >= tft.height() || x >= tft.width())
-        return false;
-    for (uint16_t row = 0; row < h; row++)
+    int16_t W = tft.width();
+    int16_t H = tft.height();
+
+    // ตัดแถวที่อยู่นอกจอด้านบน/ล่าง
+    if (y >= H || (y + (int16_t)h) <= 0)
+        return true;
+
+    // แถวต่อแถว (เพื่อคลิปซ้าย/ขวาได้ละเอียดยิ่งขึ้น)
+    for (int16_t row = 0; row < (int16_t)h; row++)
     {
-        tft.pushImage(x, y + row, w, 1, bitmap + row * w);
+        int16_t yy = y + row;
+        if (yy < 0 || yy >= H)
+            continue; // นอกจอแนวตั้ง ข้าม
+
+        int16_t xx = x;
+        int16_t ww = (int16_t)w;
+        uint16_t *src = bitmap + row * w;
+
+        // คลิปลบซ้าย
+        if (xx < 0)
+        {
+            int16_t skip = -xx;
+            if (skip >= ww)
+                continue; // ทั้งแถวอยู่นอกจอ
+            xx = 0;
+            ww -= skip;
+            src += skip;
+        }
+        // คลิปล้นขวา
+        if (xx + ww > W)
+        {
+            int16_t keep = W - xx;
+            if (keep <= 0)
+                continue;
+            ww = keep;
+        }
+
+        if (ww > 0)
+            tft.pushImage(xx, yy, (uint16_t)ww, 1, src);
     }
     return true;
 }
 
+// วาด JPEG พอดีจอ เริ่มที่ (0,0) โดยไม่จัดกึ่งกลาง/ไม่ครอบ
+bool drawJpgExactFromSD(const String &path)
+{
+    TJpgDec.setJpgScale(1); // ไม่ลดสเกล (ไฟล์คุณ 240x320 พอดีจอแล้ว)
+    digitalWrite(SD_CS, HIGH);
+    digitalWrite(SS_PIN, HIGH);
+    digitalWrite(TFT_CS, LOW);
+
+    // ล้างจอ (จะเริ่มวาดจาก 0,0 ทับไปเลย)
+    tft.fillScreen(TFT_BLACK);
+
+    bool ok = TJpgDec.drawSdJpg(0, 0, path.c_str()); // <<< จุดสำคัญ: (0,0)
+
+    digitalWrite(TFT_CS, HIGH);
+    return ok;
+}
+
 // [ADD] วาดรูปให้พอดีกลางจอ
-bool drawJpgCenteredFromSD(const String &path)
+// วาด JPEG ให้ "เต็มจอ" แบบครอบ (cover) ด้วยการ downscale 1/2/4/8 แล้วเลื่อนศูนย์กลาง
+bool drawJpgCoverFromSD(const String &path)
 {
     uint16_t jw, jh;
     if (!TJpgDec.getJpgSize(&jw, &jh, path.c_str()))
         return false;
 
     uint16_t sw = tft.width(), sh = tft.height();
-    float sx = (float)sw / jw, sy = (float)sh / jh;
-    float s = min(sx, sy);
+
+    // เลือก scale (1/2/4/8) ที่ทำให้รูปหลังสเกล >= จอ ทั้งสองมิติ (เพื่อ cover)
+    uint8_t candidates[4] = {1, 2, 4, 8};
     uint8_t scale = 1;
-    if (s <= 0.125f)
-        scale = 8;
-    else if (s <= 0.25f)
-        scale = 4;
-    else if (s <= 0.5f)
-        scale = 2;
+    bool ok = false;
+    for (uint8_t i = 0; i < 4; i++)
+    {
+        uint8_t s = candidates[i];
+        uint16_t dw = jw / s;
+        uint16_t dh = jh / s;
+        if (dw >= sw && dh >= sh)
+        {
+            scale = s;
+            ok = true;
+            break;
+        }
+    }
+    if (!ok)
+    {
+        // ไม่มีสเกลที่ครอบเต็ม (เช่นไฟล์เล็กกว่าจอมาก) -> ใช้ scale=1 (จะไม่เต็มเป๊ะ)
+        scale = 1;
+    }
     TJpgDec.setJpgScale(scale);
 
     uint16_t dw = jw / scale, dh = jh / scale;
-    int16_t ox = (sw > dw) ? (sw - dw) / 2 : 0;
-    int16_t oy = (sh > dh) ? (sh - dh) / 2 : 0;
+
+    // origin ติดลบเมื่อ dw/dh > จอ → ให้ครอบกลางจอ
+    int16_t ox = (int16_t)((int32_t)sw - (int32_t)dw) / 2;
+    int16_t oy = (int16_t)((int32_t)sh - (int32_t)dh) / 2;
 
     // ปล่อยบัสอื่นก่อนใช้จอ
     digitalWrite(SD_CS, HIGH);
@@ -1183,10 +1189,10 @@ bool drawJpgCenteredFromSD(const String &path)
     digitalWrite(TFT_CS, LOW);
 
     tft.fillScreen(TFT_BLACK);
-    bool ok = TJpgDec.drawSdJpg(ox, oy, path.c_str());
+    bool res = TJpgDec.drawSdJpg(ox, oy, path.c_str()); // ox/oy อาจติดลบได้ (เราคลิปใน callback แล้ว)
 
     digitalWrite(TFT_CS, HIGH);
-    return ok;
+    return res;
 }
 
 // [ADD] ช่วยแสดงรูปตามหมายเลข (รองรับ .jpg/.JPG)
@@ -1212,10 +1218,10 @@ void showCandidateJpg(uint8_t n)
         digitalWrite(TFT_CS, HIGH);
         return;
     }
-    drawJpgCenteredFromSD(path);
+    drawJpgExactFromSD(path);
 }
 
-void showIdleScreen(const char *msg)
+void showIdleScreen(const char *msg = "Ready")
 {
     digitalWrite(SD_CS, HIGH);
     digitalWrite(SS_PIN, HIGH);
@@ -1225,36 +1231,6 @@ void showIdleScreen(const char *msg)
     tft.drawString(msg, 10, 10, 2);
     digitalWrite(TFT_CS, HIGH);
 }
-
-// ==== Election state from UNO (ESP32 only) ====
-#ifdef ARDUINO_ARCH_ESP32
-U2State u2State = U2_PREOPEN, u2Last = (U2State)255;
-
-void applyU2State(U2State s)
-{
-    u2State = s;
-    if (u2State == U2_OPEN)
-    {
-        mySerial.println("V");
-        showIdleScreen("OPEN");
-    }
-    else if (u2State == U2_PREOPEN)
-    {
-        mySerial.println("W");
-        showIdleScreen("PREOPEN");
-    }
-    else if (u2State == U2_CLOSED)
-    {
-        mySerial.println("W");
-        showIdleScreen("CLOSED");
-    }
-    else
-    { // RTCERR
-        mySerial.println("W");
-        showIdleScreen("RTC ERR");
-    }
-}
-#endif
 
 void setup()
 {
@@ -1293,48 +1269,62 @@ void setup()
     SPI.begin(18, 19, 23, SD_CS);
     spi_idle_all(); // ดันทุก CS = HIGH
 
-    // --- TFT + SD (แชร์ SPI เดียวกัน) ---
-    pinMode(TFT_CS, OUTPUT);
-    digitalWrite(TFT_CS, HIGH); // กันบัสชนตอนเมานต์ SD
-
-    tft.init();
-    tft.setRotation(1); // 1 = แนวนอน 320x240
-    TJpgDec.setCallback(tft_output);
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-    tft.drawString("Mounting SD...", 10, 10);
-
-    // เมานต์ SD โดยใช้ SPI instance เดียวกับจอ
-    if (!SD.begin(SD_CS, tft.getSPIinstance()))
+    // --- SD Card: ลอง 10 MHz -> 4 MHz ---
+    // --- SD Card: เริ่มแบบปลอดภัย ไม่ดึง CS ลงเอง ---
+    bool sdOK = false;
     {
-        tft.fillScreen(TFT_BLACK);
-        tft.setTextColor(TFT_RED, TFT_BLACK);
-        tft.drawString("SD mount failed", 10, 10);
-        Serial.println("SD mount failed");
-    }
-    else
-    {
-        uint8_t ct = SD.cardType();
-        const char *type = (ct == CARD_MMC) ? "MMC" : (ct == CARD_SD) ? "SDSC"
-                                                  : (ct == CARD_SDHC) ? "SDHC"
-                                                                      : "UNKNOWN";
-        uint64_t sizeMB = SD.cardSize() / (1024ULL * 1024ULL);
-        Serial.printf("Mounted: %s, %llu MB\n", type, sizeMB);
+        // ให้แน่ใจว่า CS ทุกตัวเป็น OUTPUT และ HIGH
+        pinMode(SD_CS, OUTPUT);
+        pinMode(TFT_CS, OUTPUT);
+        pinMode(SS_PIN, OUTPUT);
+        digitalWrite(SD_CS, HIGH); // <-- สำคัญ: ปล่อย HIGH
+        digitalWrite(TFT_CS, HIGH);
+        digitalWrite(SS_PIN, HIGH);
 
-        // สแกนไฟล์รูปในราก แล้วแสดงแบบเต็มหน้าจอรูปแรก
-        scanRootJpegs(); // ต้องมีฟังก์ชันนี้จากสไนเป็ต JPEGDecoder
-        if (fileCount > 0)
+        // เริ่มที่ความถี่ต่ำก่อน (เสถียรสุด) แล้วค่อยเพิ่ม
+        if (SD.begin(SD_CS, SPI, 1000000))
+        { // 1 MHz
+            sdOK = (SD.cardType() != CARD_NONE);
+            if (!sdOK)
+                SD.end();
+        }
+        if (!sdOK)
         {
-            tft.fillScreen(TFT_BLACK);
-            drawJpgCenteredFromSD(files[0]); // แสดงรูปแรกแบบกึ่งกลาง/เต็มหน้าจอ
+            if (SD.begin(SD_CS, SPI, 4000000))
+            { // 4 MHz
+                sdOK = (SD.cardType() != CARD_NONE);
+                if (!sdOK)
+                    SD.end();
+            }
+        }
+        if (!sdOK)
+        {
+            if (SD.begin(SD_CS, SPI, 10000000))
+            { // 10 MHz (ถ้าการ์ดดี)
+                sdOK = (SD.cardType() != CARD_NONE);
+                if (!sdOK)
+                    SD.end();
+            }
+        }
+
+        if (sdOK)
+        {
+            Serial.printf("SD OK, type=%u, size=%llu MB\n",
+                          (unsigned)SD.cardType(),
+                          (unsigned long long)(SD.cardSize() / (1024ULL * 1024ULL)));
         }
         else
         {
-            tft.fillScreen(TFT_BLACK);
-            tft.setTextColor(TFT_WHITE, TFT_BLACK);
-            tft.drawString("No JPG in /", 10, 10);
+            Serial.println("SD mount failed (tried 1/4/10 MHz)");
         }
     }
+
+    // --- TFT + TJpg callback ---
+    tft.init();
+    tft.setSwapBytes(true);
+    tft.setRotation(0); // แนวนอน 320x240
+    TJpgDec.setCallback(tft_output);
+    showIdleScreen(sdOK ? "SD OK" : "No SD");
 
     // --- RC522 init (ปล่อยบัสจริง + รีเซ็ต RST ก่อน) ---
     Serial.println("Init RC522...");
@@ -1380,15 +1370,10 @@ void setup()
 }
 
 // [ADD] ฟังก์ชันรับคำสั่งจากบอร์ดลูกโซ่
-// [ADD] ฟังก์ชันรับคำสั่งจากบอร์ดลูกโซ่
 void handleU2Line(const String &raw)
 {
     String m = raw;
     m.trim();
-    if (m.length() == 0)
-        return;
-
-    // ---- ภาพ / เคลียร์ / ข้อความสั้น ----
     if (m.startsWith("SEL:"))
     {
         if (m.equalsIgnoreCase("SEL:CLEAR"))
@@ -1399,67 +1384,13 @@ void handleU2Line(const String &raw)
         {
             int n = m.substring(4).toInt(); // หลัง "SEL:"
             if (n >= 0 && n <= 99)
-            {
                 showCandidateJpg((uint8_t)n);
-            }
             else
-            {
                 showIdleScreen("Bad SEL");
-            }
         }
         return;
     }
-
-    if (m.startsWith("IMG:"))
-    {
-        int n = m.substring(4).toInt();
-        showCandidateJpg((uint8_t)n);
-        return;
-    }
-
-    if (m.equalsIgnoreCase("CLR"))
-    {
-        showIdleScreen("Ready");
-        return;
-    }
-
-    if (m.startsWith("TXT:"))
-    {
-        String t = m.substring(4);
-        showIdleScreen(t.c_str());
-        return;
-    }
-
-// ---- สถานะช่วงเวลาเลือกตั้งจาก UNO (RTC DS1307 ฝั่ง UNO) ----
-// ครอบด้วย ESP32 เท่านั้น เพื่อกันกรณี enum/prototype ยังไม่ถูกประกาศในบอร์ดอื่น
-#ifdef ARDUINO_ARCH_ESP32
-    if (m.startsWith("STATE:"))
-    {
-        // รูปแบบ: STATE:PREOPEN | STATE:OPEN | STATE:CLOSED | STATE:RTCERR
-        // (รองรับคำว่า :OPEN:FORCE / :CLOSED:FORCE ด้วย)
-        U2State ns = u2State;
-        String up = m;
-        up.toUpperCase();
-
-        if (up.indexOf("PREOPEN") >= 0)
-            ns = U2_PREOPEN;
-        else if (up.indexOf("OPEN") >= 0)
-            ns = U2_OPEN;
-        else if (up.indexOf("CLOSED") >= 0)
-            ns = U2_CLOSED;
-        else if (up.indexOf("RTCERR") >= 0)
-            ns = U2_RTCERR;
-
-        if (ns != u2Last)
-        {
-            u2Last = ns;
-            applyU2State(ns);
-        }
-        return;
-    }
-#endif
-
-    // ---- อย่างอื่น ๆ ก็พิมพ์ log ไว้เฉย ๆ ----
+    // ดีบั๊กข้อความอื่น ๆ
     Serial.println(raw);
 }
 

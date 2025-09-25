@@ -41,7 +41,7 @@ const PHOTOS = [
   "https://upload.wikimedia.org/wikipedia/commons/thumb/2/28/Abhisit_Vejjajiva_2010.jpg/250px-Abhisit_Vejjajiva_2010.jpg",
   "https://upload.wikimedia.org/wikipedia/commons/thumb/2/2b/Prawit_Wongsuwan_%282018%29_cropped.jpg/250px-Prawit_Wongsuwan_%282018%29_cropped.jpg",
   "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d4/Phumtham_Wechayachai_30_May_2025.jpg/250px-Phumtham_Wechayachai_30_May_2025.jpg",
-  "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4d/Kriangsak_Chomanan_1976_%28cropped%29.jpg/250px-Kriangsak_Chomanan_1976_%28cropped%29.jpg"
+  "https://i.ibb.co/KzRvpTWs/adeb7e66-0240-4396-bac5-6b0081c42952.jpg"
 ];
 
 // Utility functions

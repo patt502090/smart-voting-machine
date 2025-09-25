@@ -101,7 +101,7 @@ enum UITrans
 // ==== Time-based progress bar (loop) ====
 static bool g_barOn = false;
 static uint32_t g_barStart = 0;
-static uint32_t g_barPeriod = 1000; // ระยะเวลาเติมเต็มหนึ่งรอบ (ms)
+static uint32_t g_barPeriod = 3000; // ระยะเวลาเติมเต็มหนึ่งรอบ (ms)
 static String g_barLabel;
 
 void barStart(uint32_t period_ms = 1000, const String &label = "")
@@ -1642,7 +1642,9 @@ void normalScanFlow()
   exitPhotoMode(); // <-- ปลดล็อก UI ไม่ให้ค้างจากโหมดแสดงรูป
   g_waitingChoice = true;
   g_selectedCandidate = -1;
-  mySerial.println("O");
+  mySerial.println("OK"); // แจ้งว่า auth ผ่าน → UNO จะ canVote=true และเข้า PAGE_VOTE
+  // (ออปชัน) ถ้าต้องการบังคับโชว์หน้าเลือกทันทีอยู่ดี:
+  mySerial.println("V");       // UNO ก็รองรับคำสั่งนี้เหมือนกัน
   barStart(1500, "รอการเลือก"); // เติมเต็มทุก 1 วิ แล้ววน
   showUIx(UI_WAIT_CHOICE, "โปรดเลือกผู้สมัครที่หน้าจอใหญ่", TR_FADE);
 

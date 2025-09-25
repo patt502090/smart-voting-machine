@@ -419,17 +419,29 @@ static void drawFancyBorder(float phase)
 
 void uiTick()
 {
+  bool painted = false;
+
   if (ui_isScanning)
   {
     float t = (millis() - ui_animStart) / 600.0f;
     float phase = t - floorf(t);
     drawFancyBorder(phase);
+    painted = true;
   }
   if (ui_isLoading)
   {
     drawSpinner();
+    painted = true;
   }
-  drawTimedBarOverlay(); // <-- เพิ่มบรรทัดนี้
+  if (g_barOn)
+  {
+    drawTimedBarOverlay();
+    painted = true;
+  }
+
+  // อัปเดต timestamp ว่าเพิ่ง “วาด” ไปจริง ๆ
+  if (painted)
+    g_lastPaintMs = millis();
 }
 
 // ====== Modern vector icons (no SD needed) ======
@@ -2299,18 +2311,23 @@ void tftSoftRecoverIfBlank()
   static uint32_t lastTry = 0;
   const uint32_t NOW = millis();
 
-  // รีคัฟเวอร์เมื่อไม่มีการวาด UI เกิน 15 วินาที และห่างจากครั้งก่อนอย่างน้อย 10 วินาที
-  if (NOW - g_lastPaintMs < 15000)
+  // ถ้ามี animation/โหลด/แถบวิ่งอยู่ หรือเพิ่งวาดไม่นาน ให้ข้ามไปเลย
+  if (ui_isScanning || ui_isLoading || g_barOn)
     return;
+
+  // ขยาย margin ให้ยาวขึ้นอีกหน่อย เช่น 60 วินาที
+  if (NOW - g_lastPaintMs < 60000)
+    return;
+
   if (NOW - lastTry < 10000)
-    return;
+    return; // กันสั่น
   lastTry = NOW;
 
   spi_idle_all();
   tft.endWrite();
   tft.init();
   tft.setSwapBytes(true);
-  tft.setRotation(0); // ถ้าจอคุณแนวนอน 320x240 จริง ๆ แล้วเป็น portrait ให้ลอง 1 หรือ 3
+  tft.setRotation(0);
 }
 
 // ===== วางฟังก์ชันนี้ "ถัดจาก" ปิดวงเล็บของ setup() =====

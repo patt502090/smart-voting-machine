@@ -1642,7 +1642,7 @@ void normalScanFlow()
   exitPhotoMode(); // <-- ปลดล็อก UI ไม่ให้ค้างจากโหมดแสดงรูป
   g_waitingChoice = true;
   g_selectedCandidate = -1;
-  mySerial.println("AUTH_OK");
+  mySerial.println("O");
   barStart(1500, "รอการเลือก"); // เติมเต็มทุก 1 วิ แล้ววน
   showUIx(UI_WAIT_CHOICE, "โปรดเลือกผู้สมัครที่หน้าจอใหญ่", TR_FADE);
 

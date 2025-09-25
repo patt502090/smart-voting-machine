@@ -102,7 +102,7 @@ upForm.addEventListener('submit', async (ev)=>{
   
   try{
     setMsg('📤 กำลังอัปโหลดไฟล์...', 'warning');
-    const r = await fetch('/admin/upload', {method:'POST', headers:{'X-API-KEY': token.value||''}, body: fd});
+    const r = await fetch('/admin/upload', {method:'POST', headers:{'da': token.value||''}, body: fd});
     if(!r.ok) throw new Error(await r.text());
     setMsg(`✅ อัปโหลดไฟล์สำเร็จ (${files.length} ไฟล์)`, 'success'); 
     document.getElementById('files').value = '';

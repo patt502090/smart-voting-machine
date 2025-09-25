@@ -98,6 +98,51 @@ enum UITrans
   TR_FADE
 };
 
+// ==== Time-based progress bar (loop) ====
+static bool g_barOn = false;
+static uint32_t g_barStart = 0;
+static uint32_t g_barPeriod = 1000; // ระยะเวลาเติมเต็มหนึ่งรอบ (ms)
+static String g_barLabel;
+
+void barStart(uint32_t period_ms = 1000, const String &label = "")
+{
+  g_barOn = true;
+  g_barStart = millis();
+  g_barPeriod = (period_ms == 0 ? 1000 : period_ms);
+  g_barLabel = label;
+}
+void barStop()
+{
+  g_barOn = false;
+}
+
+// วาดหลอดเรียบๆ ด้านล่างจอ วิ่งเต็มตามเวลาแล้ววน
+static void drawTimedBarOverlay()
+{
+  if (!g_barOn)
+    return;
+  int W = tft.width(), H = tft.height();
+  int bw = W - 60, bh = 12;
+  int x = (W - bw) / 2, y = H - 32;
+
+  // คำนวณเฟส 0..1 จากเวลาที่ผ่านไป
+  float phase = float((millis() - g_barStart) % g_barPeriod) / float(g_barPeriod);
+  int fillw = int(bw * phase);
+
+  // กรอบ
+  tft.drawRoundRect(x - 2, y - 2, bw + 4, bh + 4, 4, TFT_WHITE);
+  // แถบ (เติมจากซ้ายไปขวา)
+  if (fillw > 0)
+    tft.fillRoundRect(x, y, fillw, bh, 3, TFT_CYAN);
+
+  // ป้ายเล็กๆ (ออปชัน)
+  if (g_barLabel.length())
+  {
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.drawString(g_barLabel, (W - tft.textWidth(g_barLabel, 2)) / 2, y - 18, 2);
+  }
+}
+
 // Easing นุ่มๆ (0..1 -> 0..1)
 static inline float easeInOutQuad(float x)
 {
@@ -236,7 +281,7 @@ void drawArc(TFT_eSprite &s, int cx, int cy, int rOuter, int rInner, int a0, int
   }
 }
 // แล้วแก้ใน drawNFCIcon / drawFingerprintIconModern ให้เรียก drawArc(s, ...)
-
+void drawArc(int cx, int cy, int rOuter, int rInner, int a0, int a1, uint16_t col, uint16_t bg);
 void drawFingerIcon(int cx, int cy)
 {
   // วงลายนิ้ว
@@ -374,18 +419,17 @@ static void drawFancyBorder(float phase)
 
 void uiTick()
 {
-  // เส้นขอบวิ่งระหว่างสแกน
   if (ui_isScanning)
   {
     float t = (millis() - ui_animStart) / 600.0f;
     float phase = t - floorf(t);
     drawFancyBorder(phase);
   }
-  // วาดสปินเนอร์ทับ (ถ้ามีโหลด)
   if (ui_isLoading)
   {
     drawSpinner();
   }
+  drawTimedBarOverlay(); // <-- เพิ่มบรรทัดนี้
 }
 
 // ====== Modern vector icons (no SD needed) ======
@@ -636,6 +680,7 @@ void showUIx(UIState s, const char *subtitle = nullptr, UITrans tr = TR_SLIDE_L)
     float k = easeInOutQuad((float)(i + 1) / POP_FR);
     spr.fillSprite(TFT_BLACK);
     paintScreenToSprite(s, subtitle, true, k);
+    tft.endWrite();
     spr.pushSprite(0, 0);
     delay(12);
   }
@@ -646,6 +691,7 @@ void showUIx(UIState s, const char *subtitle = nullptr, UITrans tr = TR_SLIDE_L)
 
   if (tr == TR_NONE)
   {
+    tft.endWrite();
     spr.pushSprite(0, 0);
   }
   else
@@ -663,6 +709,7 @@ void showUIx(UIState s, const char *subtitle = nullptr, UITrans tr = TR_SLIDE_L)
         y = (int)((1.0f - k) * H);
       else if (tr == TR_SLIDE_DOWN)
         y = (int)(-(1.0f - k) * H);
+      tft.endWrite();
       spr.pushSprite(x, y);
       delay(14);
     }
@@ -675,8 +722,8 @@ void showUIx(UIState s, const char *subtitle = nullptr, UITrans tr = TR_SLIDE_L)
 // *GPIO35 เป็นขา RTC input ได้ ปลุกด้วย ext1 ได้
 
 // ==== forward declarations to satisfy compile order (ADD ONLY) ====
-struct Rec;                   // ให้คอมไพเลอร์รู้จักชื่อ Rec ล่วงหน้า (ใช้กับ & ได้)
-extern const int UID_HEX_MAX; // บอกว่าจะมีค่าคงที่ชื่อนี้ประกาศจริงด้านล่าง
+struct Rec; // ให้คอมไพเลอร์รู้จักชื่อ Rec ล่วงหน้า (ใช้กับ & ได้)
+// extern const int UID_HEX_MAX;  // บอกว่าจะมีค่าคงที่ชื่อนี้ประกาศจริงด้านล่าง
 
 // ===== [ADD] Ultrasonic (HC-SR04) for auto-sleep =====
 const int TRIG_PIN = 4;
@@ -1466,6 +1513,7 @@ void deleteCardFlow()
 }
 void normalScanFlow()
 {
+  exitPhotoMode();
   // เวอร์ชันเดิม + เติม UI อย่างเดียว (ไม่สลับลำดับ logic/protocol)
   // ขั้นตอน: ส่ง "S" → อ่าน UID → ถ้าไม่รู้จัก/ทำรายการแล้วให้แจ้งเตือน → ถ้ารู้จักให้สแกนนิ้วให้ตรง fp_id → OK และ mark voted
 
@@ -1473,12 +1521,34 @@ void normalScanFlow()
   mySerial.println("S"); // โปรโตคอลตามเดิม
   showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_SLIDE_UP);
 
-  // --- อ่าน UID (คงสไตล์เดิม: อ่านเลย ไม่ยื้อรอ) ---
-  bus_acquire_for_rfid();
-  String uidHex = readRFIDasHex();
-  rfid.PICC_HaltA();
-  rfid.PCD_StopCrypto1();
-  bus_release_after_rfid();
+  // --- อ่าน UID อย่างปลอดภัย (รอการ์ดใน flow ด้วย) ---
+  uint32_t tWait = millis();
+  bool got = false;
+  String uidHex;
+
+  while (millis() - tWait < 2000)
+  { // รอสูงสุด 2 วินาที
+    bus_acquire_for_rfid();
+    if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial())
+    {
+      uidHex = readRFIDasHex();
+      rfid.PICC_HaltA();
+      rfid.PCD_StopCrypto1();
+      got = true;
+      bus_release_after_rfid();
+      break;
+    }
+    bus_release_after_rfid();
+    uiTick();
+    delay(20);
+  }
+  if (!got || uidHex.length() == 0)
+  {
+    showUIx(UI_CARD_FAIL, "อ่านบัตรไม่สำเร็จ", TR_SLIDE_DOWN);
+    delay(600);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    return;
+  }
 
   // --- ตรวจว่าการ์ดอยู่ในระบบ? ---
   int idx = findByUID(uidHex);
@@ -1556,15 +1626,17 @@ void normalScanFlow()
   // (ใส่จังหวะยืนยันสั้น ๆ แต่ไม่สลับลอจิกเดิม)
   // --- ผ่านเงื่อนไข: บัตร+นิ้ว ตรงกัน → สำเร็จ ---
   // --- ผ่านเงื่อนไข: บัตร+นิ้ว ตรงกัน → "รอเลือกผู้สมัคร" ---
+  // --- ผ่านเงื่อนไข: บัตร+นิ้ว ตรงกัน → "รอเลือกผู้สมัคร" ---
+  exitPhotoMode(); // <-- ปลดล็อก UI ไม่ให้ค้างจากโหมดแสดงรูป
   g_waitingChoice = true;
   g_selectedCandidate = -1;
-  mySerial.println("AUTH_OK"); // แจ้งบอร์ดจอใหญ่ว่าอนุญาตแล้ว
+  mySerial.println("AUTH_OK");
+  barStart(1500, "รอการเลือก"); // เติมเต็มทุก 1 วิ แล้ววน
   showUIx(UI_WAIT_CHOICE, "โปรดเลือกผู้สมัครที่หน้าจอใหญ่", TR_FADE);
 
   // วนรออีเวนต์: CF:xx / SENDING / VOTE:OK / VOTE:ERR (สูงสุด 20 วินาที)
   uint32_t tStart = millis();
   bool finished = false;
-  uiSetLoading(false);
 
   while (!finished && millis() - tStart < 20000)
   {
@@ -1578,6 +1650,7 @@ void normalScanFlow()
       {
         // ได้เบอร์ผู้สมัคร
         g_selectedCandidate = line.substring(3).toInt();
+        barStop();
         String sub = "เลือกหมายเลข " + String(g_selectedCandidate);
         showUIx(UI_SELECTED, sub.c_str(), TR_FADE);
         // (ให้ผู้ใช้เห็นสักหน่อย)
@@ -1585,8 +1658,8 @@ void normalScanFlow()
       }
       else if (line.equalsIgnoreCase("SENDING"))
       {
+        barStart(1200, "กำลังส่ง");
         // เริ่มส่ง/ประมวลผล -> หน้าโหลด
-        uiSetLoading(true);
         showUIx(UI_SENDING, "กำลังส่งข้อมูล...", TR_NONE);
       }
       else if (line.equalsIgnoreCase("VOTE:OK"))
@@ -1617,12 +1690,13 @@ void normalScanFlow()
   // ถ้าหมดเวลาโดยยังไม่ finished
   if (!finished)
   {
-    uiSetLoading(false);
+    barStop();
     showUIx(UI_ERROR, "หมดเวลารอการเลือก", TR_FADE);
   }
 
   // ปิดช่วงรอ แล้วกลับหน้า READY
   g_waitingChoice = false;
+  barStop();
   delay(800);
   showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
 }
@@ -1815,10 +1889,6 @@ void ultrasonicTickForSleep()
     goDeepSleepNow();
   }
 }
-
-// ---------- Setup / Loop ----------
-#include "driver/rtc_io.h"
-#include "esp_system.h"
 
 // แทนฟังก์ชัน tft_output เดิมทั้งหมด
 // Callback ของ TJpgDec ที่รองรับการครอปทุกทิศ (x/y อาจติดลบได้)
@@ -2142,9 +2212,6 @@ void setup()
   // --- Info / wake-pin debug ---
   Serial.printf("MAX_RECORDS=%d, RECORD_SIZE=%d\n", MAX_RECORDS, RECORD_SIZE);
   printBootAndWakeInfo();
-
-  pinMode(WAKE_PIN, INPUT_PULLDOWN); // กันลอยซ้ำ
-  attachInterrupt(digitalPinToInterrupt(WAKE_PIN), WAKE_isr, CHANGE);
   dbgPrintWakePin("boot");
 
   lastUltraLogMs = millis();
@@ -2160,21 +2227,22 @@ void handleU2Line(const String &raw)
 {
   String m = raw;
   m.trim();
+
   if (m.startsWith("SEL:"))
   {
     if (m.equalsIgnoreCase("SEL:CLEAR"))
     {
-      isShowingPhoto = false;                                 // ปลดล็อก
-      uiSetScanning(true);                                    // จะให้กรอบสแกนทำงานต่อก็ได้
-      showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_SLIDE_UP); // กลับไปหน้าหลัก
+      isShowingPhoto = false;
+      uiSetScanning(true);
+      showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_SLIDE_UP);
     }
     else
     {
       int n = m.substring(4).toInt(); // หลัง "SEL:"
       if (n >= 0 && n <= 99)
       {
-        isShowingPhoto = true; // ล็อกไม่ให้ UI ทับ
-        uiSetScanning(false);  // ปิดกรอบแอนิเมชันบนหน้ารูป
+        isShowingPhoto = true;
+        uiSetScanning(false);
         showCandidateJpg((uint8_t)n);
       }
       else
@@ -2186,28 +2254,28 @@ void handleU2Line(const String &raw)
     }
     return;
   }
-  if (m.startsWith("CF:"))
+  else if (m.startsWith("CF:"))
   {
     int n = m.substring(3).toInt();
     g_selectedCandidate = n;
-    // ถ้าอยู่ช่วงรอ ให้แสดงผลชัดเจน
     if (g_waitingChoice)
     {
+      barStop(); // หยุดหลอดขณะโชว์ว่าเลือกแล้ว
       String sub = "เลือกหมายเลข " + String(n);
-      uiSetLoading(false);
       showUIx(UI_SELECTED, sub.c_str(), TR_FADE);
     }
     return;
   }
   else if (m.equalsIgnoreCase("SENDING"))
   {
-    uiSetLoading(true);
+    // เปลี่ยนมาเป็นหลอดโหมดส่ง (จะวนทุก 1.2 วินาที)
+    barStart(1200, "กำลังส่ง");
     showUIx(UI_SENDING, "กำลังส่งข้อมูล...", TR_NONE);
     return;
   }
   else if (m.equalsIgnoreCase("VOTE:OK"))
   {
-    uiSetLoading(false);
+    barStop();
     showUIx(UI_THANKS, "ทำรายการสำเร็จ", TR_FADE);
     delay(700);
     showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
@@ -2215,13 +2283,34 @@ void handleU2Line(const String &raw)
   }
   else if (m.equalsIgnoreCase("VOTE:ERR"))
   {
-    uiSetLoading(false);
+    barStop();
     showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_FADE);
     delay(700);
     showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
     return;
   }
+
+  // default: dump log
   Serial.println(raw);
+}
+
+void tftSoftRecoverIfBlank()
+{
+  static uint32_t lastTry = 0;
+  const uint32_t NOW = millis();
+
+  // รีคัฟเวอร์เมื่อไม่มีการวาด UI เกิน 15 วินาที และห่างจากครั้งก่อนอย่างน้อย 10 วินาที
+  if (NOW - g_lastPaintMs < 15000)
+    return;
+  if (NOW - lastTry < 10000)
+    return;
+  lastTry = NOW;
+
+  spi_idle_all();
+  tft.endWrite();
+  tft.init();
+  tft.setSwapBytes(true);
+  tft.setRotation(0); // ถ้าจอคุณแนวนอน 320x240 จริง ๆ แล้วเป็น portrait ให้ลอง 1 หรือ 3
 }
 
 // ===== วางฟังก์ชันนี้ "ถัดจาก" ปิดวงเล็บของ setup() =====
@@ -2340,5 +2429,8 @@ void loop()
       }
     }
   }
+  spi_idle_all(); // ย้ำทุกลูป: ทุก CS = HIGH
+  tft.endWrite(); // เผื่อมี write ค้าง
   uiTick();
+  tftSoftRecoverIfBlank();
 }

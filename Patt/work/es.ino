@@ -3,6 +3,7 @@
 #define BLYNK_AUTH_TOKEN "RUBdFFrRrLJ99YHyTgYN5rew8gfkPzaH"
 
 #define WAKE_PIN 33
+#include <algorithm>
 
 // ==== must be the very first lines ====
 const int UID_HEX_MAX = 16;
@@ -10,6 +11,9 @@ struct Rec;
 
 void readRec(int idx, Rec &r);        // tell IDE not to autogenerate wrong prototypes
 void writeRec(int idx, const Rec &r); // uses incomplete type by reference (OK)
+
+static int g_selectedCandidate = -1;
+static bool g_waitingChoice = false; // อยู่ช่วงรอผู้ใช้เลือก
 
 #include "driver/rtc_io.h" // สำหรับ rtc_gpio_get_level()
 #include "esp_system.h"
@@ -55,7 +59,10 @@ enum UIState
   UI_THANKS,
   UI_ERROR,
   UI_SLEEP,
-  UI_WAKE
+  UI_WAKE,
+  UI_WAIT_CHOICE, // รอผู้ใช้เลือกผู้สมัคร
+  UI_SELECTED,    // แสดงว่าผู้ใช้เลือกหมายเลขอะไรแล้ว
+  UI_SENDING      // ขณะกำลังส่ง/รอผล
 };
 static bool uiShownScanCard = false;
 static uint32_t uiScanCardShownAt = 0;
@@ -258,6 +265,35 @@ void drawArc(int cx, int cy, int rOuter, int rInner, int a0, int a1, uint16_t co
   }
 }
 
+// ----- Loading spinner -----
+static bool ui_isLoading = false;
+static uint32_t ui_loadStart = 0;
+
+void uiSetLoading(bool on)
+{
+  ui_isLoading = on;
+  if (on)
+    ui_loadStart = millis();
+}
+
+// วาด spinner แบบกงล้อหมุน (non-blocking)
+static void drawSpinner()
+{
+  const int cx = tft.width() / 2, cy = 160, r = 14;
+  float t = (millis() - ui_loadStart) / 1000.0f; // วินาที
+  // 12 แท่ง หมุนตามเวลา
+  for (int i = 0; i < 12; i++)
+  {
+    float a = (i / 12.0f + fmodf(t, 1.0f)) * 2 * PI;
+    int x0 = cx + (int)((r - 6) * cosf(a));
+    int y0 = cy + (int)((r - 6) * sinf(a));
+    int x1 = cx + (int)((r + 6) * cosf(a));
+    int y1 = cy + (int)((r + 6) * sinf(a));
+    uint16_t col = (i < 4) ? TFT_WHITE : ((i < 8) ? TFT_SILVER : TFT_DARKGREY);
+    tft.drawLine(x0, y0, x1, y1, col);
+  }
+}
+
 // --------- Scan border blink ----------
 // --------- Modern scan border (glow + moving dash) ----------
 static bool ui_isScanning = false;
@@ -338,12 +374,18 @@ static void drawFancyBorder(float phase)
 
 void uiTick()
 {
-  if (!ui_isScanning)
-    return;
-  // ความเร็วเลื่อน dash
-  float t = (millis() - ui_animStart) / 600.0f; // 0..∞
-  float phase = t - floorf(t);                  // 0..1
-  drawFancyBorder(phase);
+  // เส้นขอบวิ่งระหว่างสแกน
+  if (ui_isScanning)
+  {
+    float t = (millis() - ui_animStart) / 600.0f;
+    float phase = t - floorf(t);
+    drawFancyBorder(phase);
+  }
+  // วาดสปินเนอร์ทับ (ถ้ามีโหลด)
+  if (ui_isLoading)
+  {
+    drawSpinner();
+  }
 }
 
 // ====== Modern vector icons (no SD needed) ======
@@ -433,6 +475,12 @@ void paintScreenToSprite(UIState s, const char *subtitle, bool popIcon = false, 
     c1 = TFT_DARKGREY;
     c2 = TFT_NAVY;
     break;
+  case UI_WAIT_CHOICE:
+  case UI_SELECTED:
+  case UI_SENDING:
+    c1 = TFT_NAVY;
+    c2 = TFT_BLACK;
+    break;
   }
   for (int y = 0; y < H; ++y)
   {
@@ -461,6 +509,9 @@ void paintScreenToSprite(UIState s, const char *subtitle, bool popIcon = false, 
                                         : (s == UI_THANKS)      ? "ขอบคุณ"
                                         : (s == UI_ERROR)       ? "ข้อผิดพลาด"
                                         : (s == UI_SLEEP)       ? "พักการทำงาน"
+                                        : (s == UI_WAIT_CHOICE) ? "รอเลือกผู้สมัคร"
+                                        : (s == UI_SELECTED)    ? "ยืนยันตัวเลือก"
+                                        : (s == UI_SENDING)     ? "กำลังส่งข้อมูล"
                                                                 : "";
 
   // wipe แถบขาวใต้โล่ (ความยาวสัมพันธ์ popK)
@@ -542,6 +593,9 @@ void paintScreenToSprite(UIState s, const char *subtitle, bool popIcon = false, 
                                     : (s == UI_THANKS)      ? "THANK YOU"
                                     : (s == UI_ERROR)       ? "ERROR"
                                     : (s == UI_SLEEP)       ? "SLEEP"
+                                    : (s == UI_WAIT_CHOICE) ? "WAIT"
+                                    : (s == UI_SELECTED)    ? "SELECTED"
+                                    : (s == UI_SENDING)     ? "SENDING"
                                                             : "";
 
   spr.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -559,38 +613,20 @@ void showUIx(UIState s, const char *subtitle = nullptr, UITrans tr = TR_SLIDE_L)
 {
   if (isShowingPhoto)
     return;
-  // แปลง subtitle เป็น String เพื่อเทียบ
-  const String sub = subtitle ? String(subtitle) : String();
 
-  // ===== 1) ถ้า state และ subtitle เหมือนเดิม เป๊ะ → ไม่วาดซ้ำ =====
+  const String sub = subtitle ? String(subtitle) : String();
   const uint32_t now = millis();
   if (s == g_lastState && sub == g_lastSubtitle)
   {
-    // (ออปชัน) อนุญาตคูลดาวน์กันสั่น: แม้ state/ข้อความเท่าเดิม ก็ไม่วาดจนกว่าจะพ้นเวลา
     if (SAME_STATE_COOLDOWN_MS == 0 || (now - g_lastPaintMs) < SAME_STATE_COOLDOWN_MS)
-    {
       return;
-    }
   }
-
-  // ===== 2) อัปเดตค่า “ล่าสุด” =====
   g_lastState = s;
   g_lastSubtitle = sub;
   g_lastPaintMs = now;
 
-  // ===== 3) วาดจริง (โค้ดเดิมของคุณด้านล่างเหมือนเดิม) =====
   const int W = tft.width(), H = tft.height();
 
-  if (spr.created())
-    spr.deleteSprite();
-  spr.setColorDepth(8);
-  if (!spr.createSprite(W, H))
-  {
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.drawString("UI sprite alloc failed", 10, 10, 2);
-    return;
-  }
   spr.setTextDatum(TL_DATUM);
 
   // POP animation
@@ -604,7 +640,7 @@ void showUIx(UIState s, const char *subtitle = nullptr, UITrans tr = TR_SLIDE_L)
     delay(12);
   }
 
-  // เฟรมสุดท้าย + slide-in
+  // เฟรมสุดท้าย + slide
   spr.fillSprite(TFT_BLACK);
   paintScreenToSprite(s, subtitle, false, 1.0f);
 
@@ -632,9 +668,7 @@ void showUIx(UIState s, const char *subtitle = nullptr, UITrans tr = TR_SLIDE_L)
     }
   }
 
-  // เปิดเอฟเฟกต์กรอบเฉพาะหน้าสแกน
-  bool scanState = (s == UI_SCAN_CARD || s == UI_SCAN_FINGER);
-  uiSetScanning(scanState);
+  uiSetScanning(s == UI_SCAN_CARD || s == UI_SCAN_FINGER);
 }
 
 // ใช้ GPIO35 เป็นขาปลุก (ต่อมาจาก ODROID PIN_33 ผ่าน R อนุกรม ~1k)
@@ -1192,6 +1226,13 @@ inline void rc522_hard_reset()
   delay(5);
 }
 
+// วางเหนือ registerCardAndFingerprint() / deleteCardFlow()
+inline void exitPhotoMode()
+{
+  isShowingPhoto = false;
+  uiSetScanning(true);
+}
+
 // ===== ESP32 tone() shim (no sound; compile-safe) =====
 inline void tone(int /*pin*/, unsigned int /*freq*/, unsigned long /*duration*/ = 0) {}
 inline void noTone(int /*pin*/) {}
@@ -1199,6 +1240,7 @@ inline void noTone(int /*pin*/) {}
 // ---------- High-level flows ----------
 void registerCardAndFingerprint()
 {
+  exitPhotoMode();
   mySerial.println("regis");
   Serial.println("Registration mode... Tap a new card");
 
@@ -1229,8 +1271,13 @@ void registerCardAndFingerprint()
 
   // โชว์ “บัตรถูกต้อง” สั้นๆ ก่อนดำเนินการต่อ
   showUIx(UI_CARD_OK, "บัตรถูกต้อง", TR_FADE);
+  showUIx(UI_SENDING, "เตรียมลงทะเบียนนิ้ว...", TR_FADE);
+  delay(300);
+  uiSetLoading(true);
+  delay(500);
+  uiSetLoading(false);
+  showUIx(UI_SCAN_FINGER, "วางนิ้ว 2 ครั้งเพื่อลงทะเบียน", TR_SLIDE_L);
   tone(buzzerPin, 1200, 120);
-  delay(250);
 
   // --- การ์ดซ้ำ? ---
   if (findByUID(uidHex) >= 0)
@@ -1332,6 +1379,7 @@ void registerCardAndFingerprint()
 
 void deleteCardFlow()
 {
+  exitPhotoMode();
   Serial.println("Delete mode... Tap a card to delete");
   showUIx(UI_SCAN_CARD, "แตะบัตรเพื่อลบข้อมูล", TR_SLIDE_UP);
 
@@ -1358,6 +1406,11 @@ void deleteCardFlow()
   showUIx(UI_CARD_OK, "บัตรถูกต้อง", TR_FADE);
   tone(buzzerPin, 1200, 150);
   delay(300);
+  showUIx(UI_SENDING, "เตรียมยืนยันการลบ...", TR_FADE);
+  uiSetLoading(true);
+  delay(500);
+  uiSetLoading(false);
+  showUIx(UI_SCAN_FINGER, "วางนิ้วเพื่อยืนยันการลบ", TR_SLIDE_L);
 
   // โหลดเรคคอร์ดเพื่อรู้ fp_id ของเจ้าของบัตร
   Rec r;
@@ -1501,17 +1554,76 @@ void normalScanFlow()
 
   // --- ผ่านเงื่อนไข: บัตร+นิ้ว ตรงกัน → สำเร็จ ---
   // (ใส่จังหวะยืนยันสั้น ๆ แต่ไม่สลับลอจิกเดิม)
-  showUIx(UI_CONFIRM, "ยืนยันการทำรายการ", TR_FADE);
-  tone(buzzerPin, 1500, 120);
-  delay(350);
+  // --- ผ่านเงื่อนไข: บัตร+นิ้ว ตรงกัน → สำเร็จ ---
+  // --- ผ่านเงื่อนไข: บัตร+นิ้ว ตรงกัน → "รอเลือกผู้สมัคร" ---
+  g_waitingChoice = true;
+  g_selectedCandidate = -1;
+  mySerial.println("AUTH_OK"); // แจ้งบอร์ดจอใหญ่ว่าอนุญาตแล้ว
+  showUIx(UI_WAIT_CHOICE, "โปรดเลือกผู้สมัครที่หน้าจอใหญ่", TR_FADE);
 
-  mySerial.println("O");   // โปรโตคอลเดิม
-  setVotedByIndex(idx, 1); // โหมดโหวต → mark voted
+  // วนรออีเวนต์: CF:xx / SENDING / VOTE:OK / VOTE:ERR (สูงสุด 20 วินาที)
+  uint32_t tStart = millis();
+  bool finished = false;
+  uiSetLoading(false);
 
-  showUIx(UI_THANKS, "โปรดรับบัตรคืน", TR_FADE);
-  delay(700);
+  while (!finished && millis() - tStart < 20000)
+  {
+    // อ่าน Serial2 ถ้ามี
+    if (mySerial.available())
+    {
+      String line = mySerial.readStringUntil('\n');
+      line.trim();
 
-  // กลับหน้า READY
+      if (line.startsWith("CF:"))
+      {
+        // ได้เบอร์ผู้สมัคร
+        g_selectedCandidate = line.substring(3).toInt();
+        String sub = "เลือกหมายเลข " + String(g_selectedCandidate);
+        showUIx(UI_SELECTED, sub.c_str(), TR_FADE);
+        // (ให้ผู้ใช้เห็นสักหน่อย)
+        delay(400);
+      }
+      else if (line.equalsIgnoreCase("SENDING"))
+      {
+        // เริ่มส่ง/ประมวลผล -> หน้าโหลด
+        uiSetLoading(true);
+        showUIx(UI_SENDING, "กำลังส่งข้อมูล...", TR_NONE);
+      }
+      else if (line.equalsIgnoreCase("VOTE:OK"))
+      {
+        uiSetLoading(false);
+        showUIx(UI_THANKS, "ทำรายการสำเร็จ", TR_FADE);
+        setVotedByIndex(idx, 1); // ค่อย mark เมื่อได้ผลสำเร็จจริง
+        finished = true;
+      }
+      else if (line.equalsIgnoreCase("VOTE:ERR"))
+      {
+        uiSetLoading(false);
+        showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_FADE);
+        finished = true;
+      }
+      else if (line.equalsIgnoreCase("ABORT"))
+      {
+        uiSetLoading(false);
+        showUIx(UI_ERROR, "ยกเลิกรายการ", TR_FADE);
+        finished = true;
+      }
+    }
+
+    uiTick(); // ให้กรอบ/สปินเนอร์วิ่ง
+    delay(30);
+  }
+
+  // ถ้าหมดเวลาโดยยังไม่ finished
+  if (!finished)
+  {
+    uiSetLoading(false);
+    showUIx(UI_ERROR, "หมดเวลารอการเลือก", TR_FADE);
+  }
+
+  // ปิดช่วงรอ แล้วกลับหน้า READY
+  g_waitingChoice = false;
+  delay(800);
   showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
 }
 
@@ -1565,7 +1677,7 @@ float measureDistanceCm()
 #endif
 
 // เกณฑ์กรองค่าที่เชื่อถือได้
-static const float MIN_VALID_CM = 5.0f;
+static const float MIN_VALID_CM = 0.0f;
 static const float MAX_VALID_CM = 300.0f;
 
 // อ่าน echo แบบ robust: รอให้ ECHO เป็น LOW ก่อนทุกครั้ง, ใช้ pulseInLong
@@ -1977,6 +2089,20 @@ void setup()
   tft.setSwapBytes(true);
   tft.setRotation(0); // แนวนอน 320x240
   TJpgDec.setCallback(tft_output);
+
+  if (!spr.created())
+  {
+    spr.setColorDepth(8);
+    if (!spr.createSprite(tft.width(), tft.height()))
+    {
+      Serial.println("[UI] createSprite(8bpp) failed, retry 4bpp");
+      spr.setColorDepth(4);
+      if (!spr.createSprite(tft.width(), tft.height()))
+      {
+        Serial.println("[UI] createSprite failed.");
+      }
+    }
+  }
   showIdleScreen(sdOK ? "SD OK" : "No SD");
 
   showUIx(UI_BOOT, "กำลังตรวจสอบระบบ", TR_FADE);
@@ -2023,6 +2149,9 @@ void setup()
 
   lastUltraLogMs = millis();
 
+  isShowingPhoto = false;
+  uiSetScanning(true);
+
   Serial.println("setup() done.");
 }
 
@@ -2057,6 +2186,41 @@ void handleU2Line(const String &raw)
     }
     return;
   }
+  if (m.startsWith("CF:"))
+  {
+    int n = m.substring(3).toInt();
+    g_selectedCandidate = n;
+    // ถ้าอยู่ช่วงรอ ให้แสดงผลชัดเจน
+    if (g_waitingChoice)
+    {
+      String sub = "เลือกหมายเลข " + String(n);
+      uiSetLoading(false);
+      showUIx(UI_SELECTED, sub.c_str(), TR_FADE);
+    }
+    return;
+  }
+  else if (m.equalsIgnoreCase("SENDING"))
+  {
+    uiSetLoading(true);
+    showUIx(UI_SENDING, "กำลังส่งข้อมูล...", TR_NONE);
+    return;
+  }
+  else if (m.equalsIgnoreCase("VOTE:OK"))
+  {
+    uiSetLoading(false);
+    showUIx(UI_THANKS, "ทำรายการสำเร็จ", TR_FADE);
+    delay(700);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    return;
+  }
+  else if (m.equalsIgnoreCase("VOTE:ERR"))
+  {
+    uiSetLoading(false);
+    showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_FADE);
+    delay(700);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    return;
+  }
   Serial.println(raw);
 }
 
@@ -2069,7 +2233,8 @@ void loop()
 
   if (switchReg == LOW)
   {
-    // โหมดลงทะเบียน: บัตร + ลายนิ้วมือ
+    showUIx(UI_CONFIRM, "โหมดลงทะเบียน", TR_SLIDE_UP);
+    delay(500); // ให้ผู้ใช้เห็น
     while (digitalRead(switchPin33) == LOW)
       delay(10);
     registerCardAndFingerprint();
@@ -2079,7 +2244,8 @@ void loop()
   }
   else if (switchDel == LOW)
   {
-    // โหมดลบเรคคอร์ด (บัตร) + ลบ template ในเซ็นเซอร์
+    showUIx(UI_ERROR, "โหมดลบข้อมูล", TR_SLIDE_UP);
+    delay(500);
     while (digitalRead(switchPin32) == LOW)
       delay(10);
     deleteCardFlow();

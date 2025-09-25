@@ -2,7 +2,7 @@
 #define BLYNK_TEMPLATE_NAME "Quickstart Template"
 #define BLYNK_AUTH_TOKEN "RUBdFFrRrLJ99YHyTgYN5rew8gfkPzaH"
 
-#define WAKE_PIN 33
+#define WAKE_PIN 14
 #include <algorithm>
 
 // ==== must be the very first lines ====
@@ -14,6 +14,9 @@ void writeRec(int idx, const Rec &r); // uses incomplete type by reference (OK)
 
 static int g_selectedCandidate = -1;
 static bool g_waitingChoice = false; // อยู่ช่วงรอผู้ใช้เลือก
+
+static bool g_votePosted = false; // กันยิงซ้ำในหนึ่งรอบเลือก
+static int g_idxPending = -1;     // เก็บ index ของบัตรที่จะ mark voted
 
 #include "driver/rtc_io.h" // สำหรับ rtc_gpio_get_level()
 #include "esp_system.h"
@@ -43,6 +46,14 @@ struct Rec {
 #include <MFRC522.h>
 #include <EEPROM.h>
 #include <Adafruit_Fingerprint.h>
+
+#include <HTTPClient.h>
+
+// ===== Web API (FastAPI) =====
+static const char *API_SCHEME = "http";       // ถ้าใช้ HTTPS ดูหมายเหตุท้าย
+static const char *API_HOST = "192.168.1.50"; // IP/โดเมนของเซิร์ฟเวอร์
+static const uint16_t API_PORT = 8000;        // พอร์ต FastAPI
+static const char *API_TOKEN = "mysecret";    // ต้องตรงกับ API_TOKEN ฝั่ง FastAPI
 
 // ===== UI (no-image) =====
 enum UIState
@@ -153,6 +164,38 @@ static inline float easeInOutQuad(float x)
 #include "esp_sleep.h"
 
 #include <math.h>
+
+bool postVoteToServer(int option)
+{
+  if (option < 0 || option > 9)
+  {
+    Serial.printf("[API] invalid option=%d\n", option);
+    return false;
+  }
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    Serial.println("[API] WiFi not connected");
+    return false;
+  }
+
+  HTTPClient http;
+  String url = String(API_SCHEME) + "://" + API_HOST + ":" + String(API_PORT) + "/vote";
+  http.begin(url);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("X-API-KEY", API_TOKEN);
+  http.setTimeout(3000); // 3s
+
+  String body = String("{\"option\":\"") + option + "\"}";
+  int code = http.POST(body);
+  Serial.printf("[API] POST %s -> %d\n", url.c_str(), code);
+  if (code > 0)
+  {
+    String resp = http.getString();
+    Serial.printf("[API] resp: %s\n", resp.c_str());
+  }
+  http.end();
+  return code == 200;
+}
 
 // ==== [ADD] Wake-pin debug helpers (no change to existing code) ====
 volatile uint32_t WAKE_edges = 0;
@@ -756,7 +799,7 @@ static const uint8_t NEAR_CONFIRM_N = 2; // ต้องเห็น NEAR 2 เ�
 static const uint8_t FAR_CONFIRM_N = 2;  // ต้องเห็น FAR  2 เฟรมติดถึงจะเปลี่ยนเป็น FAR
 
 // จับเวลาเพื่อหลับ
-const uint32_t NO_NEAR_SLEEP_MS = 30000; // FAR ต่อเนื่อง 30 วินาที -> หลับ
+const uint32_t NO_NEAR_SLEEP_MS = 10000; // FAR ต่อเนื่อง 10 วินาที -> หลับ
 
 // ตัวแปรสถานะ
 static bool nearState = false;
@@ -831,37 +874,33 @@ void printBootAndWakeInfo()
 // เข้าหลับทันที แล้วปลุกเมื่อ WAKE_PIN=HIGH จาก ODROID
 void goDeepSleepNow()
 {
-  Serial.println("-> Deep-sleep now. Waiting for ODROID wake (GPIO HIGH)...");
-  delay(30);
-
-  // ปิด I/O ที่อาจดีดกลับ
-  pinMode(12, INPUT);
-  pinMode(4, INPUT);
-
-  // เอา interrupt ของขาปลุกออกก่อน
   detachInterrupt(digitalPinToInterrupt(WAKE_PIN));
 
-  // ตั้งค่าพินปลุกในสองโดเมนให้สะอาด
-  rtc_gpio_hold_dis((gpio_num_t)WAKE_PIN);
-  pinMode(WAKE_PIN, INPUT);              // digital
-  rtc_gpio_deinit((gpio_num_t)WAKE_PIN); // RTC
+  // ตั้งเป็น RTC input เฉพาะตอนหลับ
+  rtc_gpio_deinit((gpio_num_t)WAKE_PIN);
   rtc_gpio_init((gpio_num_t)WAKE_PIN);
   rtc_gpio_set_direction((gpio_num_t)WAKE_PIN, RTC_GPIO_MODE_INPUT_ONLY);
+
+  // เลือกอย่างใดอย่างหนึ่งตามข้อ 2:
+  // --- ทาง A: ปลุกเมื่อ HIGH ---
   rtc_gpio_pulldown_en((gpio_num_t)WAKE_PIN);
   rtc_gpio_pullup_dis((gpio_num_t)WAKE_PIN);
-
-  // ถ้าขาปลุก HIGH อยู่แล้ว ให้ข้ามหลับ (กันเด้ง)
-  if (rtc_gpio_get_level((gpio_num_t)WAKE_PIN) == 1)
-  {
-    Serial.println("[SLEEP] WAKE_PIN is HIGH already -> skip sleep");
-    return;
-  }
-
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
   esp_sleep_enable_ext1_wakeup(1ULL << WAKE_PIN, ESP_EXT1_WAKEUP_ANY_HIGH);
 
-  // showUIx(UI_SLEEP, "พักการทำงาน");
-  delay(200);
+  // --- ทาง B: ปลุกเมื่อ LOW ---
+  // rtc_gpio_pullup_en((gpio_num_t)WAKE_PIN);
+  // rtc_gpio_pulldown_dis((gpio_num_t)WAKE_PIN);
+  // esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  // esp_sleep_enable_ext1_wakeup(1ULL << WAKE_PIN, ESP_EXT1_WAKEUP_ALL_LOW);
+
+  // กันเด้ง: ถ้าตอนนี้อยู่ในระดับที่จะปลุก ให้ “ไม่หลับ”
+  if (rtc_gpio_get_level((gpio_num_t)WAKE_PIN) == 1 /* ถ้าใช้ ANY_HIGH ให้เท่ากับ 1; ถ้าใช้ ALL_LOW ให้ 0 */)
+  {
+    Serial.println("[SLEEP] Wake pin already at trigger level -> skip sleep");
+    return;
+  }
+
   esp_deep_sleep_start();
 }
 
@@ -911,8 +950,8 @@ inline void rfid_bus_end()
 // ---------- I/O ----------
 const int EEPROM_SIZE = 512;
 const int buzzerPin = 12;
-const int switchPin33 = 14; // สวิตช์ Register
-const int switchPin32 = 32; // สวิตช์ Delete
+// const int switchPin33 = 99; // สวิตช์ Register
+// const int switchPin32 =99; // สวิตช์ Delete
 // const int ledPin = 13;
 
 // ---------- Finger UART Pins (ปรับให้ตรงบอร์ดคุณ) ----------
@@ -1647,14 +1686,15 @@ void normalScanFlow()
   mySerial.println("V");       // UNO ก็รองรับคำสั่งนี้เหมือนกัน
   barStart(1500, "รอการเลือก"); // เติมเต็มทุก 1 วิ แล้ววน
   showUIx(UI_WAIT_CHOICE, "โปรดเลือกผู้สมัครที่หน้าจอใหญ่", TR_FADE);
+  g_votePosted = false;
+  g_idxPending = idx;
 
-  // วนรออีเวนต์: CF:xx / SENDING / VOTE:OK / VOTE:ERR (สูงสุด 20 วินาที)
+  // วนรออีเวนต์: CF:xx / (อาจมี) SENDING / VOTE:OK / VOTE:ERR (สูงสุด 20 วินาที)
   uint32_t tStart = millis();
   bool finished = false;
 
   while (!finished && millis() - tStart < 20000)
   {
-    // อ่าน Serial2 ถ้ามี
     if (mySerial.available())
     {
       String line = mySerial.readStringUntil('\n');
@@ -1662,32 +1702,65 @@ void normalScanFlow()
 
       if (line.startsWith("CF:"))
       {
-        // ได้เบอร์ผู้สมัคร
+        // ได้เบอร์ผู้สมัคร → ถือว่ายืนยันแล้ว
         g_selectedCandidate = line.substring(3).toInt();
         barStop();
-        String sub = "เลือกหมายเลข " + String(g_selectedCandidate);
-        showUIx(UI_SELECTED, sub.c_str(), TR_FADE);
-        // (ให้ผู้ใช้เห็นสักหน่อย)
-        delay(400);
+
+        // UI: โชว์หมายเลขที่เลือก แล้วเข้าส่งทันที
+        {
+          String sub = "เลือกหมายเลข " + String(g_selectedCandidate);
+          showUIx(UI_SELECTED, sub.c_str(), TR_FADE);
+          delay(400);
+        }
+
+        if (!g_votePosted && g_selectedCandidate >= 0 && g_selectedCandidate <= 9)
+        {
+          showUIx(UI_SENDING, "กำลังส่งข้อมูล...", TR_NONE);
+
+          bool sent = postVoteToServer(g_selectedCandidate);
+          Serial.printf("[API] CF post option=%d -> %s\n",
+                        g_selectedCandidate, sent ? "OK" : "FAIL");
+
+          if (sent)
+          {
+            if (g_idxPending >= 0)
+              setVotedByIndex(g_idxPending, 1);
+            g_votePosted = true;
+            g_waitingChoice = false;
+
+            showUIx(UI_THANKS, "โหวตเสร็จสิ้น", TR_FADE);
+            delay(5000); // แสดง 5 วินาที
+            showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+            finished = true;
+          }
+          else
+          {
+            showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_FADE);
+            delay(700);
+            showUIx(UI_WAIT_CHOICE, "โปรดเลือกใหม่หรือลองอีกครั้ง", TR_SLIDE_R);
+            // finished คงไว้เป็น false เพื่อรอ CF ใหม่ได้
+          }
+        }
       }
       else if (line.equalsIgnoreCase("SENDING"))
       {
         barStart(1200, "กำลังส่ง");
-        // เริ่มส่ง/ประมวลผล -> หน้าโหลด
         showUIx(UI_SENDING, "กำลังส่งข้อมูล...", TR_NONE);
       }
       else if (line.equalsIgnoreCase("VOTE:OK"))
       {
+        // กรณีอนาคตถ้ามีส่ง VOTE:OK ก็เคลียร์ให้จบเหมือนกัน
         uiSetLoading(false);
         showUIx(UI_THANKS, "ทำรายการสำเร็จ", TR_FADE);
-        setVotedByIndex(idx, 1); // ค่อย mark เมื่อได้ผลสำเร็จจริง
+        if (g_idxPending >= 0)
+          setVotedByIndex(g_idxPending, 1);
         finished = true;
       }
       else if (line.equalsIgnoreCase("VOTE:ERR"))
       {
         uiSetLoading(false);
         showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_FADE);
-        finished = true;
+        // ให้ผู้ใช้เลือกใหม่
       }
       else if (line.equalsIgnoreCase("ABORT"))
       {
@@ -1697,24 +1770,21 @@ void normalScanFlow()
       }
     }
 
-    uiTick(); // ให้กรอบ/สปินเนอร์วิ่ง
+    uiTick();
     delay(30);
   }
 
-  // ถ้าหมดเวลาโดยยังไม่ finished
   if (!finished)
   {
     barStop();
     showUIx(UI_ERROR, "หมดเวลารอการเลือก", TR_FADE);
   }
 
-  // ปิดช่วงรอ แล้วกลับหน้า READY
   g_waitingChoice = false;
   barStop();
   delay(800);
   showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
 }
-
 // วัด echo ครั้งเดียว (เวอร์ชันสั้น ใช้กับ measureDistanceCm)
 inline unsigned long us_read_once()
 {
@@ -2085,7 +2155,7 @@ void setup()
 {
   // --- Wake pin / IRQ ---
   rtc_gpio_hold_dis((gpio_num_t)WAKE_PIN);
-  pinMode(WAKE_PIN, INPUT_PULLDOWN);
+  pinMode(WAKE_PIN, INPUT);
   attachInterrupt(digitalPinToInterrupt(WAKE_PIN), WAKE_isr, CHANGE);
 
   // --- Serial / I2C / UART2 ---
@@ -2208,8 +2278,8 @@ void setup()
 
   // --- I/O อื่น ๆ ---
   pinMode(buzzerPin, OUTPUT);
-  pinMode(switchPin33, INPUT_PULLUP);
-  pinMode(switchPin32, INPUT_PULLUP);
+  // pinMode(switchPin33, INPUT_PULLUP);
+  // pinMode(switchPin32, INPUT_PULLUP);
   // ถ้าใช้ LED เพิ่มค่อยเปิด
   // pinMode(ledPin, OUTPUT); digitalWrite(ledPin, LOW);
 
@@ -2272,11 +2342,40 @@ void handleU2Line(const String &raw)
   {
     int n = m.substring(3).toInt();
     g_selectedCandidate = n;
+
     if (g_waitingChoice)
     {
-      barStop(); // หยุดหลอดขณะโชว์ว่าเลือกแล้ว
+      barStop();
       String sub = "เลือกหมายเลข " + String(n);
       showUIx(UI_SELECTED, sub.c_str(), TR_FADE);
+      delay(400);
+    }
+
+    // จบโหวตจาก CF: เช่นกัน (กันยิงซ้ำ)
+    if (g_waitingChoice && !g_votePosted && n >= 0 && n <= 9)
+    {
+      showUIx(UI_SENDING, "กำลังส่งข้อมูล...", TR_NONE);
+
+      bool sent = postVoteToServer(n);
+      Serial.printf("[API] CF post option=%d -> %s\n", n, sent ? "OK" : "FAIL");
+
+      if (sent)
+      {
+        if (g_idxPending >= 0)
+          setVotedByIndex(g_idxPending, 1);
+        g_votePosted = true;
+        g_waitingChoice = false;
+
+        showUIx(UI_THANKS, "โหวตเสร็จสิ้น", TR_FADE);
+        delay(5000); // 5 วิ ตามที่ขอ
+        showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+      }
+      else
+      {
+        showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_FADE);
+        delay(700);
+        showUIx(UI_WAIT_CHOICE, "โปรดเลือกใหม่หรือลองอีกครั้ง", TR_SLIDE_R);
+      }
     }
     return;
   }
@@ -2336,31 +2435,31 @@ void tftSoftRecoverIfBlank()
 void loop()
 {
   // ===== ปุ่มโหมด =====
-  int switchReg = digitalRead(switchPin33);
-  int switchDel = digitalRead(switchPin32);
+  // int switchReg = digitalRead(switchPin33);
+  // int switchDel = digitalRead(switchPin32);
 
-  if (switchReg == LOW)
-  {
-    showUIx(UI_CONFIRM, "โหมดลงทะเบียน", TR_SLIDE_UP);
-    delay(500); // ให้ผู้ใช้เห็น
-    while (digitalRead(switchPin33) == LOW)
-      delay(10);
-    registerCardAndFingerprint();
-    uiShownScanCard = false;
-    delay(300);
-    return;
-  }
-  else if (switchDel == LOW)
-  {
-    showUIx(UI_ERROR, "โหมดลบข้อมูล", TR_SLIDE_UP);
-    delay(500);
-    while (digitalRead(switchPin32) == LOW)
-      delay(10);
-    deleteCardFlow();
-    uiShownScanCard = false;
-    delay(300);
-    return;
-  }
+  // if (switchReg == LOW)
+  // {
+  //   showUIx(UI_CONFIRM, "โหมดลงทะเบียน", TR_SLIDE_UP);
+  //   delay(500); // ให้ผู้ใช้เห็น
+  //   while (digitalRead(switchPin33) == LOW)
+  //     delay(10);
+  //   registerCardAndFingerprint();
+  //   uiShownScanCard = false;
+  //   delay(300);
+  //   return;
+  // }
+  // else if (switchDel == LOW)
+  // {
+  //   showUIx(UI_ERROR, "โหมดลบข้อมูล", TR_SLIDE_UP);
+  //   delay(500);
+  //   while (digitalRead(switchPin32) == LOW)
+  //     delay(10);
+  //   deleteCardFlow();
+  //   uiShownScanCard = false;
+  //   delay(300);
+  //   return;
+  // }
 
   // ===== แตะการ์ด (ล็อคบัส RC522 เสมอ) =====
 

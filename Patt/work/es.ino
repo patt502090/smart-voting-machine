@@ -21,6 +21,10 @@ static bool g_waitingChoice = false; // อยู่ช่วงรอผู้�
 static bool g_votePosted = false; // กันยิงซ้ำในหนึ่งรอบเลือก
 static int g_idxPending = -1;     // เก็บ index ของบัตรที่จะ mark voted
 
+#define SD_CS 13
+#define TFT_CS 15
+#define SS_PIN 5 
+
 #include "driver/rtc_io.h" // สำหรับ rtc_gpio_get_level()
 #include "esp_system.h"
 
@@ -55,7 +59,7 @@ struct Rec {
 // ===== Web API (FastAPI) =====
 static const char *API_SCHEME = "http";      // ถ้าใช้ HTTPS ดูหมายเหตุท้าย
 // static const char *API_HOST = "172.20.10.3"; // IP/โดเมนของเซิร์ฟเวอร์
-static const char *API_HOST = "172.30.88.16"; // IP/โดเมนของเซิร์ฟเวอร์
+static const char *API_HOST = "172.20.10.3"; // IP/โดเมนของเซิร์ฟเวอร์
 static const uint16_t API_PORT = 8001;       // พอร์ต FastAPI
 static const char *API_TOKEN = "mysecret";   // ต้องตรงกับ API_TOKEN ฝั่ง FastAPI
 
@@ -127,8 +131,7 @@ static bool isShowingPhoto = false;
 #include <SD.h>
 
 // [ADD] CS pins (ยึดตามฮาร์ดแวร์คุณ)
-#define SD_CS 13
-#define TFT_CS 15
+
 // RFID_CS = SS_PIN (=5) มีอยู่แล้วจากโค้ดคุณ
 
 // [ADD] สร้างอ็อบเจ็กต์จอ
@@ -249,7 +252,7 @@ bool postVoteToServer(int option)
   http.addHeader("X-API-KEY", API_TOKEN);
   http.setTimeout(3000); // 3s
 
-  String body = String("{\"option\":\"") + option + "\"}";
+  String body = String("{\"option\":") + option + "}";
   int code = http.POST(body);
   Serial.printf("[API] POST %s -> %d\n", url.c_str(), code);
   if (code > 0)
@@ -974,7 +977,6 @@ HardwareSerial FingerSerial(1); // UART1 : ใช้คุยกับโมด�
 Adafruit_Fingerprint finger = Adafruit_Fingerprint(&FingerSerial);
 
 // ---------- RFID ----------
-#define SS_PIN 5
 #define RST_PIN 27
 MFRC522 rfid(SS_PIN, RST_PIN);
 // [ADD] ปล่อยทุก CS ให้ HIGH (กันชน)
@@ -2238,6 +2240,17 @@ void setup()
   mySerial.setTimeout(200);
   Wire.begin();
 
+    // --- Make all SPI CS pins OUTPUT & HIGH as early as possible ---
+  pinMode(SD_CS, OUTPUT);
+  pinMode(TFT_CS, OUTPUT);
+  pinMode(SS_PIN, OUTPUT);
+  digitalWrite(SD_CS, HIGH);
+  digitalWrite(TFT_CS, HIGH);
+  digitalWrite(SS_PIN, HIGH);
+
+  // เริ่มบัส SPI หลังจากทุก CS ถูกปล่อยแล้ว
+  SPI.begin(18, 19, 23, SD_CS);
+
   // UART2: RX=16, TX=17 (บอร์ดลูก/ODROID)
   mySerial.begin(9600, SERIAL_8N1, 16, 17);
 
@@ -2335,11 +2348,15 @@ void setup()
 
   // --- TFT + TJpg callback ---
   tft.init();
+  tft.endWrite();          // เผื่อค้างโหมดเขียน
+  tft.writecommand(0x01);  // SWRESET (ส่วนใหญ่รองรับ ILI9341/ILI948x/ST7789)
+  delay(120);
   tft.setSwapBytes(true);
   tft.setRotation(0); // แนวนอน 320x240
   TJpgDec.setCallback(tft_output);
 
   if (!spr.created())
+  spr.setColorDepth(8);
   {
     spr.setColorDepth(8);
     if (!spr.createSprite(tft.width(), tft.height()))

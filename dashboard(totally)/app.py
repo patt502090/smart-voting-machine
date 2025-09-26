@@ -42,10 +42,12 @@ def init_db():
     logger.info("Initializing database...")
     os.makedirs("static/img", exist_ok=True)
     try:
-        with sqlite3.connect(DB_PATH) as con:
-            # Enable WAL mode for better concurrency
+        with sqlite3.connect(DB_PATH, timeout=DB_TIMEOUT) as con:
+            # Enable WAL mode and set timeouts for better concurrency
             con.execute('PRAGMA journal_mode=WAL')
             con.execute('PRAGMA busy_timeout=5000')
+            con.execute('PRAGMA synchronous=NORMAL')  # Faster but still safe
+            con.execute('PRAGMA temp_store=MEMORY')
             
             # Create tables if they don't exist
             con.execute("""CREATE TABLE IF NOT EXISTS votes (
@@ -197,7 +199,6 @@ def vote(req: Request, v: Vote):
         raise HTTPException(500, f"unexpected error: {str(e)}")
     finally:
         logger.debug("Vote request completed")
-logger = logging.getLogger(__name__)
 
 # ---------- Admin ----------
 @app.post("/admin/reset")

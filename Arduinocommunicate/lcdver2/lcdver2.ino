@@ -28,7 +28,10 @@
 #include <avr/power.h>
 #include <avr/sleep.h>
 #include <avr/interrupt.h>
-
+//#include <RtcDS1307.h>
+//RtcDS1307<TwoWire> Rtc(Wire);
+#include <RTClib.h>
+RTC_DS1307 rtc;
 // --- Sleep/Idle policy ---
 #define IDLE_SLEEP_MS 600000000UL  // ว่าง 60s -> หลับลึก
 unsigned long lastActivityMs = 0;
@@ -274,7 +277,7 @@ void animateDuringSelect() {
 }
 
 // ---------- READY UI ----------
-void drawReadyUI_base() {
+/*void drawReadyUI_base() {
   loadIcons();
   drawFrame();
   lcd.noBlink();
@@ -290,8 +293,8 @@ void drawReadyUI_base() {
   lcd.setCursor(4, 1);
   lcd.print(F("Ready to vote"));
   // ข้อความย่อย
-  lcd.setCursor(2, 2);
-  lcd.print(F("Waiting for ESP32 (O)"));
+  //lcd.setCursor(2, 2);
+  //lcd.print(F("Waiting for ESP32 (O)"));
 
   // ล้างกล่องตัวเลขที่อาจค้าง
   for (uint8_t y = 0; y <= 2; y++) {
@@ -326,6 +329,59 @@ void animateReady() {
     else if (readyDots == 3) lcd.print(F("..."));
   }
 }
+*/
+inline void lcd2(uint8_t v){ lcd.print(v/10); lcd.print(v%10); }
+
+void clock_ready_tick(bool forceFirst=false) {
+  static uint8_t lastSec = 255;
+
+  if (page != PAGE_WAIT) return;     // อัปเดตเฉพาะหน้า READY
+  if (tmrpcm.isPlaying()) return;    // เลี่ยงช่วงกำลังเล่นเสียง (กันสะดุด)
+
+  DateTime t = rtc.now();
+
+  if (!forceFirst) {
+    if (t.second() == lastSec) return;   // เขียนเฉพาะตอนวินาทีเปลี่ยน
+  }
+  lastSec = t.second();
+
+  // บรรทัด 0: วันที่ → dd/mm/yyyy
+  lcd.setCursor(0, 0);
+  lcd2(t.day());   lcd.print('/');
+  lcd2(t.month()); lcd.print('/');
+  lcd.print(t.year());
+  // เติมช่องว่างลบเศษตัวอักษรถ้าเคยพิมพ์ยาว
+  lcd.print(F("       "));  // ให้ครบถึงคอลัมน์ท้าย ๆ
+
+  // บรรทัด 1: เวลา → hh:mm:ss
+  lcd.setCursor(0, 1);
+  lcd2(t.hour());  lcd.print(':');
+  lcd2(t.minute());lcd.print(':');
+  lcd2(t.second());
+  lcd.print(F("             "));
+}
+
+void drawReadyUI_base() {
+  lcd.noBlink();
+  lcd.clear();
+
+  // กรอบ (ถ้าชอบแบบเรียบ ๆ จะตัดทิ้งได้)
+  loadIcons();
+  drawFrame();
+
+  // บรรทัด 2: ข้อความสถานะคงที่
+  lcd.setCursor(4, 2);
+  lcd.print(F("Ready to vote"));
+
+  // เคลียร์บรรทัดวันที่/เวลา (บรรทัด 0 และ 1) ให้โล่งไว้ก่อน
+  lcd.setCursor(0, 0); lcd.print(F("                    "));
+  lcd.setCursor(0, 1); lcd.print(F("                    "));
+
+  // รีเซ็ตตัวจับวินาทีเพื่อให้ฟังก์ชันนาฬิกาเขียนครั้งแรกทันที
+  extern void clock_ready_tick(bool forceFirst);
+  clock_ready_tick(true);   // บังคับอัปเดตครั้งแรกทันที (และไม่ไปยุ่งตอนยังเล่นเสียง)
+}
+
 
 void drawConfirmUI() {
   lcd.noBlink();
@@ -597,12 +653,51 @@ void afterWake() {
 }
 
 
+static inline void two(char* p, uint8_t v){ p[0] = '0' + v/10; p[1] = '0' + v%10; }
 
+static void printDateTimeLight(const DateTime& t) {
+  // "dd/mm/yyyy hh:mm:ss" = 19 chars + '\0'
+  char buf[20];
+  two(buf+0, t.day());
+  buf[2]  = '/';
+  two(buf+3, t.month());
+  buf[5]  = '/';
+  uint16_t y = t.year();
+  buf[6]  = '0' + (y/1000)%10;
+  buf[7]  = '0' + (y/100)%10;
+  buf[8]  = '0' + (y/10)%10;
+  buf[9]  = '0' + (y%10);
+  buf[10] = ' ';
+  two(buf+11, t.hour());
+  buf[13] = ':';
+  two(buf+14, t.minute());
+  buf[16] = ':';
+  two(buf+17, t.second());
+  buf[19] = '\0';
+  Serial.println(buf);
+}
 
 // ============ SETUP / LOOP ============
 void setup() {
-  
-  
+
+  rtc.begin();
+  rtc.writeSqwPinMode(DS1307_OFF);
+    
+ // RtcDateTime compiled = RtcDateTime(__DATE__, __TIME__);
+   /* const DateTime buildTime(F(__DATE__), F(__TIME__));
+
+  // ถ้า RTC ยังไม่เดิน หรือเวลาเพี้ยนมาก (> 1 วัน) ให้ตั้งใหม่
+  if (!rtc.isrunning()) {
+    rtc.adjust(buildTime);
+  } else {
+    DateTime now = rtc.now();
+    uint32_t diff = (now.unixtime() > buildTime.unixtime())
+                    ? now.unixtime() - buildTime.unixtime()
+                    : buildTime.unixtime() - now.unixtime();
+    if (diff > 24UL * 60UL * 60UL) {         // เพี้ยนเกิน 1 วัน → ตั้งใหม่
+      rtc.adjust(buildTime);
+    }
+  }*/
   wdt_sanity_boot();
   pinMode(10, OUTPUT);
   Serial.begin(9600);
@@ -618,13 +713,14 @@ void setup() {
   lcd.backlight();
 
   // เล่นไฟเปิดเครื่อง (ถ้าหาไฟล์ไม่เจอจะเงียบ)
- 
+ //clock_to_lcd_tick();
+ clock_ready_tick();
   tmrpcm.play((char*)"sa.wav");
   if (!tmrpcm.isPlaying()) {
     tmrpcm.play((char*)"sa.wav");
   }
 
-delay(1000);
+  delay(1000);
 
   buzzer.init();
   //buzzer.playBoot();  // jingle เปิดเครื่อง
@@ -647,6 +743,17 @@ delay(1000);
 
 
 
+  //rtc_tick_1s();
+//DateTime now = rtc.now();  
+//char buf[] = "DD/MM/YYYY hh:mm:ss";
+
+//now.toString(buf);
+//Serial.println(now.toString(buf));  // 26/09/2025 23:58:07
+    //RtcDateTime now = Rtc.GetDateTime();
+    
+    //ตั้ง่าเวลาของ RTC ให้ตรงกับอคอมพิวเตอร์
+    //if (now < compiled) Rtc.SetDateTime(compiled);
+    //Rtc.SetSquareWavePin(DS1307SquareWaveOut_Low); 
 
 }
 
@@ -654,8 +761,42 @@ delay(1000);
 
 
 
+// เรียกบ่อย ๆ ใน loop (และข้ามทันทีถ้ากำลังเล่นเสียง)
+void clock_to_lcd_tick() {
+  static uint8_t lastSec = 255;
+  if (tmrpcm.isPlaying()) return;        // ห้ามรบกวนตอนเล่นเสียง
+
+  DateTime t = rtc.now();                 // I2C ครั้งเดียว
+  if (t.second() == lastSec) return;      // อัปเดตเฉพาะตอนวินาทีเปลี่ยน
+  lastSec = t.second();
+
+    lcd.setCursor(0,0);
+  lcd2(t.day());   lcd.print('/'); 
+  lcd2(t.month()); lcd.print('/'); 
+  lcd.print(t.year());
+  lcd.print(' ');
+  lcd.setCursor(0,1);
+  lcd2(t.hour());  lcd.print(':'); 
+  lcd2(t.minute());lcd.print(':'); 
+  lcd2(t.second());
+  lcd.print(' ');  // เคลียร์ช่องสุดท้ายกันเศษตัวอักษร
+}
+
+void rtc_tick_1s() {
+  /*static unsigned long next = 0;
+  unsigned long nowMs = millis();
+  if ((long)(nowMs - next) >= 0) {
+    DateTime now = rtc.now();        // I2C ครั้งเดียวต่อวินาที
+    printDateTimeLight(now);         // ไม่มี String
+    next = nowMs + 10000;
+  }*/
+  DateTime now = rtc.now();        // I2C ครั้งเดียวต่อวินาที
+    printDateTimeLight(now);   
+}
+
 
 void loop() {
+  
 
    // uint8_t buttons = tm.readButtons();
   // อ่านคีย์จาก keypad
@@ -784,7 +925,7 @@ void loop() {
   } /**/
 
   // อนิเมชัน / หน้าคอนเฟิร์ม non-blocking
-  if (page == PAGE_WAIT) animateReady();
+  //if (page == PAGE_WAIT) animateReady();
   if (page == PAGE_VOTE) animateDuringSelect();
   if (page == PAGE_CONFIRM && (long)(millis() - confirmUntil) >= 0) {
     // หลังโชว์ "Confirmed" ถ้ายังมีสิทธิ -> กลับหน้าโหวต, ไม่งั้นกลับหน้า READY
@@ -852,4 +993,6 @@ void loop() {
       afterWake();           // ตื่นแล้วเปิดจอ + วาด UI ใหม่
     }
   }
+  clock_ready_tick(); 
+  //rtc_tick_1s();
 }

@@ -741,18 +741,36 @@ void paintScreenToSprite(UIState s, const char *subtitle, bool popIcon = false, 
     // Add animation phase for card bouncing effect
     float animPhase = (millis() % 2000) / 2000.0f;  // 2-second cycle
     drawNFCIcon(spr, W / 2, 150, 1.0f * scale, animPhase);
-    // Draw subtle moving chevrons under the card to imply action
-    int baseY = 190;
-    int len = 12;
-    int gap = 10;
-    int total = 5;
-    int ofs = (int)((millis() / 120) % (len + gap));
-    uint16_t chevCol = TFT_CYAN;
-    for (int i = 0; i < total; ++i) {
-      int x0 = (W / 2 - (total * (len + gap)) / 2) + i * (len + gap) + ofs;
-      spr.drawLine(x0, baseY, x0 + len, baseY, chevCol);
-      spr.drawLine(x0 + len - 4, baseY - 3, x0 + len, baseY, chevCol);
-      spr.drawLine(x0 + len - 4, baseY + 3, x0 + len, baseY, chevCol);
+    
+    // Draw animated pulsing circles around the card
+    int cx = W / 2, cy = 150;
+    float pulsePhase = (millis() % 3000) / 3000.0f;  // 3-second cycle
+    uint16_t pulseCol = TFT_CYAN;
+    
+    // Draw 3 concentric pulsing circles
+    for (int i = 0; i < 3; i++) {
+      float phase = fmod(pulsePhase + i * 0.33f, 1.0f);
+      float pulse = (sinf(phase * 2.0f * PI) + 1.0f) * 0.5f;  // 0..1
+      int radius = 80 + int(pulse * 20) + (i * 15);  // 80-100, 95-115, 110-130
+      int alpha = int(255 * (1.0f - pulse * 0.7f));  // fade out as it grows
+      
+      // Draw circle with fading effect
+      for (int r = radius - 2; r <= radius + 2; r++) {
+        spr.drawCircle(cx, cy, r, pulseCol);
+      }
+    }
+    
+    // Draw floating particles around the card
+    int particleCount = 8;
+    for (int i = 0; i < particleCount; i++) {
+      float angle = (millis() / 2000.0f + i * 0.785f) * 2.0f * PI;  // 8 particles, rotating
+      int distance = 60 + int(sinf(millis() / 1500.0f + i) * 15);  // varying distance
+      int px = cx + int(cosf(angle) * distance);
+      int py = cy + int(sinf(angle) * distance);
+      
+      // Draw small glowing particle
+      spr.fillCircle(px, py, 2, TFT_WHITE);
+      spr.fillCircle(px, py, 1, pulseCol);
     }
   } else if (s == UI_SCAN_FINGER)
     drawFingerprintIconModern(spr, W / 2, 150, 1.0f * scale);
@@ -771,22 +789,6 @@ void paintScreenToSprite(UIState s, const char *subtitle, bool popIcon = false, 
       spr.fillCircle(x, cy, radius, dotCol);
     }
     
-    // Draw animated arrows pointing to large screen
-    int arrowY = 180;
-    int arrowLen = 15;
-    int arrowGap = 8;
-    int totalArrows = 7;
-    int offset = (int)((millis() / 100) % (arrowLen + arrowGap));
-    uint16_t arrowCol = TFT_WHITE;
-    
-    for (int i = 0; i < totalArrows; i++) {
-      int x0 = (W / 2 - (totalArrows * (arrowLen + arrowGap)) / 2) + i * (arrowLen + arrowGap) + offset;
-      if (x0 >= 0 && x0 + arrowLen <= W) {
-        spr.drawLine(x0, arrowY, x0 + arrowLen, arrowY, arrowCol);
-        spr.drawLine(x0 + arrowLen - 4, arrowY - 2, x0 + arrowLen, arrowY, arrowCol);
-        spr.drawLine(x0 + arrowLen - 4, arrowY + 2, x0 + arrowLen, arrowY, arrowCol);
-      }
-    }
   }
 
   // Badge OK/Fail
@@ -2755,6 +2757,9 @@ void loop() {
     uiScanCardShownAt = millis();
   }
 
+  // เรียก uiTick() เพื่อให้ animation ทำงานตลอดเวลา
+  uiTick();
+
   bool cardReady = false;
   rfid_bus_begin();
   if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
@@ -2787,6 +2792,9 @@ void loop() {
 
   // ===== อัลตราโซนิก: auto-sleep =====
   ultrasonicTickForSleep();
+
+  // ===== อัปเดต UI animation =====
+  uiTick();
 
   // ===== ทดสอบ TFT ทุก 30 วินาที (ลดความถี่) =====
   static uint32_t lastTFTTest = 0;

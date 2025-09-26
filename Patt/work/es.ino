@@ -36,7 +36,7 @@ int valmjoy = 0;
 const int      UID_HEX_MAX = 16;
 #endif
 
-// ต้อง “นิยาม” struct Rec ให้เสร็จก่อนฟังก์ชัน readRec()/writeRec()
+// ต้อง "นิยาม" struct Rec ให้เสร็จก่อนฟังก์ชัน readRec()/writeRec()
 // (forward declare เฉยๆ ไม่พอ เพราะฟังก์ชันแตะฟิลด์ใน struct)
 #if 0  // DISABLE: duplicate struct Rec (already defined at top)
 struct Rec {
@@ -82,6 +82,7 @@ inline void spi_deselect_all() {
   digitalWrite(SD_CS, HIGH);
   digitalWrite(TFT_CS, HIGH);
   digitalWrite(SS_PIN, HIGH);  // RC522 CS
+  delayMicroseconds(50);  // หน่วงนานขึ้น
 }
 
 inline void spi_select_tft() {
@@ -182,25 +183,40 @@ enum UITrans {
 };
 
 // ==== Time-based progress bar (loop) ====
+static bool ui_isScanning = false;   // ต้องมาก่อน barStart()
+static uint32_t ui_animStart = 0;    // ต้องมาก่อน barStart()
+static bool ui_isBusyBorder = false;  // ใช้แทน progress bar ระหว่างกำลังประมวลผล/รอ
 static bool g_barOn = false;
 static uint32_t g_barStart = 0;
 static uint32_t g_barPeriod = 3000;  // ระยะเวลาเติมเต็มหนึ่งรอบ (ms)
 static String g_barLabel;
 
 void barStart(uint32_t period_ms = 1000, const String &label = "") {
-  g_barOn = true;
+  // เปลี่ยนจากแถบด้านล่างเป็น "กรอบกระพริบ" เพื่อสื่อว่าระบบกำลังทำงาน
+  // ยกเลิกการใช้ progress bar เดิม
+  g_barOn = false;
   g_barStart = millis();
   g_barPeriod = (period_ms == 0 ? 1000 : period_ms);
   g_barLabel = label;
+  // เปิดโหมดกรอบกระพริบ (busy)
+  ui_isBusyBorder = true;
+  ui_animStart = millis();
 }
 void barStop() {
   g_barOn = false;
+  // ปิดโหมดกรอบกระพริบ (busy)
+  ui_isBusyBorder = false;
 }
 
 // วาดหลอดเรียบๆ ด้านล่างจอ วิ่งเต็มตามเวลาแล้ววน
 static void drawTimedBarOverlay() {
   if (!g_barOn)
     return;
+  
+  // ปล่อยบัสอื่นก่อนทำงานกับ TFT
+  spi_deselect_all();
+  delayMicroseconds(10);
+  
   int W = tft.width(), H = tft.height();
   int bw = W - 60, bh = 12;
   int x = (W - bw) / 2, y = H - 32;
@@ -421,6 +437,10 @@ void uiSetLoading(bool on) {
 
 // วาด spinner แบบกงล้อหมุน (non-blocking)
 static void drawSpinner() {
+  // ปล่อยบัสอื่นก่อนทำงานกับ TFT
+  spi_deselect_all();
+  delayMicroseconds(10);
+  
   const int cx = tft.width() / 2, cy = 160, r = 14;
   float t = (millis() - ui_loadStart) / 1000.0f;  // วินาที
   // 12 แท่ง หมุนตามเวลา
@@ -437,8 +457,6 @@ static void drawSpinner() {
 
 // --------- Scan border blink ----------
 // --------- Modern scan border (glow + moving dash) ----------
-static bool ui_isScanning = false;
-static uint32_t ui_animStart = 0;
 
 void uiSetScanning(bool on) {
   ui_isScanning = on;
@@ -448,6 +466,10 @@ void uiSetScanning(bool on) {
 
 // วาดกรอบ dash รอบจอ โดยมี phase 0..1 เพื่อเลื่อน dash
 static void drawFancyBorder(float phase) {
+  // ปล่อยบัสอื่นก่อนทำงานกับ TFT
+  spi_deselect_all();
+  delayMicroseconds(10);
+  
   const int W = tft.width(), H = tft.height();
   // ความหนาและรัศมีมุม
   const int thick = 2;
@@ -500,17 +522,39 @@ static void drawFancyBorder(float phase) {
   drawDashedV(x, y + rad, h - 2 * rad);
   drawDashedV(x + w - 1, y + rad, h - 2 * rad);
 
-  // เน้น “มุม” เล็กน้อย (จุดเล็กๆ)
+  // เน้น "มุม" เล็กน้อย (จุดเล็กๆ)
   tft.fillCircle(x + rad, y + rad, 1, col);
   tft.fillCircle(x + w - 1 - rad, y + rad, 1, col);
   tft.fillCircle(x + rad, y + h - 1 - rad, 1, col);
   tft.fillCircle(x + w - 1 - rad, y + h - 1 - rad, 1, col);
 }
 
+// Forward declaration for painter used by uiTick animation refresh
+void paintScreenToSprite(UIState s, const char *subtitle, bool popIcon, float popK);
+
 void uiTick() {
   bool painted = false;
+  static uint32_t g_lastIconAnimMs = 0;  // รีเฟรชไอคอนแบบเป็นช่วง ๆ
 
-  if (ui_isScanning) {
+  // ปล่อยบัสอื่นก่อนทำงานกับ TFT
+  spi_deselect_all();
+  delayMicroseconds(10);
+
+  // รีเฟรชการ์ดที่หน้า Scan Card และ Wait Choice ให้ขยับตลอด (ประมาณ ~8 FPS)
+  if (!isShowingPhoto && (g_lastState == UI_SCAN_CARD || g_lastState == UI_WAIT_CHOICE)) {
+    uint32_t now = millis();
+    if (now - g_lastIconAnimMs > 120) {  // ~8.3 fps
+      g_lastIconAnimMs = now;
+      // วาดทั้งเฟรมลง sprite แล้ว push ออกจอ
+      spr.fillSprite(TFT_BLACK);
+      paintScreenToSprite(g_lastState, g_lastSubtitle.length() ? g_lastSubtitle.c_str() : "", false, 1.0f);
+      tft.endWrite();
+      spr.pushSprite(0, 0);
+      painted = true;
+    }
+  }
+
+  if (ui_isScanning || ui_isBusyBorder) {
     float t = (millis() - ui_animStart) / 600.0f;
     float phase = t - floorf(t);
     drawFancyBorder(phase);
@@ -525,30 +569,44 @@ void uiTick() {
     painted = true;
   }
 
-  // อัปเดต timestamp ว่าเพิ่ง “วาด” ไปจริง ๆ
+  // อัปเดต timestamp ว่าเพิ่ง "วาด" ไปจริง ๆ
   if (painted)
     g_lastPaintMs = millis();
 }
 
 // ====== Modern vector icons (no SD needed) ======
-void drawNFCIcon(TFT_eSprite &s, int cx, int cy, float scale = 1.0f) {
+void drawNFCIcon(TFT_eSprite &s, int cx, int cy, float scale = 1.0f, float animPhase = 0.0f) {
   int w = int(110 * scale), h = int(70 * scale), r = int(14 * scale);
-  // soft shadow
-  s.fillRoundRect(cx - w / 2 + 3, cy - h / 2 + 5, w, h, r, TFT_DARKGREY);
-  // card body
-  s.fillRoundRect(cx - w / 2, cy - h / 2, w, h, r, TFT_WHITE);
-  // top gradient bar
+  
+  // Animation: subtle bounce and slight rotation
+  float bounce = sinf(animPhase * 2.0f * PI) * 2.0f;  // ±2 pixels bounce
+  float tilt = sinf(animPhase * 1.5f * PI) * 0.05f;   // ±0.05 radians tilt
+  int offsetY = int(bounce);
+  
+  // Apply tilt by adjusting corners slightly
+  int tiltOffset = int(tilt * h * 0.3f);
+  
+  // soft shadow (with animation offset)
+  s.fillRoundRect(cx - w / 2 + 3, cy - h / 2 + 5 + offsetY, w, h, r, TFT_DARKGREY);
+  
+  // card body (with animation offset)
+  s.fillRoundRect(cx - w / 2, cy - h / 2 + offsetY, w, h, r, TFT_WHITE);
+  
+  // top gradient bar (with animation offset)
   for (int i = 0; i < int(18 * scale); ++i)
-    s.drawFastHLine(cx - w / 2 + 6, cy - h / 2 + 10 + i, w - 12, TFT_NAVY + i);
-  // chip
+    s.drawFastHLine(cx - w / 2 + 6, cy - h / 2 + 10 + i + offsetY, w - 12, TFT_NAVY + i);
+  
+  // chip (with animation offset)
   int cw = int(22 * scale), ch = int(16 * scale), cr = int(4 * scale);
-  s.fillRoundRect(cx - w / 2 + int(12 * scale), cy - int(h * 0.18f), cw, ch, cr, TFT_GOLD);
-  s.drawRoundRect(cx - w / 2 + int(12 * scale), cy - int(h * 0.18f), cw, ch, cr, TFT_BROWN);
-  // contactless waves
+  s.fillRoundRect(cx - w / 2 + int(12 * scale), cy - int(h * 0.18f) + offsetY, cw, ch, cr, TFT_GOLD);
+  s.drawRoundRect(cx - w / 2 + int(12 * scale), cy - int(h * 0.18f) + offsetY, cw, ch, cr, TFT_BROWN);
+  
+  // contactless waves (with animation offset and pulsing effect)
   uint16_t waveCol = TFT_CYAN;
+  float waveIntensity = 0.7f + 0.3f * sinf(animPhase * 3.0f * PI);  // pulsing intensity
   for (int k = 0; k < 3; k++) {
-    int off = int(12 * scale + k * 8 * scale);
-    drawArcSprite(s, cx + int(w * 0.22f), cy - int(h * 0.02f),
+    int off = int((12 * scale + k * 8 * scale) * waveIntensity);
+    drawArcSprite(s, cx + int(w * 0.22f), cy - int(h * 0.02f) + offsetY,
                   int(34 * scale) + off, int(34 * scale) + off - 2, 300, 60,
                   waveCol, TFT_TRANSPARENT);
   }
@@ -627,7 +685,7 @@ void paintScreenToSprite(UIState s, const char *subtitle, bool popIcon = false, 
     spr.drawFastHLine(0, y, W, c);
   }
 
-  // --- Header (วาดแบบ “wipe” ขวา->ซ้ายเล็กน้อย) ---
+  // --- Header (วาดแบบ "wipe" ขวา->ซ้ายเล็กน้อย) ---
   spr.fillRect(0, 0, W, 30, TFT_BLACK);
   spr.drawRect(0, 0, W, 30, TFT_WHITE);
 
@@ -679,10 +737,57 @@ void paintScreenToSprite(UIState s, const char *subtitle, bool popIcon = false, 
     spr.drawCircle(cx, cy, (int)(R * 0.4f), TFT_CYAN);
   };
 
-  if (s == UI_SCAN_CARD)
-    drawNFCIcon(spr, W / 2, 150, 1.0f * scale);
-  else if (s == UI_SCAN_FINGER)
+  if (s == UI_SCAN_CARD) {
+    // Add animation phase for card bouncing effect
+    float animPhase = (millis() % 2000) / 2000.0f;  // 2-second cycle
+    drawNFCIcon(spr, W / 2, 150, 1.0f * scale, animPhase);
+    // Draw subtle moving chevrons under the card to imply action
+    int baseY = 190;
+    int len = 12;
+    int gap = 10;
+    int total = 5;
+    int ofs = (int)((millis() / 120) % (len + gap));
+    uint16_t chevCol = TFT_CYAN;
+    for (int i = 0; i < total; ++i) {
+      int x0 = (W / 2 - (total * (len + gap)) / 2) + i * (len + gap) + ofs;
+      spr.drawLine(x0, baseY, x0 + len, baseY, chevCol);
+      spr.drawLine(x0 + len - 4, baseY - 3, x0 + len, baseY, chevCol);
+      spr.drawLine(x0 + len - 4, baseY + 3, x0 + len, baseY, chevCol);
+    }
+  } else if (s == UI_SCAN_FINGER)
     drawFingerprintIconModern(spr, W / 2, 150, 1.0f * scale);
+  else if (s == UI_WAIT_CHOICE) {
+    // Animated waiting indicator - pulsing dots
+    int cx = W / 2, cy = 150;
+    float animPhase = (millis() % 1500) / 1500.0f;  // 1.5-second cycle
+    uint16_t dotCol = TFT_CYAN;
+    
+    // Draw 3 pulsing dots
+    for (int i = 0; i < 3; i++) {
+      float phase = fmod(animPhase + i * 0.33f, 1.0f);
+      float pulse = (sinf(phase * 2.0f * PI) + 1.0f) * 0.5f;  // 0..1
+      int radius = 4 + int(pulse * 6);  // 4-10 pixels
+      int x = cx - 20 + i * 20;
+      spr.fillCircle(x, cy, radius, dotCol);
+    }
+    
+    // Draw animated arrows pointing to large screen
+    int arrowY = 180;
+    int arrowLen = 15;
+    int arrowGap = 8;
+    int totalArrows = 7;
+    int offset = (int)((millis() / 100) % (arrowLen + arrowGap));
+    uint16_t arrowCol = TFT_WHITE;
+    
+    for (int i = 0; i < totalArrows; i++) {
+      int x0 = (W / 2 - (totalArrows * (arrowLen + arrowGap)) / 2) + i * (arrowLen + arrowGap) + offset;
+      if (x0 >= 0 && x0 + arrowLen <= W) {
+        spr.drawLine(x0, arrowY, x0 + arrowLen, arrowY, arrowCol);
+        spr.drawLine(x0 + arrowLen - 4, arrowY - 2, x0 + arrowLen, arrowY, arrowCol);
+        spr.drawLine(x0 + arrowLen - 4, arrowY + 2, x0 + arrowLen, arrowY, arrowCol);
+      }
+    }
+  }
 
   // Badge OK/Fail
   auto drawCheck = [&](int cx, int cy, float s) {
@@ -731,7 +836,14 @@ void paintScreenToSprite(UIState s, const char *subtitle, bool popIcon = false, 
   spr.setTextColor(TFT_WHITE, TFT_BLACK);
   spr.drawString(big, (W - spr.textWidth(big, 4)) / 2, 200, 4);
   if (subtitle && subtitle[0]) {
-    spr.setTextColor(TFT_YELLOW, TFT_BLACK);
+    // Pulse subtitle color on scan card to show liveness
+    if (s == UI_SCAN_CARD) {
+      float p = (sinf((millis() % 1600) / 1600.0f * 2.0f * PI) + 1.0f) * 0.5f; // 0..1
+      uint16_t col = (p > 0.5f) ? TFT_YELLOW : TFT_WHITE;
+      spr.setTextColor(col, TFT_BLACK);
+    } else {
+      spr.setTextColor(TFT_YELLOW, TFT_BLACK);
+    }
     spr.drawString(subtitle, (W - spr.textWidth(subtitle, 2)) / 2, 230, 2);
   }
 }
@@ -751,6 +863,10 @@ void showUIx(UIState s, const char *subtitle = nullptr, UITrans tr = TR_SLIDE_L)
   g_lastState = s;
   g_lastSubtitle = sub;
   g_lastPaintMs = now;
+
+  // ปล่อยบัสอื่นก่อนทำงานกับ TFT
+  spi_deselect_all();
+  delay(10);
 
   const int W = tft.width(), H = tft.height();
 
@@ -793,7 +909,7 @@ void showUIx(UIState s, const char *subtitle = nullptr, UITrans tr = TR_SLIDE_L)
     }
   }
 
-  uiSetScanning(s == UI_SCAN_CARD || s == UI_SCAN_FINGER);
+  uiSetScanning(s == UI_SCAN_CARD || s == UI_SCAN_FINGER || s == UI_SENDING || s == UI_WAIT_CHOICE);
 }
 
 // ใช้ GPIO35 เป็นขาปลุก (ต่อมาจาก ODROID PIN_33 ผ่าน R อนุกรม ~1k)
@@ -807,7 +923,7 @@ struct Rec;  // ให้คอมไพเลอร์รู้จักชื�
 const int TRIG_PIN = 4;
 const int ECHO_PIN = 34;  // ต้องลดเป็น 3.3V ก่อนเข้า ESP32
 
-// เกณฑ์ “ใกล้”
+// เกณฑ์ "ใกล้"
 volatile float NEAR_ON_CM = 25.0;   // เข้าสถานะ NEAR เมื่อ <= 25 cm
 volatile float NEAR_OFF_CM = 35.0;  // กลับ FAR เมื่อ >= 35 cm (ฮิสเทอรีส)
 
@@ -911,7 +1027,7 @@ void goDeepSleepNow() {
   // esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
   // esp_sleep_enable_ext1_wakeup(1ULL << WAKE_PIN, ESP_EXT1_WAKEUP_ALL_LOW);
 
-  // กันเด้ง: ถ้าตอนนี้อยู่ในระดับที่จะปลุก ให้ “ไม่หลับ”
+  // กันเด้ง: ถ้าตอนนี้อยู่ในระดับที่จะปลุก ให้ "ไม่หลับ"
   if (rtc_gpio_get_level((gpio_num_t)WAKE_PIN) == 1 /* ถ้าใช้ ANY_HIGH ให้เท่ากับ 1; ถ้าใช้ ALL_LOW ให้ 0 */) {
     Serial.println("[SLEEP] Wake pin already at trigger level -> skip sleep");
     return;
@@ -941,15 +1057,14 @@ inline void spi_idle_all() {
 
 // --- ก่อนเรียกฟังก์ชันของ RC522: ปล่อยบัสจากตัวอื่น ไม่เปิด transaction ซ้อน ---
 inline void rfid_bus_begin() {
-  // ปล่อยจอให้เลิกถือบัส (กรณี TFT_eSPI ยังอยู่ใน write mode)
-  tft.endWrite();  // ปลอดภัย แม้จะยังไม่เริ่มวาด
-
-  // ปล่อยอุปกรณ์อื่น
+  // ปล่อยอุปกรณ์อื่นแน่นอน
+  tft.endWrite();
   digitalWrite(SD_CS, HIGH);
   digitalWrite(TFT_CS, HIGH);
-
-  // ยก CS ของ RC522 ไว้ HIGH ก่อน ไลบรารี MFRC522 จะจัดการดึง LOW เอง
+  // CS ของ RC522 ปล่อย HIGH ไว้ ให้ไลบรารีจัดการเอง
   digitalWrite(SS_PIN, HIGH);
+  // (ออปชัน) หน่วงสั้นๆ ให้บัสนิ่ง
+  delayMicroseconds(50);
 }
 
 // --- หลังจบงานกับ RC522 ---
@@ -961,7 +1076,7 @@ inline void rfid_bus_end() {
 
 // ---------- I/O ----------
 const int EEPROM_SIZE = 512;
-const int buzzerPin = 12;
+
 // const int switchPin33 = 99; // สวิตช์ Register
 // const int switchPin32 =99; // สวิตช์ Delete
 // const int ledPin = 13;
@@ -970,13 +1085,7 @@ const int buzzerPin = 12;
 const int FINGER_RX = 26;  // ESP32 RX1 pin to sensor TX
 const int FINGER_TX = 25;  // ESP32 TX1 pin to sensor RX
 
-// ---------- Protocol between boards (คงรูปแบบเดิมของคุณ) ----------
-/*
-  mySerial.println("regis"); // โหมดลงทะเบียน
-  mySerial.println("S");     // สแกนบัตรปกติ: สถานะกำลังอ่าน
-  mySerial.println("W");     // บัตรผิด
-  mySerial.println("OK");    // ยืนยันผ่าน (บัตร+นิ้วผ่าน)
-*/
+
 
 // ---------- Durable Storage Layout (EEPROM) ----------
 /*
@@ -1196,10 +1305,12 @@ int enrollFingerprint(uint8_t fp_id) {
     return p;
 
   Serial.println("Remove finger");
+  mySerial.println("L");
   while (finger.getImage() != FINGERPRINT_NOFINGER)
     delay(50);
 
   Serial.println("Place same finger again");
+  mySerial.println("P");
   while ((p = finger.getImage()) != FINGERPRINT_OK) {
     if (p == FINGERPRINT_NOFINGER) {
       delay(50);
@@ -1310,7 +1421,7 @@ inline void noTone(int /*pin*/) {}
 // ---------- High-level flows ----------
 void registerCardAndFingerprint() {
   exitPhotoMode();
-  mySerial.println("regis");
+  
   Serial.println("Registration mode... Tap a new card");
 
   // UI: เริ่มโหมดลงทะเบียน → รอแตะบัตร
@@ -1337,7 +1448,7 @@ void registerCardAndFingerprint() {
   rfid.PCD_StopCrypto1();
   bus_release_after_rfid();
 
-  // โชว์ “บัตรถูกต้อง” สั้นๆ ก่อนดำเนินการต่อ
+  // โชว์ "บัตรถูกต้อง" สั้นๆ ก่อนดำเนินการต่อ
   showUIx(UI_CARD_OK, "บัตรถูกต้อง", TR_FADE);
   showUIx(UI_SENDING, "เตรียมลงทะเบียนนิ้ว...", TR_FADE);
   delay(300);
@@ -1345,13 +1456,13 @@ void registerCardAndFingerprint() {
   delay(500);
   uiSetLoading(false);
   showUIx(UI_SCAN_FINGER, "วางนิ้ว 2 ครั้งเพื่อลงทะเบียน", TR_SLIDE_L);
-  tone(buzzerPin, 1200, 120);
+
 
   // --- การ์ดซ้ำ? ---
   if (findByUID(uidHex) >= 0) {
     Serial.println("This card is already registered.");
     showUIx(UI_CARD_FAIL, "บัตรนี้ลงทะเบียนแล้ว", TR_SLIDE_DOWN);
-    tone(buzzerPin, 700, 300);
+   
     delay(900);
     showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
     return;
@@ -1359,6 +1470,7 @@ void registerCardAndFingerprint() {
 
   // --- ตรวจนิ้วซ้ำก่อน Enroll ---
   Serial.println("Place finger to check duplication...");
+  mySerial.println("J");
   showUIx(UI_SCAN_FINGER, "ตรวจสอบลายนิ้วมือเดิม", TR_SLIDE_L);
   int existing_fp = quickSearchFingerprint(10000);
   if (existing_fp >= 0) {
@@ -1368,7 +1480,7 @@ void registerCardAndFingerprint() {
       readRec(idxExisting, rExist);
       Serial.printf("Duplicate finger detected! Already linked to another card (FP_ID=%d). Abort.\n", existing_fp);
       showUIx(UI_FINGER_FAIL, "ลายนิ้วมือนี้เชื่อมบัตรอื่นอยู่", TR_SLIDE_DOWN);
-      tone(buzzerPin, 600, 400);
+     
       delay(1000);
       showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
       return;
@@ -1395,7 +1507,7 @@ void registerCardAndFingerprint() {
     chosen_fp_id++;
   if (chosen_fp_id >= 200) {
     Serial.println("No free FP ID slot.");
-    tone(buzzerPin, 800, 300);
+   
     delay(1000);
     showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
     return;
@@ -1408,7 +1520,7 @@ void registerCardAndFingerprint() {
   if (p != FINGERPRINT_OK) {
     Serial.printf("Enroll failed (code=%d). Abort.\n", p);
     showUIx(UI_FINGER_FAIL, "บันทึกลายนิ้วมือไม่สำเร็จ", TR_SLIDE_DOWN);
-    tone(buzzerPin, 500, 500);
+   
     delay(1000);
     showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
     return;
@@ -1417,17 +1529,17 @@ void registerCardAndFingerprint() {
   // --- เก็บเรคคอร์ด (UID + FP_ID) ลง EEPROM ---
   if (storeNewRecord(uidHex, chosen_fp_id)) {
     Serial.println("Card+Fingerprint registered successfully.");
-    mySerial.println("Card Registered!");
+    mySerial.println("G");
     showUIx(UI_FINGER_OK, "ลงทะเบียนสำเร็จ", TR_FADE);
-    tone(buzzerPin, 1600, 120);
+   
     delay(200);
-    tone(buzzerPin, 1600, 120);
+  
     delay(700);
     showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
   } else {
     Serial.println("EEPROM full. Cannot store new record.");
     showUIx(UI_ERROR, "หน่วยความจำเต็ม", TR_FADE);
-    tone(buzzerPin, 500, 500);
+  
     finger.deleteModel(chosen_fp_id);  // roll back
     delay(1000);
     showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
@@ -1450,7 +1562,7 @@ void deleteCardFlow() {
   if (idx < 0) {
     Serial.println("Card not found");
     showUIx(UI_CARD_FAIL, "ไม่พบข้อมูลบัตรในระบบ", TR_SLIDE_DOWN);
-    tone(buzzerPin, 600, 300);
+
     delay(900);
     showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
     return;
@@ -1458,7 +1570,7 @@ void deleteCardFlow() {
 
   // การ์ดถูกต้อง
   showUIx(UI_CARD_OK, "บัตรถูกต้อง", TR_FADE);
-  tone(buzzerPin, 1200, 150);
+
   delay(300);
   showUIx(UI_SENDING, "เตรียมยืนยันการลบ...", TR_FADE);
   uiSetLoading(true);
@@ -1470,7 +1582,7 @@ void deleteCardFlow() {
   Rec r;
   readRec(idx, r);
 
-  // ✅ ขั้นตอน “ยืนยันลายนิ้วมือก่อนลบ”
+  // ✅ ขั้นตอน "ยืนยันลายนิ้วมือก่อนลบ"
   Serial.printf("Verify fingerprint to delete (expect FP_ID=%d)\n", r.fp_id);
   showUIx(UI_SCAN_FINGER, "วางนิ้วเพื่อยืนยันการลบ", TR_SLIDE_L);
   unsigned long t0 = millis();
@@ -1485,7 +1597,7 @@ void deleteCardFlow() {
   if (matched < 0 || matched != r.fp_id) {
     Serial.println("Fingerprint verify failed / timeout. Abort delete.");
     showUIx(UI_FINGER_FAIL, (matched < 0) ? "ไม่ตรวจพบลายนิ้ว" : "ลายนิ้วไม่ตรงเจ้าของบัตร", TR_SLIDE_DOWN);
-    tone(buzzerPin, 600, 400);
+
     delay(1000);
     showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
     return;
@@ -1507,9 +1619,9 @@ void deleteCardFlow() {
   Serial.println("Card + Fingerprint deleted");
 
   showUIx(UI_FINGER_OK, "ลบข้อมูลสำเร็จ", TR_FADE);
-  tone(buzzerPin, 1200, 150);
+
   delay(150);
-  tone(buzzerPin, 1200, 150);
+
   delay(700);
 
   showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
@@ -1554,9 +1666,9 @@ void normalScanFlow() {
   if (idx < 0) {
     Serial.println("Unknown card");
     showUIx(UI_CARD_FAIL, "บัตรนี้ไม่อยู่ในระบบ", TR_SLIDE_DOWN);
-    tone(buzzerPin, 1000, 200);
+
     delay(200);
-    tone(buzzerPin, 1000, 200);
+
     delay(500);
     showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
     return;
@@ -1564,7 +1676,7 @@ void normalScanFlow() {
 
   // การ์ด OK
   showUIx(UI_CARD_OK, "บัตรถูกต้อง", TR_FADE);
-  tone(buzzerPin, 1200, 120);
+
   delay(250);
 
   Rec r;
@@ -1573,9 +1685,9 @@ void normalScanFlow() {
   // ถ้าโหมดโหวต: เคยทำรายการแล้วหรือยัง?
   if (r.voted == 1) {
     Serial.println("Already voted for this card holder.");
-    mySerial.println("W");
+    //mySerial.println("W");
     showUIx(UI_ERROR, "บัตรนี้ทำรายการแล้ว", TR_SLIDE_DOWN);
-    tone(buzzerPin, 700, 300);
+
     delay(700);
     showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
     return;
@@ -1584,7 +1696,7 @@ void normalScanFlow() {
   // --- ขอให้สแกนนิ้วให้ "ตรงกับ fp_id" ของบัตรนี้ ---
   Serial.printf("Card OK. Please verify fingerprint (expect FP_ID=%d)\n", r.fp_id);
   showUIx(UI_SCAN_FINGER, "วางนิ้วเพื่อยืนยันตัวตน", TR_SLIDE_L);
-
+  mySerial.println("J");
   unsigned long t0 = millis();
   int matched = -1;
   while (millis() - t0 < 15000) {  // รอสูงสุด 15 วินาที
@@ -1597,9 +1709,9 @@ void normalScanFlow() {
 
   if (matched < 0) {
     Serial.println("Fingerprint not matched / timeout.");
-    mySerial.println("W");
+    //mySerial.println("W");
     showUIx(UI_FINGER_FAIL, "ไม่ตรวจพบลายนิ้วมือ", TR_SLIDE_DOWN);
-    tone(buzzerPin, 600, 400);
+  
     delay(700);
     showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
     return;
@@ -1608,9 +1720,9 @@ void normalScanFlow() {
   Serial.printf("Matched fingerID=%d\n", matched);
   if (matched != r.fp_id) {
     Serial.println("Fingerprint does not belong to this card.");
-    mySerial.println("W");
+    //mySerial.println("W");
     showUIx(UI_FINGER_FAIL, "ลายนิ้วมือต้องตรงกับผู้ถือบัตร", TR_SLIDE_DOWN);
-    tone(buzzerPin, 600, 400);
+
     delay(700);
     showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
     return;
@@ -1624,7 +1736,7 @@ void normalScanFlow() {
   exitPhotoMode();  // <-- ปลดล็อก UI ไม่ให้ค้างจากโหมดแสดงรูป
   g_waitingChoice = true;
   g_selectedCandidate = -1;
-  mySerial.println("OK");  // แจ้งว่า auth ผ่าน → UNO จะ canVote=true และเข้า PAGE_VOTE
+  mySerial.println("O");  // แจ้งว่า auth ผ่าน → UNO จะ canVote=true และเข้า PAGE_VOTE
   // (ออปชัน) ถ้าต้องการบังคับโชว์หน้าเลือกทันทีอยู่ดี:
   mySerial.println("V");        // UNO ก็รองรับคำสั่งนี้เหมือนกัน
   barStart(1500, "รอการเลือก");  // เติมเต็มทุก 1 วิ แล้ววน
@@ -1844,7 +1956,7 @@ void ultrasonicTickForSleep() {
       nearConsec = 0;
     }
 
-    // เปลี่ยนสถานะเมื่อ “ยืนยัน” ครบ N เฟรม
+    // เปลี่ยนสถานะเมื่อ "ยืนยัน" ครบ N เฟรม
     bool newNear = nearState;
     if (!nearState && nearConsec >= NEAR_CONFIRM_N)
       newNear = true;
@@ -1878,38 +1990,40 @@ void ultrasonicTickForSleep() {
   }
 }
 
-// แทนฟังก์ชัน tft_output เดิมทั้งหมด
-// Callback ของ TJpgDec ที่รองรับการครอปทุกทิศ (x/y อาจติดลบได้)
+// Callback ของ TJpgDec แบบง่ายๆ
+static volatile bool g_jpgAnyScanline = false;   // set true when at least 1 scanline drawn
+
 bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap) {
-  spi_guard_begin();
-  spi_select_tft();
+  // ปล่อยบัสอื่นก่อน และเลือก TFT เฉพาะช่วง pushImage
+  spi_deselect_all();
+  delayMicroseconds(4);
+
   int16_t W = tft.width();
   int16_t H = tft.height();
 
   // ตัดแถวที่อยู่นอกจอด้านบน/ล่าง
-  if (y >= H || (y + (int16_t)h) <= 0)
+  if (y >= H || (y + (int16_t)h) <= 0) {
     return true;
+  }
 
-  // แถวต่อแถว (เพื่อคลิปซ้าย/ขวาได้ละเอียดยิ่งขึ้น)
+  // แถวต่อแถว
   for (int16_t row = 0; row < (int16_t)h; row++) {
     int16_t yy = y + row;
     if (yy < 0 || yy >= H)
-      continue;  // นอกจอแนวตั้ง ข้าม
+      continue;
 
     int16_t xx = x;
     int16_t ww = (int16_t)w;
     uint16_t *src = bitmap + row * w;
 
-    // คลิปลบซ้าย
     if (xx < 0) {
       int16_t skip = -xx;
       if (skip >= ww)
-        continue;  // ทั้งแถวอยู่นอกจอ
+        continue;
       xx = 0;
       ww -= skip;
       src += skip;
     }
-    // คลิปล้นขวา
     if (xx + ww > W) {
       int16_t keep = W - xx;
       if (keep <= 0)
@@ -1917,45 +2031,96 @@ bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap) 
       ww = keep;
     }
 
-    if (ww > 0)
+    if (ww > 0) {
+      spi_select_tft();
       tft.pushImage(xx, yy, (uint16_t)ww, 1, src);
+      spi_deselect_all();
+      g_jpgAnyScanline = true;
+    }
   }
-  tft.endWrite();
-  spi_deselect_all();
-  spi_guard_end();
   return true;
 }
 
 // วาด JPEG พอดีจอ เริ่มที่ (0,0) โดยไม่จัดกึ่งกลาง/ไม่ครอบ
 bool drawJpgExactFromSD(const String &path) {
+  Serial.printf("[JPG] Starting drawJpgExactFromSD: %s\n", path.c_str());
+  
+  // ปล่อยบัสอื่นก่อน
+  spi_deselect_all();
+  delay(50);
+
+  // ตรวจสอบว่าไฟล์มีอยู่จริง
+  if (!SD.exists(path)) {
+    Serial.printf("[JPG] File does not exist: %s\n", path.c_str());
+    spi_select_tft();
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+    tft.drawString("File not found", 10, 10, 2);
+    tft.drawString(path, 10, 28, 2);
+    spi_deselect_all();
+    return false;
+  }
+
+  // ตรวจสอบขนาดไฟล์
   uint16_t jw, jh;
-
-  spi_guard_begin();  // ปล่อยบัส + กันชนก่อน
-
   if (!TJpgDec.getJpgSize(&jw, &jh, path.c_str())) {
-    // ไฟล์ไม่รองรับ (มักเป็น Progressive)
-    spi_select_tft();  // เลือก TFT แค่ช่วงวาดข้อความ
+    Serial.printf("[JPG] Cannot get size for: %s\n", path.c_str());
+    spi_select_tft();
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_YELLOW, TFT_BLACK);
     tft.drawString("Unsupported JPG", 10, 10, 2);
     tft.drawString("Likely Progressive", 10, 28, 2);
     tft.drawString(path, 10, 46, 2);
-    spi_deselect_all();  // ปล่อย TFT
-    spi_guard_end();
+    spi_deselect_all();
     return false;
   }
 
-  // เคลียร์จอก่อนวาดรูป (เลือก TFT เฉพาะช่วงนี้)
-  spi_select_tft();
+  Serial.printf("[JPG] Image size: %dx%d\n", jw, jh);
 
+  // หยุด UI effect ชั่วคราวระหว่างวาดรูป เพื่อลดการชนบัส
+  bool prevScan = ui_isScanning; ui_isScanning = false;
+  bool prevLoad = ui_isLoading;  ui_isLoading  = false;
+  bool prevBar  = g_barOn;       g_barOn       = false;
+
+  // เคลียร์จอก่อนวาดรูป
+  spi_select_tft();
   tft.fillScreen(TFT_BLACK);
   spi_deselect_all();
+  delay(20);
 
-  // ปล่อยให้ TJpgDec อ่าน SD เอง
-  // *อย่าค้าง TFT_CS=LOW ตลอดเวลา* — callback tft_output() จะ select TFT เองตอน pushImage
+  // วาดรูป (รีเซ็ตแฟล็ก และ retry 1 ครั้งถ้าล้มเหลวและยังไม่มี scanline วาด)
+  Serial.printf("[JPG] Drawing image...\n");
+  g_jpgAnyScanline = false;
   bool ok = TJpgDec.drawSdJpg(0, 0, path.c_str());
+  if (!ok && !g_jpgAnyScanline) {
+    Serial.println("[JPG] First draw failed, retrying once after SD reinit...");
+    // sd_reinit();
+    g_jpgAnyScanline = false;
+    ok = TJpgDec.drawSdJpg(0, 0, path.c_str());
+  }
+  
+  if (ok) {
+    Serial.printf("[JPG] Successfully drew: %s\n", path.c_str());
+  } else {
+    // ถ้า fail แต่มีบางส่วนถูกวาดแล้ว ให้ถือว่าสำเร็จ (อย่าเขียนทับด้วย error)
+    if (g_jpgAnyScanline) {
+      Serial.printf("[JPG] Partial draw occurred, suppressing error overlay for: %s\n", path.c_str());
+      ok = true;
+    } else {
+      Serial.printf("[JPG] Failed to draw: %s\n", path.c_str());
+      spi_select_tft();
+      tft.fillScreen(TFT_BLACK);
+      tft.setTextColor(TFT_RED, TFT_BLACK);
+      tft.drawString("Display failed", 10, 10, 2);
+      tft.drawString(path, 10, 28, 2);
+      spi_deselect_all();
+    }
+  }
 
-  spi_guard_end();  // จบงาน ปล่อยบัส
+  // คืนค่า UI effect
+  ui_isScanning = prevScan;
+  ui_isLoading  = prevLoad;
+  g_barOn       = prevBar;
 
   return ok;
 }
@@ -2008,7 +2173,7 @@ bool drawJpgCoverFromSD(const String &path) {
 
 
 // ===== SD re-init + retry helpers =====
-bool sd_reinit(uint32_t hz = 4000000) {
+bool sd_reinit(uint32_t hz) {
   SD.end();
   delay(5);
   // ปล่อยทุก CS = HIGH
@@ -2030,13 +2195,15 @@ bool sd_retry_wrap(std::function<bool()> io, int retries = 2) {
   for (int i = 0; i <= retries; ++i) {
     if (io()) return true;
     // ถ้า fail: re-init แล้วลองใหม่
-    if (!sd_reinit()) delay(10);
+    // if (!sd_reinit()) delay(10);
   }
   return false;
 }
 
 // [ADD] ช่วยแสดงรูปตามหมายเลข (รองรับ .jpg/.JPG)
 void showCandidateJpg(uint8_t n) {
+  Serial.printf("[JPG] Looking for candidate %d\n", n);
+  
   String p_plain = "/" + String(n) + ".jpg";
   String p_plainU = "/" + String(n) + ".JPG";
   char buf[16];
@@ -2046,19 +2213,24 @@ void showCandidateJpg(uint8_t n) {
   String p_padU = String(buf);
 
   String path;
-  if (SD.exists(p_plain))
+  if (SD.exists(p_plain)) {
     path = p_plain;
-  else if (SD.exists(p_plainU))
+    Serial.printf("[JPG] Found: %s\n", path.c_str());
+  } else if (SD.exists(p_plainU)) {
     path = p_plainU;
-  else if (SD.exists(p_pad))
+    Serial.printf("[JPG] Found: %s\n", path.c_str());
+  } else if (SD.exists(p_pad)) {
     path = p_pad;
-  else if (SD.exists(p_padU))
+    Serial.printf("[JPG] Found: %s\n", path.c_str());
+  } else if (SD.exists(p_padU)) {
     path = p_padU;
+    Serial.printf("[JPG] Found: %s\n", path.c_str());
+  }
 
   if (path.length() == 0) {
-    digitalWrite(SD_CS, HIGH);
-    digitalWrite(SS_PIN, HIGH);
-    digitalWrite(TFT_CS, LOW);
+    Serial.printf("[JPG] File not found for candidate %d\n", n);
+    spi_deselect_all();
+    spi_select_tft();
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_YELLOW, TFT_BLACK);
     tft.drawString("Missing:", 8, 96, 2);
@@ -2066,35 +2238,140 @@ void showCandidateJpg(uint8_t n) {
     char miss[16];
     snprintf(miss, sizeof(miss), "/%02u.jpg", n);
     tft.drawString(String("or ") + miss, 8, 132, 2);
-    digitalWrite(TFT_CS, HIGH);
+    spi_deselect_all();
     return;
   }
-  // เดิม:
-  // drawJpgExactFromSD(path);
 
-  // แทนที่ด้วย:
-  bool ok = sd_retry_wrap([&]() {
-    return drawJpgExactFromSD(path);  // หรือจะเรียก TJpgDec.drawSdJpg(..) ตรง ๆ ก็ได้
-  });
+  // แสดงรูปโดยใช้วิธีที่เสถียร
+  Serial.printf("[JPG] Displaying: %s\n", path.c_str());
+  bool ok = drawJpgExactFromSD(path);
   if (!ok) {
-    // แสดงข้อความ “อ่านไฟล์ล้มเหลว” บนจอ
-    digitalWrite(TFT_CS, LOW);
+    Serial.printf("[JPG] Failed to display: %s\n", path.c_str());
+    spi_deselect_all();
+    spi_select_tft();
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-    tft.drawString("SD read failed", 8, 96, 2);
+    tft.drawString("Display failed", 8, 96, 2);
     tft.drawString(path, 8, 114, 2);
-    digitalWrite(TFT_CS, HIGH);
+    spi_deselect_all();
+  } else {
+    Serial.printf("[JPG] Successfully displayed: %s\n", path.c_str());
   }
 }
 
 void showIdleScreen(const char *msg = "Ready") {
-  digitalWrite(SD_CS, HIGH);
-  digitalWrite(SS_PIN, HIGH);
-  digitalWrite(TFT_CS, LOW);
+  spi_deselect_all();
+  spi_select_tft();
   tft.fillScreen(TFT_BLACK);
   tft.setTextColor(TFT_GREEN, TFT_BLACK);
   tft.drawString(msg, 10, 10, 2);
+  spi_deselect_all();
+}
+
+// ฟังก์ชัน debug TFT
+void debugTFT() {
+  Serial.println("=== TFT Debug ===");
+  
+  // ตรวจสอบ CS pins
+  Serial.printf("CS Pins - SD:%d TFT:%d RC522:%d\n", 
+                digitalRead(SD_CS), digitalRead(TFT_CS), digitalRead(SS_PIN));
+  
+  // ตรวจสอบการเชื่อมต่อ SPI
+  Serial.println("Testing SPI...");
+  digitalWrite(SD_CS, HIGH);
+  digitalWrite(SS_PIN, HIGH);
+  digitalWrite(TFT_CS, LOW);
+  
+  // ทดสอบ SPI โดยตรง
+  SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
+  for(int i = 0; i < 10; i++) {
+    SPI.transfer(0x00);
+  }
+  SPI.endTransaction();
+  Serial.println("SPI test completed");
+  
+  // ทดสอบการเขียนสีแบบละเอียด
+  Serial.println("Testing colors...");
+  
+  // ทดสอบ 1: สีแดง
+  tft.fillScreen(TFT_RED);
+  delay(1000);
+  Serial.println("Red test");
+  
+  // ทดสอบ 2: สีเขียว
+  tft.fillScreen(TFT_GREEN);
+  delay(1000);
+  Serial.println("Green test");
+  
+  // ทดสอบ 3: สีน้ำเงิน
+  tft.fillScreen(TFT_BLUE);
+  delay(1000);
+  Serial.println("Blue test");
+  
+  // ทดสอบ 4: สีขาว
+  tft.fillScreen(TFT_WHITE);
+  delay(1000);
+  Serial.println("White test");
+  
+  // ทดสอบ 5: สีดำ
+  tft.fillScreen(TFT_BLACK);
+  delay(500);
+  Serial.println("Black test");
+  
+  // ทดสอบข้อความ
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString("TFT OK", 10, 10, 2);
+  tft.drawString("Test", 10, 30, 2);
+  tft.drawString("Debug", 10, 50, 2);
+  delay(1000);
+  Serial.println("Text test");
+  
+  // ทดสอบการวาดรูปทรง
+  tft.fillScreen(TFT_BLACK);
+  tft.drawRect(10, 10, 100, 50, TFT_WHITE);
+  tft.fillCircle(50, 50, 20, TFT_RED);
+  delay(1000);
+  Serial.println("Shape test");
+  
   digitalWrite(TFT_CS, HIGH);
+  Serial.println("TFT debug completed");
+}
+
+// ฟังก์ชันทดสอบ TFT แบบพื้นฐาน
+void testTFTBasic() {
+  Serial.println("=== TFT Basic Test ===");
+  
+  // ปล่อยบัสอื่น
+  digitalWrite(SD_CS, HIGH);
+  digitalWrite(SS_PIN, HIGH);
+  digitalWrite(TFT_CS, HIGH);
+  delay(100);
+  
+  // เริ่ม TFT ใหม่
+  tft.init();
+  tft.endWrite();
+  
+  // ตั้งค่าพื้นฐาน
+  tft.setSwapBytes(false);
+  tft.setRotation(0);
+  
+  // ทดสอบการเขียน
+  digitalWrite(TFT_CS, LOW);
+  tft.fillScreen(TFT_RED);
+  delay(2000);
+  tft.fillScreen(TFT_GREEN);
+  delay(2000);
+  tft.fillScreen(TFT_BLUE);
+  delay(2000);
+  tft.fillScreen(TFT_BLACK);
+  
+  // ทดสอบข้อความ
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString("TFT WORKING", 10, 10, 2);
+  tft.drawString("Basic Test OK", 10, 30, 2);
+  
+  digitalWrite(TFT_CS, HIGH);
+  Serial.println("TFT basic test completed");
 }
 
 void setup() {
@@ -2117,9 +2394,27 @@ void setup() {
   digitalWrite(SD_CS, HIGH);
   digitalWrite(TFT_CS, HIGH);
   digitalWrite(SS_PIN, HIGH);
+  
+  // หน่วงให้ CS pins settle
+  delay(100);
 
   // เริ่มบัส SPI หลังจากทุก CS ถูกปล่อยแล้ว
   SPI.begin(18, 19, 23, SD_CS);
+  
+  // หน่วงให้ SPI settle
+  delay(100);
+  
+  // ตรวจสอบการเชื่อมต่อ SPI
+  Serial.println("Testing SPI communication...");
+  Serial.printf("SPI Settings: SCK=%d, MISO=%d, MOSI=%d, CS=%d\n", 18, 19, 23, SD_CS);
+  
+  // ทดสอบการเขียน SPI โดยตรง
+  digitalWrite(TFT_CS, LOW);
+  SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
+  SPI.transfer(0x00);  // ส่งคำสั่ง dummy
+  SPI.endTransaction();
+  digitalWrite(TFT_CS, HIGH);
+  Serial.println("SPI basic test completed");
 
   // UART2: RX=16, TX=17 (บอร์ดลูก/ODROID)
   mySerial.begin(9600, SERIAL_8N1, 16, 17);
@@ -2204,13 +2499,35 @@ void setup() {
   }
 
   // --- TFT + TJpg callback ---
+  Serial.println("Initializing TFT...");
+  
+  // ปล่อยบัสอื่นก่อน init TFT
+  spi_deselect_all();
+  delay(200);
+  
+  // เริ่ม TFT ด้วยการตั้งค่าที่ชัดเจน
   tft.init();
-  tft.endWrite();          // เผื่อค้างโหมดเขียน
-  tft.writecommand(0x01);  // SWRESET (ส่วนใหญ่รองรับ ILI9341/ILI948x/ST7789)
-  delay(120);
-  tft.setSwapBytes(true);
-  tft.setRotation(0);  // แนวนอน 320x240
+  tft.endWrite();
+  
+  // ตั้งค่าพื้นฐานที่เสถียร
+  tft.setSwapBytes(true);   // ใช้ true สำหรับ TFT_eSPI
+  tft.setRotation(0);
+  
+  // ทดสอบการเขียนพื้นฐาน
+  Serial.println("Testing TFT communication...");
+  
+  // ทดสอบการเขียนสี
+  spi_select_tft();
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString("TFT Ready", 10, 10, 2);
+  tft.drawString("System OK", 10, 30, 2);
+  spi_deselect_all();
+  
+  // ตั้งค่า TJpgDec
   TJpgDec.setCallback(tft_output);
+  
+  Serial.println("TFT initialization completed");
 
   if (!spr.created())
     spr.setColorDepth(8);
@@ -2243,7 +2560,7 @@ void setup() {
   }
 
   // --- I/O อื่น ๆ ---
-  pinMode(buzzerPin, OUTPUT);
+
   // pinMode(switchPin33, INPUT_PULLUP);
   // pinMode(switchPin32, INPUT_PULLUP);
   // ถ้าใช้ LED เพิ่มค่อยเปิด
@@ -2284,10 +2601,12 @@ void handleU2Line(const String &raw) {
       if (n >= 0 && n <= 99) {
         isShowingPhoto = true;
         uiSetScanning(false);
+        Serial.printf("[SEL] Showing candidate %d\n", n);
         showCandidateJpg((uint8_t)n);
       } else {
         isShowingPhoto = true;
         uiSetScanning(false);
+        Serial.printf("[SEL] Invalid candidate number: %d\n", n);
         showIdleScreen("Bad SEL");
       }
     }
@@ -2354,22 +2673,31 @@ void tftSoftRecoverIfBlank() {
   const uint32_t NOW = millis();
 
   // ถ้ามี animation/โหลด/แถบวิ่งอยู่ หรือเพิ่งวาดไม่นาน ให้ข้ามไปเลย
-  if (ui_isScanning || ui_isLoading || g_barOn)
+  if (ui_isScanning || ui_isLoading || g_barOn || isShowingPhoto)
     return;
 
-  // ขยาย margin ให้ยาวขึ้นอีกหน่อย เช่น 60 วินาที
-  if (NOW - g_lastPaintMs < 60000)
+  // ขยาย margin ให้ยาวขึ้นอีกหน่อย เช่น 120 วินาที
+  if (NOW - g_lastPaintMs < 120000)
     return;
 
-  if (NOW - lastTry < 10000)
-    return;  // กันสั่น
+  if (NOW - lastTry < 30000)
+    return;  // กันสั่น 30 วินาที
   lastTry = NOW;
 
-  spi_idle_all();
+  Serial.println("[TFT] Attempting soft recovery...");
+  spi_deselect_all();
+  delay(100);
   tft.endWrite();
   tft.init();
   tft.setSwapBytes(true);
   tft.setRotation(0);
+  
+  // ทดสอบการเขียนหลัง recovery
+  spi_select_tft();
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString("TFT Recovered", 10, 10, 2);
+  spi_deselect_all();
 }
 
 // ===== วางฟังก์ชันนี้ "ถัดจาก" ปิดวงเล็บของ setup() =====
@@ -2460,6 +2788,22 @@ void loop() {
   // ===== อัลตราโซนิก: auto-sleep =====
   ultrasonicTickForSleep();
 
+  // ===== ทดสอบ TFT ทุก 30 วินาที (ลดความถี่) =====
+  static uint32_t lastTFTTest = 0;
+  if (millis() - lastTFTTest > 30000) {
+    lastTFTTest = millis();
+    // ทดสอบการเขียน TFT เฉพาะเมื่อไม่มีการแสดงผลอื่น
+    if (!isShowingPhoto && !ui_isScanning && !ui_isLoading && !g_barOn && !ui_isBusyBorder) {
+      // ไม่แสดงข้อความบนจอเพื่อไม่ให้รบกวนผู้ใช้
+      // แค่ทดสอบการเขียนแบบเงียบๆ
+      spi_deselect_all();
+      delay(10);
+      spi_select_tft();
+      tft.fillScreen(TFT_BLACK);
+      spi_deselect_all();
+    }
+  }
+
   // ===== คำสั่งผ่าน USB Serial (debug) =====
   if (Serial.available()) {
     String cmd = Serial.readStringUntil('\n');
@@ -2498,12 +2842,68 @@ void loop() {
       barStart(1500, "รอการเลือก");
       showUIx(UI_WAIT_CHOICE, "โหมดทดสอบ: รอ CF:x ทาง USB", TR_FADE);
       Serial.println("[TEST] AUTHOK -> waiting choice");
+    } else if (cmd.equalsIgnoreCase("TFTDEBUG") || cmd.equalsIgnoreCase("TFT")) {
+      debugTFT();
+    } else if (cmd.equalsIgnoreCase("TFTBASIC") || cmd.equalsIgnoreCase("TFTB")) {
+      testTFTBasic();
+    } else if (cmd.equalsIgnoreCase("TFTINIT")) {
+      // เริ่ม TFT ใหม่
+      spi_deselect_all();
+      delay(100);
+      tft.init();
+      tft.endWrite();
+      tft.setSwapBytes(true);
+      tft.setRotation(0);
+      Serial.println("TFT re-initialized");
+    } else if (cmd.equalsIgnoreCase("TFTTEST")) {
+      // ทดสอบ TFT แบบง่าย
+      spi_deselect_all();
+      spi_select_tft();
+      tft.fillScreen(TFT_BLACK);
+      tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      tft.drawString("TFT Test OK", 10, 10, 2);
+      tft.drawString("Time: " + String(millis()), 10, 30, 2);
+      spi_deselect_all();
+      Serial.println("TFT test completed");
+    } else if (cmd.equalsIgnoreCase("SDTEST")) {
+      // ทดสอบ SD Card
+      if (SD.cardType() != CARD_NONE) {
+        Serial.println("SD Card detected");
+        File root = SD.open("/");
+        if (root) {
+          Serial.println("SD Card files:");
+          while (true) {
+            File entry = root.openNextFile();
+            if (!entry) break;
+            Serial.println(entry.name());
+            entry.close();
+          }
+          root.close();
+        }
+      } else {
+        Serial.println("No SD Card");
+      }
+    } else if (cmd.equalsIgnoreCase("JPGTEST")) {
+      // ทดสอบการแสดงรูป JPG
+      Serial.println("Testing JPG display...");
+      showCandidateJpg(2);
+    } else if (cmd.equalsIgnoreCase("SDREINIT")) {
+      // เริ่มต้น SD Card ใหม่
+      Serial.println("Reinitializing SD Card...");
+      SD.end();
+      delay(100);
+      if (SD.begin(SD_CS, SPI, 4000000)) {
+        Serial.println("SD Card reinitialized successfully");
+      } else {
+        Serial.println("SD Card reinitialization failed");
+      }
     } else if (cmd.startsWith("CF:") || cmd.startsWith("SEL:") || cmd.equalsIgnoreCase("SENDING") || cmd.equalsIgnoreCase("VOTE:OK") || cmd.equalsIgnoreCase("VOTE:ERR")) {
       // ส่งต่อข้อความจาก USB Serial ให้ใช้ logic เดียวกับ UART2
       handleU2Line(cmd);
     }
-    spi_idle_all();  // ย้ำทุกลูป: ทุก CS = HIGH
-    tft.endWrite();  // เผื่อมี write ค้าง
+    // ปล่อยบัสและจัดการ TFT
+    spi_deselect_all();
+    tft.endWrite();
     uiTick();
     tftSoftRecoverIfBlank();
   }

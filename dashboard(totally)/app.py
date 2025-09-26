@@ -31,46 +31,66 @@ DB_TIMEOUT = 30.0  # เพิ่ม timeout
 
 
 lock = threading.Lock()
-# Settings
-APP_NAME = os.getenv("APP_NAME", "Smart Voting — Dashboard")
-DB_PATH = os.getenv("VOTES_DB", "votes.db")
-DB_TIMEOUT = 30.0
 
 # Core app 
 app = FastAPI(title=APP_NAME)
 app.add_middleware(GZipMiddleware, minimum_size=512)
 app.add_middleware(CORSMiddleware, allow_origins=CORS_ALLOW, allow_methods=["*"], allow_headers=["*"])
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('voting.log')
-    ]
-)
-logger = logging.getLogger(__name__)
-
 def init_db():
+    """Initialize database with tables and default values"""
+    logger.info("Initializing database...")
     os.makedirs("static/img", exist_ok=True)
-    with sqlite3.connect(DB_PATH) as con:
-        con.execute("""CREATE TABLE IF NOT EXISTS votes (option TEXT PRIMARY KEY, count INTEGER NOT NULL)""")
-        con.execute("""CREATE TABLE IF NOT EXISTS names (option TEXT PRIMARY KEY, label TEXT NOT NULL)""")
-        for opt in INIT_OPTS:
-            con.execute("INSERT OR IGNORE INTO votes(option,count) VALUES(?,0)", (opt,))
-            # label = เลขตัวเอง (0..9) ก่อน เปลี่ยนภายหลังได้ที่หน้า admin
-            con.execute("INSERT OR IGNORE INTO names(option,label) VALUES(?,?)", (opt,opt))
+    try:
+        with sqlite3.connect(DB_PATH) as con:
+            # Enable WAL mode for better concurrency
+            con.execute('PRAGMA journal_mode=WAL')
+            con.execute('PRAGMA busy_timeout=5000')
+            
+            # Create tables if they don't exist
+            con.execute("""CREATE TABLE IF NOT EXISTS votes (
+                option TEXT PRIMARY KEY, 
+                count INTEGER NOT NULL DEFAULT 0
+            )""")
+            con.execute("""CREATE TABLE IF NOT EXISTS names (
+                option TEXT PRIMARY KEY,
+                label TEXT NOT NULL
+            )""")
+            
+            # Insert default options
+            for opt in INIT_OPTS:
+                con.execute("INSERT OR IGNORE INTO votes(option,count) VALUES(?,0)", (opt,))
+                con.execute("INSERT OR IGNORE INTO names(option,label) VALUES(?,?)", (opt,opt))
+            
+            con.commit()
+        logger.info("Database initialized successfully")
+    except sqlite3.Error as e:
+        logger.error(f"Database initialization failed: {str(e)}", exc_info=True)
+        raise
+
 init_db()
 
 def tally_dict()->Dict[str,int]:
-    with sqlite3.connect(DB_PATH) as con:
-        rows = con.execute("SELECT option,count FROM votes ORDER BY option").fetchall()
-    return {k:v for k,v in rows}
+    """Get current vote counts for all options"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=DB_TIMEOUT) as con:
+            con.execute('PRAGMA busy_timeout=5000')
+            rows = con.execute("SELECT option,count FROM votes ORDER BY option").fetchall()
+        return {k:v for k,v in rows}
+    except sqlite3.Error as e:
+        logger.error(f"Failed to get tally: {str(e)}", exc_info=True)
+        raise
 
 def names_dict()->Dict[str,str]:
-    with sqlite3.connect(DB_PATH) as con:
-        rows = con.execute("SELECT option,label FROM names ORDER BY option").fetchall()
-    return {k:v for k,v in rows}
+    """Get display names/labels for all options"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=DB_TIMEOUT) as con:
+            con.execute('PRAGMA busy_timeout=5000')
+            rows = con.execute("SELECT option,label FROM names ORDER BY option").fetchall()
+        return {k:v for k,v in rows}
+    except sqlite3.Error as e:
+        logger.error(f"Failed to get names: {str(e)}", exc_info=True)
+        raise
 
 # history (in-memory)
 HistoryPoint = dict
@@ -182,10 +202,21 @@ logger = logging.getLogger(__name__)
 # ---------- Admin ----------
 @app.post("/admin/reset")
 def reset(req: Request):
+    """Reset all vote counts to zero"""
     guarded(req)
-    with lock, sqlite3.connect(DB_PATH) as con:
-        con.execute("UPDATE votes SET count=0")
-    push_history(); return {"ok": True}
+    logger.info("Resetting all vote counts")
+    try:
+        with lock:
+            with sqlite3.connect(DB_PATH, timeout=DB_TIMEOUT) as con:
+                con.execute('PRAGMA busy_timeout=5000')
+                con.execute("UPDATE votes SET count=0")
+                con.commit()
+        push_history()
+        logger.info("Vote counts reset successfully")
+        return {"ok": True}
+    except sqlite3.Error as e:
+        logger.error(f"Failed to reset votes: {str(e)}", exc_info=True)
+        raise HTTPException(500, f"database error: {str(e)}")
 
 @app.get("/admin/options")
 def list_options(req: Request):

@@ -82,6 +82,7 @@ inline void spi_deselect_all() {
   digitalWrite(SD_CS, HIGH);
   digitalWrite(TFT_CS, HIGH);
   digitalWrite(SS_PIN, HIGH);  // RC522 CS
+  delayMicroseconds(50);  // หน่วงนานขึ้น
 }
 
 inline void spi_select_tft() {
@@ -201,6 +202,11 @@ void barStop() {
 static void drawTimedBarOverlay() {
   if (!g_barOn)
     return;
+  
+  // ปล่อยบัสอื่นก่อนทำงานกับ TFT
+  spi_deselect_all();
+  delayMicroseconds(10);
+  
   int W = tft.width(), H = tft.height();
   int bw = W - 60, bh = 12;
   int x = (W - bw) / 2, y = H - 32;
@@ -421,6 +427,10 @@ void uiSetLoading(bool on) {
 
 // วาด spinner แบบกงล้อหมุน (non-blocking)
 static void drawSpinner() {
+  // ปล่อยบัสอื่นก่อนทำงานกับ TFT
+  spi_deselect_all();
+  delayMicroseconds(10);
+  
   const int cx = tft.width() / 2, cy = 160, r = 14;
   float t = (millis() - ui_loadStart) / 1000.0f;  // วินาที
   // 12 แท่ง หมุนตามเวลา
@@ -448,6 +458,10 @@ void uiSetScanning(bool on) {
 
 // วาดกรอบ dash รอบจอ โดยมี phase 0..1 เพื่อเลื่อน dash
 static void drawFancyBorder(float phase) {
+  // ปล่อยบัสอื่นก่อนทำงานกับ TFT
+  spi_deselect_all();
+  delayMicroseconds(10);
+  
   const int W = tft.width(), H = tft.height();
   // ความหนาและรัศมีมุม
   const int thick = 2;
@@ -510,6 +524,10 @@ static void drawFancyBorder(float phase) {
 void uiTick() {
   bool painted = false;
 
+  // ปล่อยบัสอื่นก่อนทำงานกับ TFT
+  spi_deselect_all();
+  delayMicroseconds(10);
+
   if (ui_isScanning) {
     float t = (millis() - ui_animStart) / 600.0f;
     float phase = t - floorf(t);
@@ -525,7 +543,7 @@ void uiTick() {
     painted = true;
   }
 
-  // อัปเดต timestamp ว่าเพิ่ง “วาด” ไปจริง ๆ
+  // อัปเดต timestamp ว่าเพิ่ง "วาด" ไปจริง ๆ
   if (painted)
     g_lastPaintMs = millis();
 }
@@ -752,6 +770,10 @@ void showUIx(UIState s, const char *subtitle = nullptr, UITrans tr = TR_SLIDE_L)
   g_lastSubtitle = sub;
   g_lastPaintMs = now;
 
+  // ปล่อยบัสอื่นก่อนทำงานกับ TFT
+  spi_deselect_all();
+  delay(10);
+
   const int W = tft.width(), H = tft.height();
 
   spr.setTextDatum(TL_DATUM);
@@ -941,15 +963,14 @@ inline void spi_idle_all() {
 
 // --- ก่อนเรียกฟังก์ชันของ RC522: ปล่อยบัสจากตัวอื่น ไม่เปิด transaction ซ้อน ---
 inline void rfid_bus_begin() {
-  // ปล่อยจอให้เลิกถือบัส (กรณี TFT_eSPI ยังอยู่ใน write mode)
-  tft.endWrite();  // ปลอดภัย แม้จะยังไม่เริ่มวาด
-
-  // ปล่อยอุปกรณ์อื่น
+  // ปล่อยอุปกรณ์อื่นแน่นอน
+  tft.endWrite();
   digitalWrite(SD_CS, HIGH);
   digitalWrite(TFT_CS, HIGH);
-
-  // ยก CS ของ RC522 ไว้ HIGH ก่อน ไลบรารี MFRC522 จะจัดการดึง LOW เอง
+  // CS ของ RC522 ปล่อย HIGH ไว้ ให้ไลบรารีจัดการเอง
   digitalWrite(SS_PIN, HIGH);
+  // (ออปชัน) หน่วงสั้นๆ ให้บัสนิ่ง
+  delayMicroseconds(50);
 }
 
 // --- หลังจบงานกับ RC522 ---
@@ -1875,38 +1896,40 @@ void ultrasonicTickForSleep() {
   }
 }
 
-// แทนฟังก์ชัน tft_output เดิมทั้งหมด
-// Callback ของ TJpgDec ที่รองรับการครอปทุกทิศ (x/y อาจติดลบได้)
+// Callback ของ TJpgDec แบบง่ายๆ
+static volatile bool g_jpgAnyScanline = false;   // set true when at least 1 scanline drawn
+
 bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap) {
-  spi_guard_begin();
-  spi_select_tft();
+  // ปล่อยบัสอื่นก่อน และเลือก TFT เฉพาะช่วง pushImage
+  spi_deselect_all();
+  delayMicroseconds(4);
+
   int16_t W = tft.width();
   int16_t H = tft.height();
 
   // ตัดแถวที่อยู่นอกจอด้านบน/ล่าง
-  if (y >= H || (y + (int16_t)h) <= 0)
+  if (y >= H || (y + (int16_t)h) <= 0) {
     return true;
+  }
 
-  // แถวต่อแถว (เพื่อคลิปซ้าย/ขวาได้ละเอียดยิ่งขึ้น)
+  // แถวต่อแถว
   for (int16_t row = 0; row < (int16_t)h; row++) {
     int16_t yy = y + row;
     if (yy < 0 || yy >= H)
-      continue;  // นอกจอแนวตั้ง ข้าม
+      continue;
 
     int16_t xx = x;
     int16_t ww = (int16_t)w;
     uint16_t *src = bitmap + row * w;
 
-    // คลิปลบซ้าย
     if (xx < 0) {
       int16_t skip = -xx;
       if (skip >= ww)
-        continue;  // ทั้งแถวอยู่นอกจอ
+        continue;
       xx = 0;
       ww -= skip;
       src += skip;
     }
-    // คลิปล้นขวา
     if (xx + ww > W) {
       int16_t keep = W - xx;
       if (keep <= 0)
@@ -1914,45 +1937,96 @@ bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap) 
       ww = keep;
     }
 
-    if (ww > 0)
+    if (ww > 0) {
+      spi_select_tft();
       tft.pushImage(xx, yy, (uint16_t)ww, 1, src);
+      spi_deselect_all();
+      g_jpgAnyScanline = true;
+    }
   }
-  tft.endWrite();
-  spi_deselect_all();
-  spi_guard_end();
   return true;
 }
 
 // วาด JPEG พอดีจอ เริ่มที่ (0,0) โดยไม่จัดกึ่งกลาง/ไม่ครอบ
 bool drawJpgExactFromSD(const String &path) {
+  Serial.printf("[JPG] Starting drawJpgExactFromSD: %s\n", path.c_str());
+  
+  // ปล่อยบัสอื่นก่อน
+  spi_deselect_all();
+  delay(50);
+
+  // ตรวจสอบว่าไฟล์มีอยู่จริง
+  if (!SD.exists(path)) {
+    Serial.printf("[JPG] File does not exist: %s\n", path.c_str());
+    spi_select_tft();
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+    tft.drawString("File not found", 10, 10, 2);
+    tft.drawString(path, 10, 28, 2);
+    spi_deselect_all();
+    return false;
+  }
+
+  // ตรวจสอบขนาดไฟล์
   uint16_t jw, jh;
-
-  spi_guard_begin();  // ปล่อยบัส + กันชนก่อน
-
   if (!TJpgDec.getJpgSize(&jw, &jh, path.c_str())) {
-    // ไฟล์ไม่รองรับ (มักเป็น Progressive)
-    spi_select_tft();  // เลือก TFT แค่ช่วงวาดข้อความ
+    Serial.printf("[JPG] Cannot get size for: %s\n", path.c_str());
+    spi_select_tft();
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_YELLOW, TFT_BLACK);
     tft.drawString("Unsupported JPG", 10, 10, 2);
     tft.drawString("Likely Progressive", 10, 28, 2);
     tft.drawString(path, 10, 46, 2);
-    spi_deselect_all();  // ปล่อย TFT
-    spi_guard_end();
+    spi_deselect_all();
     return false;
   }
 
-  // เคลียร์จอก่อนวาดรูป (เลือก TFT เฉพาะช่วงนี้)
-  spi_select_tft();
+  Serial.printf("[JPG] Image size: %dx%d\n", jw, jh);
 
+  // หยุด UI effect ชั่วคราวระหว่างวาดรูป เพื่อลดการชนบัส
+  bool prevScan = ui_isScanning; ui_isScanning = false;
+  bool prevLoad = ui_isLoading;  ui_isLoading  = false;
+  bool prevBar  = g_barOn;       g_barOn       = false;
+
+  // เคลียร์จอก่อนวาดรูป
+  spi_select_tft();
   tft.fillScreen(TFT_BLACK);
   spi_deselect_all();
+  delay(20);
 
-  // ปล่อยให้ TJpgDec อ่าน SD เอง
-  // *อย่าค้าง TFT_CS=LOW ตลอดเวลา* — callback tft_output() จะ select TFT เองตอน pushImage
+  // วาดรูป (รีเซ็ตแฟล็ก และ retry 1 ครั้งถ้าล้มเหลวและยังไม่มี scanline วาด)
+  Serial.printf("[JPG] Drawing image...\n");
+  g_jpgAnyScanline = false;
   bool ok = TJpgDec.drawSdJpg(0, 0, path.c_str());
+  if (!ok && !g_jpgAnyScanline) {
+    Serial.println("[JPG] First draw failed, retrying once after SD reinit...");
+    sd_reinit();
+    g_jpgAnyScanline = false;
+    ok = TJpgDec.drawSdJpg(0, 0, path.c_str());
+  }
+  
+  if (ok) {
+    Serial.printf("[JPG] Successfully drew: %s\n", path.c_str());
+  } else {
+    // ถ้า fail แต่มีบางส่วนถูกวาดแล้ว ให้ถือว่าสำเร็จ (อย่าเขียนทับด้วย error)
+    if (g_jpgAnyScanline) {
+      Serial.printf("[JPG] Partial draw occurred, suppressing error overlay for: %s\n", path.c_str());
+      ok = true;
+    } else {
+      Serial.printf("[JPG] Failed to draw: %s\n", path.c_str());
+      spi_select_tft();
+      tft.fillScreen(TFT_BLACK);
+      tft.setTextColor(TFT_RED, TFT_BLACK);
+      tft.drawString("Display failed", 10, 10, 2);
+      tft.drawString(path, 10, 28, 2);
+      spi_deselect_all();
+    }
+  }
 
-  spi_guard_end();  // จบงาน ปล่อยบัส
+  // คืนค่า UI effect
+  ui_isScanning = prevScan;
+  ui_isLoading  = prevLoad;
+  g_barOn       = prevBar;
 
   return ok;
 }
@@ -2034,6 +2108,8 @@ bool sd_retry_wrap(std::function<bool()> io, int retries = 2) {
 
 // [ADD] ช่วยแสดงรูปตามหมายเลข (รองรับ .jpg/.JPG)
 void showCandidateJpg(uint8_t n) {
+  Serial.printf("[JPG] Looking for candidate %d\n", n);
+  
   String p_plain = "/" + String(n) + ".jpg";
   String p_plainU = "/" + String(n) + ".JPG";
   char buf[16];
@@ -2043,19 +2119,24 @@ void showCandidateJpg(uint8_t n) {
   String p_padU = String(buf);
 
   String path;
-  if (SD.exists(p_plain))
+  if (SD.exists(p_plain)) {
     path = p_plain;
-  else if (SD.exists(p_plainU))
+    Serial.printf("[JPG] Found: %s\n", path.c_str());
+  } else if (SD.exists(p_plainU)) {
     path = p_plainU;
-  else if (SD.exists(p_pad))
+    Serial.printf("[JPG] Found: %s\n", path.c_str());
+  } else if (SD.exists(p_pad)) {
     path = p_pad;
-  else if (SD.exists(p_padU))
+    Serial.printf("[JPG] Found: %s\n", path.c_str());
+  } else if (SD.exists(p_padU)) {
     path = p_padU;
+    Serial.printf("[JPG] Found: %s\n", path.c_str());
+  }
 
   if (path.length() == 0) {
-    digitalWrite(SD_CS, HIGH);
-    digitalWrite(SS_PIN, HIGH);
-    digitalWrite(TFT_CS, LOW);
+    Serial.printf("[JPG] File not found for candidate %d\n", n);
+    spi_deselect_all();
+    spi_select_tft();
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_YELLOW, TFT_BLACK);
     tft.drawString("Missing:", 8, 96, 2);
@@ -2063,35 +2144,140 @@ void showCandidateJpg(uint8_t n) {
     char miss[16];
     snprintf(miss, sizeof(miss), "/%02u.jpg", n);
     tft.drawString(String("or ") + miss, 8, 132, 2);
-    digitalWrite(TFT_CS, HIGH);
+    spi_deselect_all();
     return;
   }
-  // เดิม:
-  // drawJpgExactFromSD(path);
 
-  // แทนที่ด้วย:
-  bool ok = sd_retry_wrap([&]() {
-    return drawJpgExactFromSD(path);  // หรือจะเรียก TJpgDec.drawSdJpg(..) ตรง ๆ ก็ได้
-  });
+  // แสดงรูปโดยใช้วิธีที่เสถียร
+  Serial.printf("[JPG] Displaying: %s\n", path.c_str());
+  bool ok = drawJpgExactFromSD(path);
   if (!ok) {
-    // แสดงข้อความ “อ่านไฟล์ล้มเหลว” บนจอ
-    digitalWrite(TFT_CS, LOW);
+    Serial.printf("[JPG] Failed to display: %s\n", path.c_str());
+    spi_deselect_all();
+    spi_select_tft();
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-    tft.drawString("SD read failed", 8, 96, 2);
+    tft.drawString("Display failed", 8, 96, 2);
     tft.drawString(path, 8, 114, 2);
-    digitalWrite(TFT_CS, HIGH);
+    spi_deselect_all();
+  } else {
+    Serial.printf("[JPG] Successfully displayed: %s\n", path.c_str());
   }
 }
 
 void showIdleScreen(const char *msg = "Ready") {
-  digitalWrite(SD_CS, HIGH);
-  digitalWrite(SS_PIN, HIGH);
-  digitalWrite(TFT_CS, LOW);
+  spi_deselect_all();
+  spi_select_tft();
   tft.fillScreen(TFT_BLACK);
   tft.setTextColor(TFT_GREEN, TFT_BLACK);
   tft.drawString(msg, 10, 10, 2);
+  spi_deselect_all();
+}
+
+// ฟังก์ชัน debug TFT
+void debugTFT() {
+  Serial.println("=== TFT Debug ===");
+  
+  // ตรวจสอบ CS pins
+  Serial.printf("CS Pins - SD:%d TFT:%d RC522:%d\n", 
+                digitalRead(SD_CS), digitalRead(TFT_CS), digitalRead(SS_PIN));
+  
+  // ตรวจสอบการเชื่อมต่อ SPI
+  Serial.println("Testing SPI...");
+  digitalWrite(SD_CS, HIGH);
+  digitalWrite(SS_PIN, HIGH);
+  digitalWrite(TFT_CS, LOW);
+  
+  // ทดสอบ SPI โดยตรง
+  SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
+  for(int i = 0; i < 10; i++) {
+    SPI.transfer(0x00);
+  }
+  SPI.endTransaction();
+  Serial.println("SPI test completed");
+  
+  // ทดสอบการเขียนสีแบบละเอียด
+  Serial.println("Testing colors...");
+  
+  // ทดสอบ 1: สีแดง
+  tft.fillScreen(TFT_RED);
+  delay(1000);
+  Serial.println("Red test");
+  
+  // ทดสอบ 2: สีเขียว
+  tft.fillScreen(TFT_GREEN);
+  delay(1000);
+  Serial.println("Green test");
+  
+  // ทดสอบ 3: สีน้ำเงิน
+  tft.fillScreen(TFT_BLUE);
+  delay(1000);
+  Serial.println("Blue test");
+  
+  // ทดสอบ 4: สีขาว
+  tft.fillScreen(TFT_WHITE);
+  delay(1000);
+  Serial.println("White test");
+  
+  // ทดสอบ 5: สีดำ
+  tft.fillScreen(TFT_BLACK);
+  delay(500);
+  Serial.println("Black test");
+  
+  // ทดสอบข้อความ
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString("TFT OK", 10, 10, 2);
+  tft.drawString("Test", 10, 30, 2);
+  tft.drawString("Debug", 10, 50, 2);
+  delay(1000);
+  Serial.println("Text test");
+  
+  // ทดสอบการวาดรูปทรง
+  tft.fillScreen(TFT_BLACK);
+  tft.drawRect(10, 10, 100, 50, TFT_WHITE);
+  tft.fillCircle(50, 50, 20, TFT_RED);
+  delay(1000);
+  Serial.println("Shape test");
+  
   digitalWrite(TFT_CS, HIGH);
+  Serial.println("TFT debug completed");
+}
+
+// ฟังก์ชันทดสอบ TFT แบบพื้นฐาน
+void testTFTBasic() {
+  Serial.println("=== TFT Basic Test ===");
+  
+  // ปล่อยบัสอื่น
+  digitalWrite(SD_CS, HIGH);
+  digitalWrite(SS_PIN, HIGH);
+  digitalWrite(TFT_CS, HIGH);
+  delay(100);
+  
+  // เริ่ม TFT ใหม่
+  tft.init();
+  tft.endWrite();
+  
+  // ตั้งค่าพื้นฐาน
+  tft.setSwapBytes(false);
+  tft.setRotation(0);
+  
+  // ทดสอบการเขียน
+  digitalWrite(TFT_CS, LOW);
+  tft.fillScreen(TFT_RED);
+  delay(2000);
+  tft.fillScreen(TFT_GREEN);
+  delay(2000);
+  tft.fillScreen(TFT_BLUE);
+  delay(2000);
+  tft.fillScreen(TFT_BLACK);
+  
+  // ทดสอบข้อความ
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString("TFT WORKING", 10, 10, 2);
+  tft.drawString("Basic Test OK", 10, 30, 2);
+  
+  digitalWrite(TFT_CS, HIGH);
+  Serial.println("TFT basic test completed");
 }
 
 void setup() {
@@ -2114,9 +2300,27 @@ void setup() {
   digitalWrite(SD_CS, HIGH);
   digitalWrite(TFT_CS, HIGH);
   digitalWrite(SS_PIN, HIGH);
+  
+  // หน่วงให้ CS pins settle
+  delay(100);
 
   // เริ่มบัส SPI หลังจากทุก CS ถูกปล่อยแล้ว
   SPI.begin(18, 19, 23, SD_CS);
+  
+  // หน่วงให้ SPI settle
+  delay(100);
+  
+  // ตรวจสอบการเชื่อมต่อ SPI
+  Serial.println("Testing SPI communication...");
+  Serial.printf("SPI Settings: SCK=%d, MISO=%d, MOSI=%d, CS=%d\n", 18, 19, 23, SD_CS);
+  
+  // ทดสอบการเขียน SPI โดยตรง
+  digitalWrite(TFT_CS, LOW);
+  SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
+  SPI.transfer(0x00);  // ส่งคำสั่ง dummy
+  SPI.endTransaction();
+  digitalWrite(TFT_CS, HIGH);
+  Serial.println("SPI basic test completed");
 
   // UART2: RX=16, TX=17 (บอร์ดลูก/ODROID)
   mySerial.begin(9600, SERIAL_8N1, 16, 17);
@@ -2201,13 +2405,35 @@ void setup() {
   }
 
   // --- TFT + TJpg callback ---
+  Serial.println("Initializing TFT...");
+  
+  // ปล่อยบัสอื่นก่อน init TFT
+  spi_deselect_all();
+  delay(200);
+  
+  // เริ่ม TFT ด้วยการตั้งค่าที่ชัดเจน
   tft.init();
-  tft.endWrite();          // เผื่อค้างโหมดเขียน
-  tft.writecommand(0x01);  // SWRESET (ส่วนใหญ่รองรับ ILI9341/ILI948x/ST7789)
-  delay(120);
-  tft.setSwapBytes(true);
-  tft.setRotation(0);  // แนวนอน 320x240
+  tft.endWrite();
+  
+  // ตั้งค่าพื้นฐานที่เสถียร
+  tft.setSwapBytes(true);   // ใช้ true สำหรับ TFT_eSPI
+  tft.setRotation(0);
+  
+  // ทดสอบการเขียนพื้นฐาน
+  Serial.println("Testing TFT communication...");
+  
+  // ทดสอบการเขียนสี
+  spi_select_tft();
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString("TFT Ready", 10, 10, 2);
+  tft.drawString("System OK", 10, 30, 2);
+  spi_deselect_all();
+  
+  // ตั้งค่า TJpgDec
   TJpgDec.setCallback(tft_output);
+  
+  Serial.println("TFT initialization completed");
 
   if (!spr.created())
     spr.setColorDepth(8);
@@ -2281,10 +2507,12 @@ void handleU2Line(const String &raw) {
       if (n >= 0 && n <= 99) {
         isShowingPhoto = true;
         uiSetScanning(false);
+        Serial.printf("[SEL] Showing candidate %d\n", n);
         showCandidateJpg((uint8_t)n);
       } else {
         isShowingPhoto = true;
         uiSetScanning(false);
+        Serial.printf("[SEL] Invalid candidate number: %d\n", n);
         showIdleScreen("Bad SEL");
       }
     }
@@ -2351,22 +2579,31 @@ void tftSoftRecoverIfBlank() {
   const uint32_t NOW = millis();
 
   // ถ้ามี animation/โหลด/แถบวิ่งอยู่ หรือเพิ่งวาดไม่นาน ให้ข้ามไปเลย
-  if (ui_isScanning || ui_isLoading || g_barOn)
+  if (ui_isScanning || ui_isLoading || g_barOn || isShowingPhoto)
     return;
 
-  // ขยาย margin ให้ยาวขึ้นอีกหน่อย เช่น 60 วินาที
-  if (NOW - g_lastPaintMs < 60000)
+  // ขยาย margin ให้ยาวขึ้นอีกหน่อย เช่น 120 วินาที
+  if (NOW - g_lastPaintMs < 120000)
     return;
 
-  if (NOW - lastTry < 10000)
-    return;  // กันสั่น
+  if (NOW - lastTry < 30000)
+    return;  // กันสั่น 30 วินาที
   lastTry = NOW;
 
-  spi_idle_all();
+  Serial.println("[TFT] Attempting soft recovery...");
+  spi_deselect_all();
+  delay(100);
   tft.endWrite();
   tft.init();
   tft.setSwapBytes(true);
   tft.setRotation(0);
+  
+  // ทดสอบการเขียนหลัง recovery
+  spi_select_tft();
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString("TFT Recovered", 10, 10, 2);
+  spi_deselect_all();
 }
 
 // ===== วางฟังก์ชันนี้ "ถัดจาก" ปิดวงเล็บของ setup() =====
@@ -2457,6 +2694,22 @@ void loop() {
   // ===== อัลตราโซนิก: auto-sleep =====
   ultrasonicTickForSleep();
 
+  // ===== ทดสอบ TFT ทุก 30 วินาที (ลดความถี่) =====
+  static uint32_t lastTFTTest = 0;
+  if (millis() - lastTFTTest > 30000) {
+    lastTFTTest = millis();
+    // ทดสอบการเขียน TFT เฉพาะเมื่อไม่มีการแสดงผลอื่น
+    if (!isShowingPhoto && !ui_isScanning && !ui_isLoading && !g_barOn) {
+      spi_deselect_all();
+      delay(10);
+      spi_select_tft();
+      tft.fillScreen(TFT_BLACK);
+      tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      tft.drawString("TFT OK", 10, 10, 2);
+      spi_deselect_all();
+    }
+  }
+
   // ===== คำสั่งผ่าน USB Serial (debug) =====
   if (Serial.available()) {
     String cmd = Serial.readStringUntil('\n');
@@ -2495,12 +2748,68 @@ void loop() {
       barStart(1500, "รอการเลือก");
       showUIx(UI_WAIT_CHOICE, "โหมดทดสอบ: รอ CF:x ทาง USB", TR_FADE);
       Serial.println("[TEST] AUTHOK -> waiting choice");
+    } else if (cmd.equalsIgnoreCase("TFTDEBUG") || cmd.equalsIgnoreCase("TFT")) {
+      debugTFT();
+    } else if (cmd.equalsIgnoreCase("TFTBASIC") || cmd.equalsIgnoreCase("TFTB")) {
+      testTFTBasic();
+    } else if (cmd.equalsIgnoreCase("TFTINIT")) {
+      // เริ่ม TFT ใหม่
+      spi_deselect_all();
+      delay(100);
+      tft.init();
+      tft.endWrite();
+      tft.setSwapBytes(true);
+      tft.setRotation(0);
+      Serial.println("TFT re-initialized");
+    } else if (cmd.equalsIgnoreCase("TFTTEST")) {
+      // ทดสอบ TFT แบบง่าย
+      spi_deselect_all();
+      spi_select_tft();
+      tft.fillScreen(TFT_BLACK);
+      tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      tft.drawString("TFT Test OK", 10, 10, 2);
+      tft.drawString("Time: " + String(millis()), 10, 30, 2);
+      spi_deselect_all();
+      Serial.println("TFT test completed");
+    } else if (cmd.equalsIgnoreCase("SDTEST")) {
+      // ทดสอบ SD Card
+      if (SD.cardType() != CARD_NONE) {
+        Serial.println("SD Card detected");
+        File root = SD.open("/");
+        if (root) {
+          Serial.println("SD Card files:");
+          while (true) {
+            File entry = root.openNextFile();
+            if (!entry) break;
+            Serial.println(entry.name());
+            entry.close();
+          }
+          root.close();
+        }
+      } else {
+        Serial.println("No SD Card");
+      }
+    } else if (cmd.equalsIgnoreCase("JPGTEST")) {
+      // ทดสอบการแสดงรูป JPG
+      Serial.println("Testing JPG display...");
+      showCandidateJpg(2);
+    } else if (cmd.equalsIgnoreCase("SDREINIT")) {
+      // เริ่มต้น SD Card ใหม่
+      Serial.println("Reinitializing SD Card...");
+      SD.end();
+      delay(100);
+      if (SD.begin(SD_CS, SPI, 4000000)) {
+        Serial.println("SD Card reinitialized successfully");
+      } else {
+        Serial.println("SD Card reinitialization failed");
+      }
     } else if (cmd.startsWith("CF:") || cmd.startsWith("SEL:") || cmd.equalsIgnoreCase("SENDING") || cmd.equalsIgnoreCase("VOTE:OK") || cmd.equalsIgnoreCase("VOTE:ERR")) {
       // ส่งต่อข้อความจาก USB Serial ให้ใช้ logic เดียวกับ UART2
       handleU2Line(cmd);
     }
-    spi_idle_all();  // ย้ำทุกลูป: ทุก CS = HIGH
-    tft.endWrite();  // เผื่อมี write ค้าง
+    // ปล่อยบัสและจัดการ TFT
+    spi_deselect_all();
+    tft.endWrite();
     uiTick();
     tftSoftRecoverIfBlank();
   }

@@ -18,6 +18,8 @@
         "unordered_set": "cpp",
         "valarray": "cpp",
         "vector": "cpp",
-        "print": "cpp"
+        "print": "cpp",
+        "typeinfo": "cpp",
+        "typeindex": "cpp"
     }
 }

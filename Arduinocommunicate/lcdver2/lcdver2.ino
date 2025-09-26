@@ -21,13 +21,7 @@
 #include <SPI.h>
 #include <SD.h>
 #include <avr/wdt.h>
-#include <TM1638plus.h>
 
-#define STB A0
-#define CLK A1
-#define DIO A2
-
-TM1638plus tm(STB, CLK, DIO, false);  // ต้องใส่ bool argument
 
 #define ESP_INT_PIN 3  // INT1 (D3) จาก ESP32
 
@@ -36,7 +30,7 @@ TM1638plus tm(STB, CLK, DIO, false);  // ต้องใส่ bool argument
 #include <avr/interrupt.h>
 
 // --- Sleep/Idle policy ---
-#define IDLE_SLEEP_MS 60000UL  // ว่าง 60s -> หลับลึก
+#define IDLE_SLEEP_MS 600000000UL  // ว่าง 60s -> หลับลึก
 unsigned long lastActivityMs = 0;
 
 // ===== SD / Audio =====
@@ -559,12 +553,12 @@ void vote(char k) {
     drawVoteUI_base();
     buzzer.playClick();
     Serial.write(currentChoice);
-    //sendPreview();
+    sendPreview();
   } else if (k == '*') {
     if (currentChoice >= 0) buzzer.playBack();
     currentChoice = -1;
     drawVoteUI_base();
-    //sendPreview();
+    sendPreview();
   } else if (k == '#') {
     if (currentChoice >= 0) {
       page = PAGE_CONFIRM;
@@ -574,7 +568,7 @@ void vote(char k) {
       currentChoice = -1;
       canVote = false;
       tmrpcm.stopPlayback();
-      //playIfIdle("fv.wav");
+      playIfIdle("fv.wav");
 
     } else {
       buzzer.playError();
@@ -602,8 +596,13 @@ void afterWake() {
   noteActivity();
 }
 
+
+
+
 // ============ SETUP / LOOP ============
 void setup() {
+  
+  
   wdt_sanity_boot();
   pinMode(10, OUTPUT);
   Serial.begin(9600);
@@ -619,11 +618,13 @@ void setup() {
   lcd.backlight();
 
   // เล่นไฟเปิดเครื่อง (ถ้าหาไฟล์ไม่เจอจะเงียบ)
+ 
   tmrpcm.play((char*)"sa.wav");
   if (!tmrpcm.isPlaying()) {
     tmrpcm.play((char*)"sa.wav");
   }
 
+delay(1000);
 
   buzzer.init();
   //buzzer.playBoot();  // jingle เปิดเครื่อง
@@ -643,9 +644,20 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(ESP_INT_PIN), isrEsp, FALLING);
 
   noteActivity();  // เริ่มนับเวลาตั้งแต่บูต
+
+
+
+
 }
 
+
+
+
+
+
 void loop() {
+
+   // uint8_t buttons = tm.readButtons();
   // อ่านคีย์จาก keypad
   char k = kpd.getKey();
   if (k) {
@@ -658,8 +670,8 @@ void loop() {
     if (!canVote && page != PAGE_REG_PASS) {
       buzzer.playError();
     } else {
-        Serial.print(F("CF:"));
-        Serial.println(k);
+        //Serial.print(F("CF:"));
+        //Serial.println(k);
       if (page == PAGE_VOTE || page == PAGE_CONFIRM) {
         vote(k);
       } else if (page == PAGE_REG_PASS) {

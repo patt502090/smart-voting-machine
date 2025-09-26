@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+import logging
 
 APP_NAME   = os.getenv("APP_NAME", "Smart Voting — Dashboard")
 DB_PATH    = os.getenv("VOTES_DB", "votes.db")
@@ -19,6 +20,16 @@ lock = threading.Lock()
 app = FastAPI(title=APP_NAME)
 app.add_middleware(GZipMiddleware, minimum_size=512)
 app.add_middleware(CORSMiddleware, allow_origins=CORS_ALLOW, allow_methods=["*"], allow_headers=["*"])
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('voting.log')
+    ]
+)
+logger = logging.getLogger(__name__)
 
 def init_db():
     os.makedirs("static/img", exist_ok=True)
@@ -89,10 +100,41 @@ def export_csv():
 @app.post("/vote")
 def vote(req: Request, v: Vote):
     guarded(req)
-    with lock, sqlite3.connect(DB_PATH) as con:
-        cur=con.execute("UPDATE votes SET count=count+1 WHERE option=?",(v.option,))
-        if cur.rowcount==0: raise HTTPException(400,"unknown option (must be 0-9)")
-    push_history(); return {"ok": True}
+    try:
+        logger.info(f"Received vote request for option: {v.option}")
+        with lock:
+            with sqlite3.connect(DB_PATH) as con:
+                # Set journal mode to WAL for better concurrency
+                con.execute('PRAGMA journal_mode=WAL')
+                
+                # Check if option exists
+                cur = con.execute("SELECT count FROM votes WHERE option=?", (v.option,))
+                row = cur.fetchone()
+                if not row:
+                    logger.error(f"Invalid option: {v.option}")
+                    raise HTTPException(400, "unknown option (must be 0-9)")
+                
+                old_count = row[0]
+                logger.info(f"Current count for option {v.option}: {old_count}")
+                
+                # Update vote count
+                cur = con.execute("UPDATE votes SET count=count+1 WHERE option=?", (v.option,))
+                con.commit()
+                
+                # Verify update
+                cur = con.execute("SELECT count FROM votes WHERE option=?", (v.option,))
+                new_count = cur.fetchone()[0]
+                logger.info(f"New count for option {v.option}: {new_count}")
+                
+        push_history()
+        logger.info(f"Vote recorded successfully for option {v.option}")
+        return {"ok": True}
+    except sqlite3.Error as e:
+        logger.error(f"Database error: {str(e)}")
+        raise HTTPException(500, f"database error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}", exc_info=True)
+        raise HTTPException(500, f"unexpected error: {str(e)}")
 
 # ---------- Admin ----------
 @app.post("/admin/reset")

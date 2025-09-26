@@ -54,9 +54,43 @@ struct Rec {
 
 // ===== Web API (FastAPI) =====
 static const char *API_SCHEME = "http";      // ถ้าใช้ HTTPS ดูหมายเหตุท้าย
-static const char *API_HOST = "172.20.10.3"; // IP/โดเมนของเซิร์ฟเวอร์
-static const uint16_t API_PORT = 8000;       // พอร์ต FastAPI
+// static const char *API_HOST = "172.20.10.3"; // IP/โดเมนของเซิร์ฟเวอร์
+static const char *API_HOST = "172.30.88.16"; // IP/โดเมนของเซิร์ฟเวอร์
+static const uint16_t API_PORT = 8001;       // พอร์ต FastAPI
 static const char *API_TOKEN = "mysecret";   // ต้องตรงกับ API_TOKEN ฝั่ง FastAPI
+
+// ===== SPI bus guard & CS helpers =====
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
+static portMUX_TYPE spiMux = portMUX_INITIALIZER_UNLOCKED;
+
+inline void spi_guard_begin() { portENTER_CRITICAL(&spiMux); }
+inline void spi_guard_end()   { portEXIT_CRITICAL(&spiMux);  }
+
+inline void spi_deselect_all() {
+  digitalWrite(SD_CS,  HIGH);
+  digitalWrite(TFT_CS, HIGH);
+  digitalWrite(SS_PIN, HIGH); // RC522 CS
+}
+
+inline void spi_select_tft() {
+  digitalWrite(SD_CS,  HIGH);
+  digitalWrite(SS_PIN, HIGH);
+  digitalWrite(TFT_CS, LOW);
+}
+
+inline void spi_select_sd() {
+  digitalWrite(TFT_CS, HIGH);
+  digitalWrite(SS_PIN, HIGH);
+  digitalWrite(SD_CS,  LOW);
+}
+
+inline void spi_select_rc522() {
+  digitalWrite(SD_CS,  HIGH);
+  digitalWrite(TFT_CS, HIGH);
+  digitalWrite(SS_PIN, LOW);
+}
 
 // ===== UI (no-image) =====
 enum UIState
@@ -101,6 +135,18 @@ static bool isShowingPhoto = false;
 TFT_eSPI tft;
 // ===== Modern UI Transition =====
 TFT_eSprite spr(&tft);
+
+void drawArcSprite(TFT_eSprite &s, int cx, int cy, int rOuter, int rInner, int a0, int a1, uint16_t col, uint16_t bg)
+{
+  for (int a = a0; a <= a1; a += 3) {
+    float rad = a * 0.0174533f;
+    int x0 = cx + (int)(rInner * cos(rad));
+    int y0 = cy + (int)(rInner * sin(rad));
+    int x1 = cx + (int)(rOuter * cos(rad));
+    int y1 = cy + (int)(rOuter * sin(rad));
+    s.drawLine(x0, y0, x1, y1, col);
+  }
+}
 
 enum UITrans
 {
@@ -327,7 +373,7 @@ void drawArc(TFT_eSprite &s, int cx, int cy, int rOuter, int rInner, int a0, int
   }
 }
 // แล้วแก้ใน drawNFCIcon / drawFingerprintIconModern ให้เรียก drawArc(s, ...)
-void drawArc(int cx, int cy, int rOuter, int rInner, int a0, int a1, uint16_t col, uint16_t bg);
+// void drawArc(int cx, int cy, int rOuter, int rInner, int a0, int a1, uint16_t col, uint16_t bg);
 void drawFingerIcon(int cx, int cy)
 {
   // วงลายนิ้ว
@@ -510,9 +556,9 @@ void drawNFCIcon(TFT_eSprite &s, int cx, int cy, float scale = 1.0f)
   for (int k = 0; k < 3; k++)
   {
     int off = int(12 * scale + k * 8 * scale);
-    drawArc(s, cx + int(w * 0.22f), cy - int(h * 0.02f),
-            int(34 * scale) + off, int(34 * scale) + off - 2, 300, 60,
-            waveCol, TFT_TRANSPARENT);
+    drawArcSprite(s, cx + int(w * 0.22f), cy - int(h * 0.02f),
+              int(34 * scale) + off, int(34 * scale) + off - 2, 300, 60,
+              waveCol, TFT_TRANSPARENT);
   }
 }
 
@@ -530,7 +576,7 @@ void drawFingerprintIconModern(TFT_eSprite &s, int cx, int cy, float scale = 1.0
   // flowing arcs
   auto arc = [&](int ro, int ri, int a0, int a1)
   {
-    drawArc(s, cx, cy, ro, ri, a0, a1, c, TFT_TRANSPARENT);
+    drawArcSprite(s, cx, cy, ro, ri, a0, a1, c, TFT_TRANSPARENT);
   };
   arc(R - 2, R - 3, 210, 330);
   arc(int(R * 0.78f), int(R * 0.78f) - 1, 195, 350);
@@ -1981,6 +2027,8 @@ void ultrasonicTickForSleep()
 // Callback ของ TJpgDec ที่รองรับการครอปทุกทิศ (x/y อาจติดลบได้)
 bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap)
 {
+  spi_guard_begin();
+  spi_select_tft();
   int16_t W = tft.width();
   int16_t H = tft.height();
 
@@ -2021,6 +2069,9 @@ bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap)
     if (ww > 0)
       tft.pushImage(xx, yy, (uint16_t)ww, 1, src);
   }
+  tft.endWrite();
+  spi_deselect_all();
+  spi_guard_end();
   return true;
 }
 
@@ -2028,31 +2079,36 @@ bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap)
 bool drawJpgExactFromSD(const String &path)
 {
   uint16_t jw, jh;
-  if (!TJpgDec.getJpgSize(&jw, &jh, path.c_str()))
-  {
-    // แจ้งบนจอว่าไม่รองรับ (มักเป็น Progressive JPEG)
-    digitalWrite(SD_CS, HIGH);
-    digitalWrite(SS_PIN, HIGH);
-    digitalWrite(TFT_CS, LOW);
+
+  spi_guard_begin();                 // ปล่อยบัส + กันชนก่อน
+
+  if (!TJpgDec.getJpgSize(&jw, &jh, path.c_str())) {
+    // ไฟล์ไม่รองรับ (มักเป็น Progressive)
+    spi_select_tft();                // เลือก TFT แค่ช่วงวาดข้อความ
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_YELLOW, TFT_BLACK);
     tft.drawString("Unsupported JPG", 10, 10, 2);
     tft.drawString("Likely Progressive", 10, 28, 2);
     tft.drawString(path, 10, 46, 2);
-    digitalWrite(TFT_CS, HIGH);
+    spi_deselect_all();              // ปล่อย TFT
+    spi_guard_end();
     return false;
   }
 
-  TJpgDec.setJpgScale(1);
-  digitalWrite(SD_CS, HIGH);
-  digitalWrite(SS_PIN, HIGH);
-  digitalWrite(TFT_CS, LOW);
+  // เคลียร์จอก่อนวาดรูป (เลือก TFT เฉพาะช่วงนี้)
+  spi_select_tft();
+
   tft.fillScreen(TFT_BLACK);
+  spi_deselect_all();
+
+  // ปล่อยให้ TJpgDec อ่าน SD เอง
+  // *อย่าค้าง TFT_CS=LOW ตลอดเวลา* — callback tft_output() จะ select TFT เองตอน pushImage
   bool ok = TJpgDec.drawSdJpg(0, 0, path.c_str());
-  digitalWrite(TFT_CS, HIGH);
+
+  spi_guard_end();                   // จบงาน ปล่อยบัส
+
   return ok;
 }
-
 // [ADD] วาดรูปให้พอดีกลางจอ
 // วาด JPEG ให้ "เต็มจอ" แบบครอบ (cover) ด้วยการ downscale 1/2/4/8 แล้วเลื่อนศูนย์กลาง
 bool drawJpgCoverFromSD(const String &path)

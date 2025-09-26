@@ -136,14 +136,29 @@ TFT_eSPI tft;
 // ===== Modern UI Transition =====
 TFT_eSprite spr(&tft);
 
-void drawArcSprite(TFT_eSprite &s, int cx, int cy, int rOuter, int rInner, int a0, int a1, uint16_t col, uint16_t bg)
-{
+// วาดส่วนโค้งลง "จอจริง" (tft)
+void drawArcSprite(int cx, int cy, int rOuter, int rInner, int a0, int a1,
+                   uint16_t col, uint16_t /*bg*/) {
+  // step ประมาณ 3 องศา
   for (int a = a0; a <= a1; a += 3) {
-    float rad = a * 0.0174533f;
-    int x0 = cx + (int)(rInner * cos(rad));
-    int y0 = cy + (int)(rInner * sin(rad));
-    int x1 = cx + (int)(rOuter * cos(rad));
-    int y1 = cy + (int)(rOuter * sin(rad));
+    float rad = a * 0.01745329252f;
+    int x0 = cx + (int)(rInner * cosf(rad));
+    int y0 = cy + (int)(rInner * sinf(rad));
+    int x1 = cx + (int)(rOuter * cosf(rad));
+    int y1 = cy + (int)(rOuter * sinf(rad));
+    tft.drawLine(x0, y0, x1, y1, col);
+  }
+}
+
+// วาดส่วนโค้งลง "สไปรท์" (spr)
+void drawArcSprite(TFT_eSprite &s, int cx, int cy, int rOuter, int rInner, int a0, int a1,
+                   uint16_t col, uint16_t /*bg*/) {
+  for (int a = a0; a <= a1; a += 3) {
+    float rad = a * 0.01745329252f;
+    int x0 = cx + (int)(rInner * cosf(rad));
+    int y0 = cy + (int)(rInner * sinf(rad));
+    int x1 = cx + (int)(rOuter * cosf(rad));
+    int y1 = cy + (int)(rOuter * sinf(rad));
     s.drawLine(x0, y0, x1, y1, col);
   }
 }
@@ -360,18 +375,18 @@ void drawCardIcon(int cx, int cy)
 }
 
 // overload สำหรับ sprite
-void drawArc(TFT_eSprite &s, int cx, int cy, int rOuter, int rInner, int a0, int a1, uint16_t col, uint16_t bg)
-{
-  for (int a = a0; a <= a1; a += 3)
-  {
-    float rad = a * 0.0174533f;
-    int x0 = cx + (int)(rInner * cos(rad));
-    int y0 = cy + (int)(rInner * sin(rad));
-    int x1 = cx + (int)(rOuter * cos(rad));
-    int y1 = cy + (int)(rOuter * sin(rad));
-    s.drawLine(x0, y0, x1, y1, col);
-  }
-}
+// void drawArc(TFT_eSprite &s, int cx, int cy, int rOuter, int rInner, int a0, int a1, uint16_t col, uint16_t bg)
+// {
+//   for (int a = a0; a <= a1; a += 3)
+//   {
+//     float rad = a * 0.0174533f;
+//     int x0 = cx + (int)(rInner * cos(rad));
+//     int y0 = cy + (int)(rInner * sin(rad));
+//     int x1 = cx + (int)(rOuter * cos(rad));
+//     int y1 = cy + (int)(rOuter * sin(rad));
+//     s.drawLine(x0, y0, x1, y1, col);
+//   }
+// }
 // แล้วแก้ใน drawNFCIcon / drawFingerprintIconModern ให้เรียก drawArc(s, ...)
 // void drawArc(int cx, int cy, int rOuter, int rInner, int a0, int a1, uint16_t col, uint16_t bg);
 void drawFingerIcon(int cx, int cy)
@@ -382,25 +397,25 @@ void drawFingerIcon(int cx, int cy)
   tft.drawCircle(cx, cy, 18, TFT_CYAN);
   tft.drawCircle(cx, cy, 12, TFT_CYAN);
   // โค้งชั้นๆ
-  drawArc(cx, cy, 28, 27, 210, 330, TFT_CYAN, TFT_BLACK);
-  drawArc(cx, cy, 22, 21, 200, 340, TFT_CYAN, TFT_BLACK);
-  drawArc(cx, cy, 16, 15, 190, 350, TFT_CYAN, TFT_BLACK);
+  drawArcSprite(cx, cy, 28, 27, 210, 330, TFT_CYAN, TFT_BLACK);
+  drawArcSprite(cx, cy, 22, 21, 200, 340, TFT_CYAN, TFT_BLACK);
+  drawArcSprite(cx, cy, 16, 15, 190, 350, TFT_CYAN, TFT_BLACK);
 }
 
 // --------- Arc helper (approx) ----------
-void drawArc(int cx, int cy, int rOuter, int rInner, int a0, int a1, uint16_t col, uint16_t bg)
-{
-  // step 3° พอ
-  for (int a = a0; a <= a1; a += 3)
-  {
-    float rad = a * 0.0174533f;
-    int x0 = cx + (int)(rInner * cos(rad));
-    int y0 = cy + (int)(rInner * sin(rad));
-    int x1 = cx + (int)(rOuter * cos(rad));
-    int y1 = cy + (int)(rOuter * sin(rad));
-    tft.drawLine(x0, y0, x1, y1, col);
-  }
-}
+// void drawArc(int cx, int cy, int rOuter, int rInner, int a0, int a1, uint16_t col, uint16_t bg)
+// {
+//   // step 3° พอ
+//   for (int a = a0; a <= a1; a += 3)
+//   {
+//     float rad = a * 0.0174533f;
+//     int x0 = cx + (int)(rInner * cos(rad));
+//     int y0 = cy + (int)(rInner * sin(rad));
+//     int x1 = cx + (int)(rOuter * cos(rad));
+//     int y1 = cy + (int)(rOuter * sin(rad));
+//     tft.drawLine(x0, y0, x1, y1, col);
+//   }
+// }
 
 // ----- Loading spinner -----
 static bool ui_isLoading = false;
@@ -557,8 +572,8 @@ void drawNFCIcon(TFT_eSprite &s, int cx, int cy, float scale = 1.0f)
   {
     int off = int(12 * scale + k * 8 * scale);
     drawArcSprite(s, cx + int(w * 0.22f), cy - int(h * 0.02f),
-              int(34 * scale) + off, int(34 * scale) + off - 2, 300, 60,
-              waveCol, TFT_TRANSPARENT);
+            int(34 * scale) + off, int(34 * scale) + off - 2, 300, 60,
+            waveCol, TFT_TRANSPARENT);
   }
 }
 

@@ -15,8 +15,16 @@ API_TOKEN  = os.getenv("API_TOKEN", "mysecret")
 CORS_ALLOW = os.getenv("CORS", "*").split(",")
 POLL_MS    = int(os.getenv("POLL_MS", "1000"))
 HIST_SIZE  = int(os.getenv("HIST_SIZE", "600"))
+DB_TIMEOUT = 30.0  # เพิ่ม timeout
+
 
 lock = threading.Lock()
+# Settings
+APP_NAME = os.getenv("APP_NAME", "Smart Voting — Dashboard")
+DB_PATH = os.getenv("VOTES_DB", "votes.db")
+DB_TIMEOUT = 30.0
+
+# Core app 
 app = FastAPI(title=APP_NAME)
 app.add_middleware(GZipMiddleware, minimum_size=512)
 app.add_middleware(CORSMiddleware, allow_origins=CORS_ALLOW, allow_methods=["*"], allow_headers=["*"])
@@ -99,42 +107,78 @@ def export_csv():
 
 @app.post("/vote")
 def vote(req: Request, v: Vote):
+    """Increment count for a voting option."""
     guarded(req)
     try:
-        logger.info(f"Received vote request for option: {v.option}")
+        logger.debug(f"Starting vote request for option: {v.option}")
         with lock:
-            with sqlite3.connect(DB_PATH) as con:
-                # Set journal mode to WAL for better concurrency
-                con.execute('PRAGMA journal_mode=WAL')
+            logger.debug("Acquired lock")
+            with sqlite3.connect(DB_PATH, timeout=DB_TIMEOUT) as con:
+                # Enable foreign keys and WAL mode
+                con.execute("PRAGMA foreign_keys=ON")
+                con.execute("PRAGMA journal_mode=WAL")
+                con.execute("PRAGMA busy_timeout=5000")
                 
-                # Check if option exists
+                logger.debug(f"Checking current count for option {v.option}")
                 cur = con.execute("SELECT count FROM votes WHERE option=?", (v.option,))
                 row = cur.fetchone()
                 if not row:
-                    logger.error(f"Invalid option: {v.option}")
+                    logger.error(f"Option not found: {v.option}")
                     raise HTTPException(400, "unknown option (must be 0-9)")
                 
                 old_count = row[0]
-                logger.info(f"Current count for option {v.option}: {old_count}")
+                logger.debug(f"Current count: {old_count}")
                 
-                # Update vote count
-                cur = con.execute("UPDATE votes SET count=count+1 WHERE option=?", (v.option,))
+                logger.debug("Updating vote count")
+                cur = con.execute("""
+                    UPDATE votes 
+                    SET count = count + 1 
+                    WHERE option = ?
+                    RETURNING count
+                """, (v.option,))
+                
+                new_row = cur.fetchone()
+                if not new_row:
+                    logger.error("Update failed - no rows returned")
+                    raise HTTPException(500, "update failed")
+                
+                new_count = new_row[0]
+                logger.debug(f"New count: {new_count}")
+                
+                if new_count <= old_count:
+                    logger.error(f"Count not increased: {old_count} -> {new_count}")
+                    raise HTTPException(500, "update verification failed")
+                
                 con.commit()
-                
-                # Verify update
-                cur = con.execute("SELECT count FROM votes WHERE option=?", (v.option,))
-                new_count = cur.fetchone()[0]
-                logger.info(f"New count for option {v.option}: {new_count}")
-                
+                logger.debug("Transaction committed")
+        
+        logger.debug("Pushing to history")
         push_history()
-        logger.info(f"Vote recorded successfully for option {v.option}")
-        return {"ok": True}
+        logger.info(f"Vote recorded: option={v.option} count={new_count}")
+        return {"ok": True, "count": new_count}
+        
     except sqlite3.Error as e:
-        logger.error(f"Database error: {str(e)}")
+        logger.error(f"Database error: {str(e)}", exc_info=True)
         raise HTTPException(500, f"database error: {str(e)}")
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}", exc_info=True)
         raise HTTPException(500, f"unexpected error: {str(e)}")
+    finally:
+        logger.debug("Vote request completed")
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}", exc_info=True)
+        raise HTTPException(500, f"unexpected error: {str(e)}")
+
+# Setup logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('voting.log')
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # ---------- Admin ----------
 @app.post("/admin/reset")

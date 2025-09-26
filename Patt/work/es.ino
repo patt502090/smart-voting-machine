@@ -25,6 +25,9 @@ static int g_idxPending = -1;      // เก็บ index ของบัตร�
 #define TFT_CS 15
 #define SS_PIN 5
 
+int mjoy = 35;
+int valmjoy = 0;
+
 #include "driver/rtc_io.h"  // สำหรับ rtc_gpio_get_level()
 #include "esp_system.h"
 
@@ -2096,6 +2099,7 @@ void showIdleScreen(const char *msg = "Ready") {
 
 void setup() {
   // --- Wake pin / IRQ ---
+  pinMode(mjoy, INPUT);
   rtc_gpio_hold_dis((gpio_num_t)WAKE_PIN);
   pinMode(WAKE_PIN, INPUT);
   attachInterrupt(digitalPinToInterrupt(WAKE_PIN), WAKE_isr, CHANGE);
@@ -2371,6 +2375,23 @@ void tftSoftRecoverIfBlank() {
 // ===== วางฟังก์ชันนี้ "ถัดจาก" ปิดวงเล็บของ setup() =====
 void loop() {
   // ===== ปุ่มโหมด =====
+  valmjoy = analogRead(mjoy);
+
+  if (valmjoy <= 2) {
+    showUIx(UI_CONFIRM, "โหมดลงทะเบียน", TR_SLIDE_UP);
+    waitForAnalogRelease();  // ✅ debounce analog
+    registerCardAndFingerprint();
+    uiShownScanCard = false;
+    return;
+  }
+
+  if ((valmjoy > 5) && (valmjoy <= 100)) {
+    showUIx(UI_ERROR, "โหมดลบข้อมูล", TR_SLIDE_UP);
+    waitForAnalogRelease();  // ✅ debounce analog
+    deleteCardFlow();
+    uiShownScanCard = false;
+    return;
+  }
   // int switchReg = digitalRead(switchPin33);
   // int switchDel = digitalRead(switchPin32);
 
@@ -2485,5 +2506,19 @@ void loop() {
     tft.endWrite();  // เผื่อมี write ค้าง
     uiTick();
     tftSoftRecoverIfBlank();
+  }
+}
+
+// ✅ ฟังก์ชัน debounce: รอจนกว่าค่า analog จะกลับไป > 4000 อย่างนิ่ง
+void waitForAnalogRelease() {
+  int stableCount = 0;
+  while (stableCount < 5) {  // ต้องอ่านค่าติดต่อกัน 5 ครั้ง
+    int val = analogRead(mjoy);
+    if (val > 4000) {
+      stableCount++;
+    } else {
+      stableCount = 0;
+    }
+    delay(10);  // กัน bounce
   }
 }

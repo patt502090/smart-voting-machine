@@ -8,6 +8,18 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import logging
 
+# Setup logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('voting.log')
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# App settings
 APP_NAME   = os.getenv("APP_NAME", "Smart Voting — Dashboard")
 DB_PATH    = os.getenv("VOTES_DB", "votes.db")
 INIT_OPTS  = [s.strip() for s in os.getenv("VOTE_OPTIONS", "0,1,2,3,4,5,6,7,8,9").split(",") if s.strip()]
@@ -165,19 +177,6 @@ def vote(req: Request, v: Vote):
         raise HTTPException(500, f"unexpected error: {str(e)}")
     finally:
         logger.debug("Vote request completed")
-    except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}", exc_info=True)
-        raise HTTPException(500, f"unexpected error: {str(e)}")
-
-# Setup logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('voting.log')
-    ]
-)
 logger = logging.getLogger(__name__)
 
 # ---------- Admin ----------

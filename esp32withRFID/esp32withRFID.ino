@@ -1754,14 +1754,14 @@ int enrollFingerprint(uint8_t fp_id) {
     return p;
 
   Serial.println("Remove finger");
-  for (int ii = 0; ii < 15; ii++)
+  for (int ii = 0; ii < 5; ii++)
     mySerial.println("L");
   showUIx(UI_FINGER_LIFT, "โปรดยกนิ้วขึ้น", TR_NONE);
   while (finger.getImage() != FINGERPRINT_NOFINGER)
     delay(50);
 
   Serial.println("Place same finger again");
-  for (int ii = 0; ii < 15; ii++)
+  for (int ii = 0; ii < 5; ii++)
     mySerial.println("P");
   while ((p = finger.getImage()) != FINGERPRINT_OK) {
     if (p == FINGERPRINT_NOFINGER) {
@@ -1891,7 +1891,7 @@ inline void noTone(int /*pin*/) {}
 // ---------- High-level flows ----------
 void registerCardAndFingerprint() {
   exitPhotoMode();
-  for (int ii = 0; ii < 15; ii++)
+  for (int ii = 0; ii < 5; ii++)
     mySerial.println("R");
   Serial.println("Registration mode... Tap a new card");
 
@@ -1941,7 +1941,7 @@ void registerCardAndFingerprint() {
 
   // --- ตรวจนิ้วซ้ำก่อน Enroll ---
   Serial.println("Place finger to check duplication...");
-  for (int ii = 0; ii < 15; ii++)
+  for (int ii = 0; ii < 5; ii++)
     mySerial.println("J");
   showUIx(UI_SCAN_FINGER, "ตรวจสอบลายนิ้วมือเดิม", TR_NONE);
   int existing_fp = quickSearchFingerprint(10000);
@@ -2001,7 +2001,7 @@ void registerCardAndFingerprint() {
   // --- เก็บเรคคอร์ด (UID + FP_ID) ลง EEPROM ---
   if (storeNewRecord(uidHex, chosen_fp_id)) {
     Serial.println("Card+Fingerprint registered successfully.");
-    for (int ii = 0; ii < 15; ii++)
+    for (int ii = 0; ii < 5; ii++)
       mySerial.println("G");
     showUIx(UI_FINGER_OK, "ลงทะเบียนสำเร็จ", TR_NONE);
 
@@ -2129,7 +2129,7 @@ void normalScanFlow() {
   // ขั้นตอน: ส่ง "S" → อ่าน UID → ถ้าไม่รู้จัก/ทำรายการแล้วให้แจ้งเตือน → ถ้ารู้จักให้สแกนนิ้วให้ตรง fp_id → OK และ mark voted
 
   Serial.println("Scan card...");
-  for (int ii = 0; ii < 15; ii++)
+  for (int ii = 0; ii < 5; ii++)
     mySerial.println("S");  // โปรโตคอลตามเดิม
   showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_NONE);
 
@@ -2170,7 +2170,8 @@ void normalScanFlow() {
 
   if (idx < 0) {
     Serial.println("Unknown card");
-    for(int ii=0;ii<15;ii++)
+  delay(2000);
+    for(int ii=0;ii<5;ii++)
       mySerial.println("W");
     showUIx(UI_CARD_NOT_FOUND, "บัตรนี้ไม่อยู่ในระบบ", TR_NONE);
 
@@ -2206,7 +2207,7 @@ void normalScanFlow() {
   // --- ขอให้สแกนนิ้วให้ "ตรงกับ fp_id" ของบัตรนี้ ---
   Serial.printf("Card OK. Please verify fingerprint (expect FP_ID=%d)\n", r.fp_id);
   showUIx(UI_SCAN_FINGER, "วางนิ้วเพื่อยืนยันตัวตน", TR_NONE);
-  for (int ii = 0; ii < 15; ii++)
+  for (int ii = 0; ii < 10; ii++)
     mySerial.println("J");
   unsigned long t0 = millis();
   int matched = -1;
@@ -2247,7 +2248,7 @@ void normalScanFlow() {
   exitPhotoMode();  // <-- ปลดล็อก UI ไม่ให้ค้างจากโหมดแสดงรูป
   g_waitingChoice = true;
   g_selectedCandidate = -1;
-  for (int ii = 0; ii < 15; ii++)
+  for (int ii = 0; ii < 5; ii++)
     mySerial.println("O");  // แจ้งว่า auth ผ่าน → UNO จะ canVote=true และเข้า PAGE_VOTE
   // (ออปชัน) ถ้าต้องการบังคับโชว์หน้าเลือกทันทีอยู่ดี:
   //mySerial.println("V");        // UNO ก็รองรับคำสั่งนี้เหมือนกัน
@@ -3472,7 +3473,7 @@ void loop() {
 
   if (keyPressed == KEY_SCORE) {  // Score check mode - ส่ง T ไป Arduino
     Serial.println("[KEYPAD] SCORE key held for 3 seconds - sending T to Arduino");
-    for (int ii = 0; ii < 15; ii++)
+    for (int ii = 0; ii < 5; ii++)
       mySerial.println("T");  // ส่ง T ไปยัง Arduino ผ่าน UART2
     Serial.println("[UART2] Sent: T");
     waitForKeyRelease();  // รอให้ปล่อยปุ่ม

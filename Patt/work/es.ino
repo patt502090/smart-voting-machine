@@ -33,7 +33,7 @@ int valmjoy = 0;
 const int KEY_NONE = 4095;          // ไม่กดปุ่ม (HIGH)
 const int KEY_REGISTER = 0;         // ปุ่มลงทะเบียน (0V)
 const int KEY_DELETE = 1950;        // ปุ่มลบ (~1950)
-const int KEY_TEST = 350;           // ปุ่มทดสอบ (300-400) - ส่ง T ไป Arduino
+const int KEY_SCORE = 350;          // ปุ่มเช็ค score (300-400) - ส่ง T ไป Arduino
 
 const int KEY_TOLERANCE = 150;      // ความคลาดเคลื่อนที่ยอมรับได้ (เพิ่มเป็น 150)
 
@@ -1481,15 +1481,15 @@ struct Rec {
 // ===== EEPROM Functions =====
 #if USE_ESP32_EEPROM
   // ESP32 EEPROM functions
-  void eepromWriteBytes(int addr, const uint8_t *data, int len) {
-    for (int i = 0; i < len; ++i)
-      EEPROM.write(addr + i, data[i]);
-  }
+void eepromWriteBytes(int addr, const uint8_t *data, int len) {
+  for (int i = 0; i < len; ++i)
+    EEPROM.write(addr + i, data[i]);
+}
 
-  void eepromReadBytes(int addr, uint8_t *data, int len) {
-    for (int i = 0; i < len; ++i)
-      data[i] = EEPROM.read(addr + i);
-  }
+void eepromReadBytes(int addr, uint8_t *data, int len) {
+  for (int i = 0; i < len; ++i)
+    data[i] = EEPROM.read(addr + i);
+}
 #else
   // 24C32 EEPROM functions (DISABLED)
   bool eeprom24C32WriteBytes(int addr, const uint8_t *data, int len) {
@@ -1664,7 +1664,7 @@ int findByUID(const String &uidHex) {
         if (DEBUG_RFID_DETAIL) {
           Serial.printf("[DEBUG] Found match at index %d\n", i);
         }
-        return i;
+      return i;
       }
     }
   }
@@ -3125,42 +3125,42 @@ void setup() {
   spi_idle_all();  // ดันทุก CS = HIGH
 
   // --- SD Card: เริ่มแบบปลอดภัย ---
-  // ให้แน่ใจว่า CS ทุกตัวเป็น OUTPUT และ HIGH
-  pinMode(SD_CS, OUTPUT);
-  pinMode(TFT_CS, OUTPUT);
-  pinMode(SS_PIN, OUTPUT);
-  digitalWrite(SD_CS, HIGH);  // <-- สำคัญ: ปล่อย HIGH
-  digitalWrite(TFT_CS, HIGH);
-  digitalWrite(SS_PIN, HIGH);
+    // ให้แน่ใจว่า CS ทุกตัวเป็น OUTPUT และ HIGH
+    pinMode(SD_CS, OUTPUT);
+    pinMode(TFT_CS, OUTPUT);
+    pinMode(SS_PIN, OUTPUT);
+    digitalWrite(SD_CS, HIGH);  // <-- สำคัญ: ปล่อย HIGH
+    digitalWrite(TFT_CS, HIGH);
+    digitalWrite(SS_PIN, HIGH);
 
-  // เริ่มที่ความถี่ต่ำก่อน (เสถียรสุด) แล้วค่อยเพิ่ม
+    // เริ่มที่ความถี่ต่ำก่อน (เสถียรสุด) แล้วค่อยเพิ่ม
   bool sdOK = false;
-  if (SD.begin(SD_CS, SPI, 1000000)) {  // 1 MHz
-    sdOK = (SD.cardType() != CARD_NONE);
-    if (!sdOK)
-      SD.end();
-  }
-  if (!sdOK) {
-    if (SD.begin(SD_CS, SPI, 4000000)) {  // 4 MHz
+    if (SD.begin(SD_CS, SPI, 1000000)) {  // 1 MHz
       sdOK = (SD.cardType() != CARD_NONE);
       if (!sdOK)
         SD.end();
     }
-  }
-  if (!sdOK) {
-    if (SD.begin(SD_CS, SPI, 10000000)) {  // 10 MHz (ถ้าการ์ดดี)
-      sdOK = (SD.cardType() != CARD_NONE);
-      if (!sdOK)
-        SD.end();
+    if (!sdOK) {
+      if (SD.begin(SD_CS, SPI, 4000000)) {  // 4 MHz
+        sdOK = (SD.cardType() != CARD_NONE);
+        if (!sdOK)
+          SD.end();
+      }
     }
-  }
+    if (!sdOK) {
+      if (SD.begin(SD_CS, SPI, 10000000)) {  // 10 MHz (ถ้าการ์ดดี)
+        sdOK = (SD.cardType() != CARD_NONE);
+        if (!sdOK)
+          SD.end();
+      }
+    }
 
-  if (sdOK) {
-    Serial.printf("SD OK, type=%u, size=%llu MB\n",
-                  (unsigned)SD.cardType(),
-                  (unsigned long long)(SD.cardSize() / (1024ULL * 1024ULL)));
-  } else {
-    Serial.println("SD mount failed (tried 1/4/10 MHz)");
+    if (sdOK) {
+      Serial.printf("SD OK, type=%u, size=%llu MB\n",
+                    (unsigned)SD.cardType(),
+                    (unsigned long long)(SD.cardSize() / (1024ULL * 1024ULL)));
+    } else {
+      Serial.println("SD mount failed (tried 1/4/10 MHz)");
     // ใช้ UI เพื่อรอ SD Card
     waitForSDCard();
   }
@@ -3434,8 +3434,8 @@ void loop() {
     return;
   }
 
-  if (keyPressed == KEY_TEST) {  // Test mode - ส่ง T ไป Arduino
-    Serial.println("[KEYPAD] TEST key held for 3 seconds - sending T to Arduino");
+  if (keyPressed == KEY_SCORE) {  // Score check mode - ส่ง T ไป Arduino
+    Serial.println("[KEYPAD] SCORE key held for 3 seconds - sending T to Arduino");
     mySerial.println("T");  // ส่ง T ไปยัง Arduino ผ่าน UART2
     Serial.println("[UART2] Sent: T");
     waitForKeyRelease();  // รอให้ปล่อยปุ่ม
@@ -3689,8 +3689,8 @@ void loop() {
           Serial.println("KEY_REGISTER (HELD 3s)");
         } else if (keyPressed == KEY_DELETE) {
           Serial.println("KEY_DELETE (HELD 3s)");
-        } else if (keyPressed == KEY_TEST) {
-          Serial.println("KEY_TEST (HELD 3s) - Send T to Arduino");
+        } else if (keyPressed == KEY_SCORE) {
+          Serial.println("KEY_SCORE (HELD 3s) - Send T to Arduino");
         } else if (keyPressed == KEY_NONE) {
           Serial.println("NONE");
         } else if (keyPressed > 0) {
@@ -3713,7 +3713,7 @@ void loop() {
       Serial.println("Press each key and observe values:");
       Serial.println("KEY_REGISTER should be ~0");
       Serial.println("KEY_DELETE should be ~1950"); 
-      Serial.println("KEY_TEST should be ~350 (sends T to Arduino)");
+      Serial.println("KEY_SCORE should be ~350 (sends T to Arduino for score check)");
       Serial.println("NONE should be ~4095");
       Serial.println("Press any key for 30 seconds...");
       
@@ -3842,8 +3842,8 @@ int getKeyPressed() {
     pressedKey = KEY_REGISTER;
   } else if (abs(currentValue - KEY_DELETE) <= KEY_TOLERANCE) {
     pressedKey = KEY_DELETE;
-  } else if (abs(currentValue - KEY_TEST) <= KEY_TOLERANCE) {
-    pressedKey = KEY_TEST;
+  } else if (abs(currentValue - KEY_SCORE) <= KEY_TOLERANCE) {
+    pressedKey = KEY_SCORE;
   } else if (currentValue >= KEY_NONE - KEY_TOLERANCE) {
     pressedKey = KEY_NONE;
   }

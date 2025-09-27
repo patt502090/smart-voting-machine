@@ -62,6 +62,14 @@ byte rowPins[ROWS] = { 0, 1, 2, 3 };  // PCF8574 P0..P3 = ROW0..ROW3
 byte colPins[COLS] = { 4, 5, 6, 7 };  // PCF8574 P4..P7 = COL0..COL3
 Keypad_I2C kpd(makeKeymap(keys), rowPins, colPins, ROWS, COLS, KEYPAD_ADDR);
 
+enum AdminAction { ACT_NONE,
+                   ACT_REG,
+                   ACT_TALLY,
+                   ACT_CLEAR };
+AdminAction pendingAction = ACT_NONE;
+
+
+
 // ===== State/UI =====
 enum Page { PAGE_WAIT,
             PAGE_VOTE,
@@ -86,10 +94,10 @@ unsigned long lastPlayTime7 = 0;
 
 volatile bool wokeFromEsp = false;
 
-volatile bool showingTally = false; 
+volatile bool showingTally = false;
 
-
-
+bool waitRToExit = false;
+bool waitTToExit = false;
 
 
 // ===== EEPROM vote tally (0..9) =====
@@ -138,30 +146,35 @@ void eeprom_vote_add(uint8_t idx, uint32_t delta = 1) {
 // (ออปชัน) คำสั่ง debug พิมพ์คะแนนทั้งหมดทาง Serial
 void eeprom_vote_dump() {
   // ----- Serial out (เหมือนเดิม) -----
-  showingTally = true;  
+  showingTally = true;
   Serial.println(F("[VOTE TALLY]"));
 
   lcd.clear();
   for (uint8_t i = 0; i < 10; ++i) {
-  uint32_t v = eeprom_vote_get(i);
+    uint32_t v = eeprom_vote_get(i);
 
-  // Serial เหมือนเดิม
-  Serial.print(F("No.")); Serial.print(i);
-  Serial.print(F(" = "));  Serial.println(v);
+    // Serial เหมือนเดิม
+    Serial.print(F("No."));
+    Serial.print(i);
+    Serial.print(F(" = "));
+    Serial.println(v);
 
-  // LCD: แถวละ 3 ตัว (คอลัมน์ 0,7,14) และเลข 9 อยู่แถวล่างซ้าย
-  if (!tmrpcm.isPlaying()) {                 // กันไปชนเสียง
-    uint8_t row = (i <= 8) ? (i / 3) : 3;
-    uint8_t col = (i <= 8) ? (i % 3) : 0;
-    uint8_t x   = (col == 0) ? 0 : (col == 1) ? 7 : 14;
+    // LCD: แถวละ 3 ตัว (คอลัมน์ 0,7,14) และเลข 9 อยู่แถวล่างซ้าย
+    if (!tmrpcm.isPlaying()) {  // กันไปชนเสียง
+      uint8_t row = (i <= 8) ? (i / 3) : 3;
+      uint8_t col = (i <= 8) ? (i % 3) : 0;
+      uint8_t x = (col == 0) ? 0 : (col == 1) ? 7
+                                              : 14;
 
-    lcd.setCursor(x, row);
-    lcd.print('N'); lcd.print(i); lcd.print('=');
-    lcd.print(v);
-    lcd.print(' '); lcd.print(' ');          // เคลียร์เศษนิดหน่อย
+      lcd.setCursor(x, row);
+      lcd.print('N');
+      lcd.print(i);
+      lcd.print('=');
+      lcd.print(v);
+      lcd.print(' ');
+      lcd.print(' ');  // เคลียร์เศษนิดหน่อย
+    }
   }
-}
- 
 }
 
 
@@ -276,7 +289,7 @@ void drawChoiceBox(bool show) {
     lcd.setCursor(BOX_LEFT_X, BOX_TOP_Y + y);
     lcd.print(F("     "));
   }
-  if (currentChoice <= 0) { 
+  if (currentChoice <= 0) {
     lcd.setCursor(12, 1);
     if (show) lcd.print(F("0"));
     else lcd.print(F("  "));
@@ -461,6 +474,7 @@ void clock_ready_tick(bool forceFirst = false) {
 }
 
 void drawReadyUI_base() {
+
   lcd.noBlink();
   lcd.clear();
 
@@ -474,7 +488,7 @@ void drawReadyUI_base() {
   lcd.print(F("                    "));
   lcd.setCursor(0, 1);
   lcd.print(F("                    "));
-
+  //Serial.println("DRAW");
   // รีเซ็ตตัวจับวินาทีเพื่อให้ฟังก์ชันนาฬิกาเขียนครั้งแรกทันที
   extern void clock_ready_tick(bool forceFirst);
   clock_ready_tick(true);  // บังคับอัปเดตครั้งแรกทันที (และไม่ไปยุ่งตอนยังเล่นเสียง)
@@ -687,6 +701,23 @@ void printMaskedAt(uint8_t x, uint8_t y, const String& s) {
   for (uint8_t i = s.length(); i < 4; i++) lcd.print(' ');
 }
 
+
+
+/*
+
+char passBuf[5];      // 4 หลัก + '\0'
+uint8_t passLen = 0;  // 0..4
+
+// เรียกแทน printMaskedAt(String)
+void printMaskedAt(uint8_t x, uint8_t y, uint8_t len) {
+  lcd.setCursor(x, y);
+  for (uint8_t i = 0; i < 4; i++) {
+    lcd.write(i < len ? '*' : ' ');
+  }
+}
+
+*/
+
 void sendPreview() {
   if (currentChoice < 0) {
     Serial.println(F("SEL:CLEAR"));  // ยังไม่เลือก/ล้าง
@@ -736,6 +767,88 @@ void vote(char k) {
   }
 }
 
+
+void regispage(char k) {
+  char kk = k;  // ใช้คีย์ที่อ่านไว้ข้างบน
+  if (kk) {
+    if (kk >= '0' && kk <= '9') {
+      if (enteredPass.length() < 4) {
+        enteredPass += kk;
+        printMaskedAt(4, 1, enteredPass);
+      }
+    } else if (kk == '*') {
+      if (enteredPass.length() > 0) {
+        enteredPass.remove(enteredPass.length() - 1);
+        printMaskedAt(4, 1, enteredPass);
+      }
+    } else if (kk == '#') {
+      if (enteredPass.length() == 4) {
+        if (enteredPass == savedPass) {
+
+          // ===== รหัสถูกต้อง -> ทำงานตาม pendingAction =====
+          switch (pendingAction) {
+            case ACT_REG:
+              // เดิมคุณส่ง 'R' ไปให้ ESP32 แล้วรอ — ถ้าอยากให้ "เหมือน T" คือใส่รหัสแล้วสั่งเลยและออกได้
+              // ก็ส่งสัญญาณแล้วกลับหน้า READY
+              Serial.print(F("R"));
+              //Serial.println();
+              //restartSerial();
+              //Serial.write('R');
+              lcd.clear();
+              lcd.setCursor(2, 0);
+              lcd.print(F("Registration OK"));
+
+              //waitRToExit = true;
+              page = PAGE_REG_PASS;
+              fregis = true;
+              break;
+
+            case ACT_TALLY:
+              eeprom_vote_dump();  // แสดงสรุปคะแนน (Serial + LCD)
+                                   // อยู่ที่คุณว่าจะค้างจอ tally ไว้สักครู่หรือกลับเลย
+              eeprom_vote_dump();  // วาดคะแนนลง LCD และตั้ง showingTally = true ภายใน
+              // <<< อย่า set showingTally = false ที่นี่ >>>
+
+              page = PAGE_REG_PASS;  // ค้างอยู่หน้าเดิม ไม่รับคีย์ต่อ
+              fregis = true;
+              break;
+
+            case ACT_CLEAR:
+              eeprom_vote_clear_all();
+              lcd.clear();
+              lcd.setCursor(2, 0);
+              lcd.print(F("Tally cleared"));
+              delay(800);
+              break;
+
+            default:
+              break;
+          }
+
+          // ออกจากโหมดใส่รหัส กลับหน้า READY
+          if (!waitRToExit && !waitTToExit) {
+            pendingAction = ACT_NONE;
+            fregis = false;
+            canVote = false;
+            page = PAGE_WAIT;
+            drawReadyUI_base();
+          }
+
+        } else {
+          // รหัสผิด
+          lcd.setCursor(0, 2);
+          lcd.print(F("Wrong pass       "));
+          enteredPass = "";
+          printMaskedAt(4, 1, enteredPass);
+        }
+      } else {
+        lcd.setCursor(0, 2);
+        lcd.print(F("Must be 4 digits "));
+      }
+    }
+  }
+}
+
 void prepareBeforeSleep() {
   lcd.noBacklight();
   if (tmrpcm.isPlaying()) tmrpcm.stopPlayback();
@@ -756,6 +869,19 @@ void afterWake() {
   noteActivity();
 }
 
+void startPass(AdminAction a) {
+  pendingAction = a;
+  fregis = true;  // ใช้หน้าเดิม PAGE_REG_PASS
+  regisstatus = false;
+  enteredPass = "";
+  page = PAGE_REG_PASS;
+  lcd.noBlink();
+  lcd.clear();
+  lcd.setCursor(2, 0);
+  lcd.print(F("Enter pass:"));
+  lcd.setCursor(4, 1);
+  printMaskedAt(4, 1, enteredPass);
+}
 
 
 // ============ SETUP / LOOP ============
@@ -764,7 +890,7 @@ void setup() {
   rtc.begin();
   rtc.writeSqwPinMode(DS1307_OFF);
   eeprom_vote_init();
-  
+
   /* const DateTime buildTime(F(__DATE__), F(__TIME__));
 
   // ถ้า RTC ยังไม่เดิน หรือเวลาเพี้ยนมาก (> 1 วัน) ให้ตั้งใหม่
@@ -813,10 +939,16 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(ESP_INT_PIN), isrEsp, FALLING);
 
   noteActivity();  // เริ่มนับเวลาตั้งแต่บูต
-
 }
 
-
+void restartSerial(unsigned long baud = 9600) {
+  Serial.end();  // ปิด UART
+  delay(50);     // เว้นนิดหน่อยให้ฮาร์ดแวร์นิ่ง
+  // ล้างบัฟเฟอร์ที่อาจเหลืออยู่ (เผื่อมีชิป USB แคช)
+  while (Serial.available()) (void)Serial.read();
+  Serial.begin(baud);  // เปิดใหม่
+  // UNO ไม่ต้องใช้ while(!Serial) นะ ใช้กับบอร์ดที่เป็น native USB เท่านั้น (Leonardo/Micro)
+}
 void loop() {
 
   // อ่านคีย์จาก keypad
@@ -831,8 +963,7 @@ void loop() {
     if (!canVote && page != PAGE_REG_PASS) {
       buzzer.playError();
     } else {
-      //Serial.print(F("CF:"));
-      //Serial.println(k);
+
       if (page == PAGE_VOTE || page == PAGE_CONFIRM) {
         vote(k);
       } else if (page == PAGE_REG_PASS) {
@@ -868,6 +999,8 @@ void loop() {
 
     if (msg == 'S') {
       //playIfIdle("re.wav");
+      //Serial.print("1");
+      // tmrpcm.stopPlayback();
       tmrpcm.play("re.wav");
     }                       // กำลังอ่านบัตร
     else if (msg == 'W') {  // ยังไม่ลงทะเบียน/เพิกถอนสิทธิ์
@@ -884,15 +1017,10 @@ void loop() {
       tmrpcm.play("f.wav");
     } else if (msg == 'J') {
 
-      //page = PAGE_WAIT;
-      //drawReadyUI_base();
-      //playIfIdle("q.wav");
+
       tmrpcm.play("q.wav");
     } else if (msg == 'P') {
 
-      // page = PAGE_WAIT;
-      //drawReadyUI_base();
-      //playIfIdle("p.wav");
       tmrpcm.play("p.wav");
     } else if (msg == 'L') {
 
@@ -902,12 +1030,13 @@ void loop() {
       tmrpcm.play("l.wav");
     } else if (msg == 'O') {  // ยืนยันตัวตนสำเร็จ -> เปิดสิทธิ์
 
-      
+
       canVote = true;
       page = PAGE_VOTE;
       drawVoteUI_base();
       tmrpcm.play("c.wav");
-      while (tmrpcm.isPlaying());
+      while (tmrpcm.isPlaying())
+        ;
       tmrpcm.play("ch.wav");
       //buzzer.playConfirm();
     } /*else if (msg == 'V') {  // พร้อมโหวต (ใช้ร่วมได้)
@@ -916,8 +1045,9 @@ void loop() {
       drawVoteUI_base();
       //playIfIdle("ch.wav");
       tmrpcm.play("ch.wav");
-    } */else if (msg == 'R') {
-      // Toggle registration mode every time we receive 'R' from ESP32
+    } */
+    else if (msg == 'R') {
+      /*
       fregis = !fregis;
 
       // รีเซ็ตสถานะที่เกี่ยวข้องกับหน้าลงทะเบียน
@@ -939,13 +1069,37 @@ void loop() {
         canVote = false;  // ออกจากลงทะเบียนแล้วยังไม่ให้โหวต
         page = PAGE_WAIT;
         drawReadyUI_base();  // กลับไปหน้า Ready to vote
+      }*/
+      if (waitRToExit) {
+        // ได้ 'R' รอบถัดไปแล้ว → ออกจากหน้าค้างและกลับ READY
+        waitRToExit = false;
+        pendingAction = ACT_NONE;
+        fregis = false;
+        canVote = false;
+        page = PAGE_WAIT;
+        drawReadyUI_base();
+      } else {
+        // รอบแรก → เข้าโหมดขอรหัสเพื่อลงทะเบียน (เหมือนเดิม)
+        startPass(ACT_REG);
+        waitRToExit = true;
       }
-    }
-    if (msg == 'T') {  // พิมพ์สรุปคะแนนทั้งหมด
-      eeprom_vote_dump();
-    }
-    if (msg == 'X') {  // ล้างคะแนนทั้งหมด
-      eeprom_vote_clear_all();
+    } else if (msg == 'T') {  // โหมดดูผลโหวตแบบ toggle
+      if (waitTToExit || showingTally) {
+        // ===== ออกจาก TALLY -> กลับ READY =====
+        waitTToExit = false;
+        showingTally = false;
+        pendingAction = ACT_NONE;
+        fregis = false;
+        canVote = false;
+        page = PAGE_WAIT;
+        drawReadyUI_base();  // จะขึ้น "Ready to vote" และเรียก clock_ready_tick(true)
+      } else {
+        // ===== รอบแรก: ขอรหัสก่อนดูผล =====
+        startPass(ACT_TALLY);
+        waitTToExit = true;  // จะออกต่อเมื่อได้ 'T' อีกครั้ง
+      }
+    } else if (msg == 'X') {  // ล้างคะแนนทั้งหมด
+      startPass(ACT_CLEAR);   //eeprom_vote_clear_all();
     }
 
 
@@ -964,48 +1118,10 @@ void loop() {
 
   // หน้า "ตั้งรหัส" (เมื่อ fregis == true)
   if (fregis && page == PAGE_REG_PASS) {
-    char kk = k;  // ใช้คีย์ที่อ่านไว้ข้างบน
-    if (kk) {
-      if (kk >= '0' && kk <= '9') {
-        if (enteredPass.length() < 4) {
-          enteredPass += kk;
-          printMaskedAt(4, 1, enteredPass);
-        }
-      } else if (kk == '*') {
-        if (enteredPass.length() > 0) {
-          enteredPass.remove(enteredPass.length() - 1);
-          printMaskedAt(4, 1, enteredPass);
-        }
-      } else if (kk == '#') {
-        if (enteredPass.length() == 4) {
-          if (enteredPass == savedPass) {
-            // รหัสถูกต้อง -> แจ้งผู้ใช้และส่งสัญญาณไป ESP32
-            lcd.clear();
-            lcd.setCursor(2, 0);
-            lcd.print(F("You can register."));
-            // (ออปชัน) บรรทัดล่างช่วยอธิบาย
-            lcd.setCursor(1, 2);
-            lcd.print(F("Waiting for ESP32..."));
-            Serial.write('R');  // แจ้ง ESP32 ว่า "พร้อมลงทะเบียน"
-
-            // คงอยู่ในหน้า REG_PASS จนกว่า ESP32 จะตอบกลับ 'R'
-            regisstatus = true;  // ใช้เป็นแฟล็กว่าพร้อมออกจากหน้านี้แล้ว
-            // ไม่ต้องเปลี่ยน page/fregis ที่นี่
-          } else {
-            // รหัสผิด
-            lcd.setCursor(0, 2);
-            lcd.print(F("Wrong pass       "));
-            // (ออปชัน) ล้างรหัสที่พิมพ์ไปแล้ว
-            enteredPass = "";
-            printMaskedAt(4, 1, enteredPass);
-          }
-        } else {
-          lcd.setCursor(0, 2);
-          lcd.print(F("Must be 4 digits "));
-        }
-      }
-    }
+    regispage(k);
   }
+
+
 
   // อัปเดตบัซเซอร์ทุกเฟรม (state machine)
   buzzer.update();
@@ -1022,7 +1138,4 @@ void loop() {
     }
   }
   clock_ready_tick();
-
 }
-
-

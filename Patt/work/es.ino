@@ -29,24 +29,20 @@ int mjoy = 35;
 int valmjoy = 0;
 
 // ===== Analog Keypad Configuration =====
-// ค่า analog ที่อ่านได้จาก keypad แต่ละปุ่ม (5 ปุ่ม)
-const int KEY_NONE = 4095;      // ไม่กดปุ่ม (HIGH)
-const int KEY_1 = 0;            // ปุ่ม 1 (0V)
-const int KEY_2 = 1024;         // ปุ่ม 2 (1.2V)
-const int KEY_3 = 2048;         // ปุ่ม 3 (2.4V) 
-const int KEY_4 = 3072;         // ปุ่ม 4 (3.6V)
-const int KEY_5 = 4064;         // ปุ่ม 5 (4.8V)
+// ค่า analog ที่อ่านได้จาก keypad (2 ปุ่ม จากการทดสอบจริง)
+const int KEY_NONE = 4095;          // ไม่กดปุ่ม (HIGH)
+const int KEY_REGISTER = 0;         // ปุ่มลงทะเบียน (0V)
+const int KEY_DELETE = 1950;        // ปุ่มลบ (~1950)
 
-// กำหนดปุ่มที่ใช้
-const int KEY_REGISTER = KEY_1; // ใช้ปุ่ม 1 สำหรับลงทะเบียน
-const int KEY_DELETE = KEY_2;   // ใช้ปุ่ม 2 สำหรับลบ
+const int KEY_TOLERANCE = 150;      // ความคลาดเคลื่อนที่ยอมรับได้ (เพิ่มเป็น 150)
 
-const int KEY_TOLERANCE = 100;  // ความคลาดเคลื่อนที่ยอมรับได้
-
-// ตัวแปรสำหรับ debounce
+// ตัวแปรสำหรับ debounce และ hold detection
 static int lastKeyValue = KEY_NONE;
 static uint32_t lastKeyTime = 0;
-static const uint32_t KEY_DEBOUNCE_MS = 200; // เพิ่มเป็น 200ms
+static uint32_t keyPressStartTime = 0;
+static int currentPressedKey = -1;
+static const uint32_t KEY_DEBOUNCE_MS = 100; // ลดเป็น 100ms
+static const uint32_t KEY_HOLD_TIME_MS = 3000; // กดค้าง 3 วินาที
 static uint32_t lastKeyPollTime = 0;
 static const uint32_t KEY_POLL_INTERVAL = 50; // polling ทุก 50ms
 
@@ -2813,7 +2809,7 @@ void waitForSDCard() {
     
     // ตรวจสอบว่าผู้ใช้กดปุ่มเพื่อข้าม
     int keyPressed = getKeyPressed();
-    if (keyPressed == KEY_1 || keyPressed == KEY_2) {
+    if (keyPressed == KEY_REGISTER || keyPressed == KEY_DELETE) {
       Serial.println("[SD] User pressed key to skip SD Card check");
       waitForKeyRelease();
       showUIx(UI_SD_FAIL, "ข้ามการตรวจสอบ SD Card", TR_NONE);
@@ -3416,11 +3412,11 @@ void tftSoftRecoverIfBlank() {
 
 // ===== วางฟังก์ชันนี้ "ถัดจาก" ปิดวงเล็บของ setup() =====
 void loop() {
-  // ===== ปุ่มโหมด =====
+  // ===== ปุ่มโหมด (กดค้าง 3 วินาที) =====
   int keyPressed = getKeyPressed();
   
-  if (keyPressed == KEY_1) {  // Register mode
-    Serial.println("[KEYPAD] KEY_1 (Register) pressed - entering register mode");
+  if (keyPressed == KEY_REGISTER) {  // Register mode
+    Serial.println("[KEYPAD] REGISTER key held for 3 seconds - entering register mode");
     showUIx(UI_MODE_REGISTER, "โหมดลงทะเบียน", TR_NONE);
     waitForKeyRelease();  // รอให้ปล่อยปุ่ม
     registerCardAndFingerprint();
@@ -3428,8 +3424,8 @@ void loop() {
     return;
   }
 
-  if (keyPressed == KEY_2) {  // Delete mode
-    Serial.println("[KEYPAD] KEY_2 (Delete) pressed - entering delete mode");
+  if (keyPressed == KEY_DELETE) {  // Delete mode
+    Serial.println("[KEYPAD] DELETE key held for 3 seconds - entering delete mode");
     showUIx(UI_MODE_DELETE, "โหมดลบข้อมูล", TR_NONE);
     waitForKeyRelease();  // รอให้ปล่อยปุ่ม
     deleteCardFlow();
@@ -3680,16 +3676,10 @@ void loop() {
         int keyPressed = getKeyPressed();
         
         Serial.printf("Raw: %d, Stable: %d, Key: ", rawValue, stableValue);
-        if (keyPressed == KEY_1) {
-          Serial.println("KEY_1 (REGISTER)");
-        } else if (keyPressed == KEY_2) {
-          Serial.println("KEY_2 (DELETE)");
-        } else if (keyPressed == KEY_3) {
-          Serial.println("KEY_3");
-        } else if (keyPressed == KEY_4) {
-          Serial.println("KEY_4");
-        } else if (keyPressed == KEY_5) {
-          Serial.println("KEY_5");
+        if (keyPressed == KEY_REGISTER) {
+          Serial.println("KEY_REGISTER (HELD 3s)");
+        } else if (keyPressed == KEY_DELETE) {
+          Serial.println("KEY_DELETE (HELD 3s)");
         } else if (keyPressed == KEY_NONE) {
           Serial.println("NONE");
         } else if (keyPressed > 0) {
@@ -3710,11 +3700,8 @@ void loop() {
       // Calibrate keypad - อ่านค่าต่อเนื่อง
       Serial.println("=== Keypad Calibration ===");
       Serial.println("Press each key and observe values:");
-      Serial.println("KEY_1 should be ~0");
-      Serial.println("KEY_2 should be ~1024"); 
-      Serial.println("KEY_3 should be ~2048");
-      Serial.println("KEY_4 should be ~3072");
-      Serial.println("KEY_5 should be ~4064");
+      Serial.println("KEY_REGISTER should be ~0");
+      Serial.println("KEY_DELETE should be ~1950"); 
       Serial.println("NONE should be ~4095");
       Serial.println("Press any key for 30 seconds...");
       
@@ -3825,7 +3812,7 @@ int readKeypadStable() {
   return average;
 }
 
-// ฟังก์ชันตรวจสอบว่ากดปุ่มอะไร
+// ฟังก์ชันตรวจสอบว่ากดปุ่มอะไร พร้อม hold detection
 int getKeyPressed() {
   uint32_t currentTime = millis();
   
@@ -3837,51 +3824,61 @@ int getKeyPressed() {
   
   int currentValue = readKeypadStable();
   
-  // ตรวจสอบว่าค่าเปลี่ยนแปลงมากพอหรือไม่
-  if (abs(currentValue - lastKeyValue) < KEY_TOLERANCE) {
-    // ค่าไม่เปลี่ยนแปลงมาก -> ไม่ใช่การกดปุ่มใหม่
-    return -1;
-  }
-  
-  // ตรวจสอบ debounce time
-  if (currentTime - lastKeyTime < KEY_DEBOUNCE_MS) {
-    return -1;
-  }
-  
-  // Log ค่าที่เปลี่ยนแปลง
-  if (DEBUG_KEYPAD_DETAIL) {
-    Serial.printf("[KEYPAD] Value: %d -> %d\n", lastKeyValue, currentValue);
-  }
-  
-  // อัปเดตค่า
-  lastKeyValue = currentValue;
-  lastKeyTime = currentTime;
-  
-  // ตรวจสอบว่ากดปุ่มอะไร (ตรวจทุกปุ่ม)
-  if (abs(currentValue - KEY_1) <= KEY_TOLERANCE) {
-    Serial.printf("[KEYPAD] KEY_1 detected (value: %d)\n", currentValue);
-    return KEY_1;
-  } else if (abs(currentValue - KEY_2) <= KEY_TOLERANCE) {
-    Serial.printf("[KEYPAD] KEY_2 detected (value: %d)\n", currentValue);
-    return KEY_2;
-  } else if (abs(currentValue - KEY_3) <= KEY_TOLERANCE) {
-    Serial.printf("[KEYPAD] KEY_3 detected (value: %d)\n", currentValue);
-    return KEY_3;
-  } else if (abs(currentValue - KEY_4) <= KEY_TOLERANCE) {
-    Serial.printf("[KEYPAD] KEY_4 detected (value: %d)\n", currentValue);
-    return KEY_4;
-  } else if (abs(currentValue - KEY_5) <= KEY_TOLERANCE) {
-    Serial.printf("[KEYPAD] KEY_5 detected (value: %d)\n", currentValue);
-    return KEY_5;
+  // ตรวจสอบว่ากำลังกดปุ่มอะไรอยู่
+  int pressedKey = -1;
+  if (abs(currentValue - KEY_REGISTER) <= KEY_TOLERANCE) {
+    pressedKey = KEY_REGISTER;
+  } else if (abs(currentValue - KEY_DELETE) <= KEY_TOLERANCE) {
+    pressedKey = KEY_DELETE;
   } else if (currentValue >= KEY_NONE - KEY_TOLERANCE) {
-    // ไม่ log NONE key เพื่อลด spam
-    return KEY_NONE;
+    pressedKey = KEY_NONE;
   }
   
-  if (DEBUG_KEYPAD_DETAIL) {
-    Serial.printf("[KEYPAD] UNKNOWN key: %d\n", currentValue);
+  // Hold detection logic
+  if (pressedKey != KEY_NONE && pressedKey != -1) {
+    // มีการกดปุ่ม
+    if (currentPressedKey != pressedKey) {
+      // เริ่มกดปุ่มใหม่
+      currentPressedKey = pressedKey;
+      keyPressStartTime = currentTime;
+      
+      if (DEBUG_KEYPAD_DETAIL) {
+        Serial.printf("[KEYPAD] Key press started: %d (value: %d)\n", pressedKey, currentValue);
+      }
+    } else {
+      // กดปุ่มเดิมต่อ - เช็คว่าครบ 3 วินาทีหรือยัง
+      if (currentTime - keyPressStartTime >= KEY_HOLD_TIME_MS) {
+        // กดครบ 3 วินาทีแล้ว
+        Serial.printf("[KEYPAD] Key held for 3 seconds: %d\n", pressedKey);
+        
+        // รีเซ็ต hold detection เพื่อป้องกันการเรียกซ้ำ
+        keyPressStartTime = currentTime + KEY_HOLD_TIME_MS; // ป้องกันการเรียกซ้ำ
+        
+        return pressedKey; // คืนค่าปุ่มที่กดค้าง
+      }
+    }
+  } else {
+    // ไม่มีการกดปุ่ม หรือปล่อยปุ่มแล้ว
+    if (currentPressedKey != -1) {
+      uint32_t holdDuration = currentTime - keyPressStartTime;
+      
+      if (DEBUG_KEYPAD_DETAIL) {
+        Serial.printf("[KEYPAD] Key released: %d (held for %d ms)\n", currentPressedKey, holdDuration);
+      }
+      
+      // รีเซ็ต
+      currentPressedKey = -1;
+      keyPressStartTime = 0;
+    }
   }
-  return -1; // ไม่รู้จัก
+  
+  // อัปเดตค่าสำหรับการตรวจสอบการเปลี่ยนแปลง
+  if (abs(currentValue - lastKeyValue) >= KEY_TOLERANCE) {
+    lastKeyValue = currentValue;
+    lastKeyTime = currentTime;
+  }
+  
+  return -1; // ไม่มีการกดค้างครบ 3 วินาที
 }
 
 // ฟังก์ชันรอให้ปล่อยปุ่ม

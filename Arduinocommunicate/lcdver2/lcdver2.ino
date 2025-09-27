@@ -177,27 +177,6 @@ void eeprom_vote_clear_all() {
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 void isrEsp() {
   wokeFromEsp = true;
 }
@@ -297,9 +276,9 @@ void drawChoiceBox(bool show) {
     lcd.setCursor(BOX_LEFT_X, BOX_TOP_Y + y);
     lcd.print(F("     "));
   }
-  if (currentChoice <= 0) {  // 0=งด → "00"
+  if (currentChoice <= 0) { 
     lcd.setCursor(12, 1);
-    if (show) lcd.print(F("00"));
+    if (show) lcd.print(F("0"));
     else lcd.print(F("  "));
     return;
   }
@@ -485,9 +464,6 @@ void drawReadyUI_base() {
   lcd.noBlink();
   lcd.clear();
 
-  // กรอบ (ถ้าชอบแบบเรียบ ๆ จะตัดทิ้งได้)
-  loadIcons();
-  drawFrame();
 
   // บรรทัด 2: ข้อความสถานะคงที่
   lcd.setCursor(4, 2);

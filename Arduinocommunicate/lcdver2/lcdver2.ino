@@ -707,7 +707,12 @@ void printMaskedAt(uint8_t x, uint8_t y, uint8_t len) {
 }
 
 
+bool passMsgShown = false;
 
+void lcdClearLine(uint8_t y) {
+  lcd.setCursor(0, y);
+  lcd.print(F("                    ")); // 20 ช่อง
+}
 
 
 
@@ -765,16 +770,20 @@ void regispage(char k) {
   if (!k) return;
 
   if (k >= '0' && k <= '9') {
+    if (passMsgShown) { lcdClearLine(2); passMsgShown = false; }
     if (passLen < 4) {
+      buzzer.playClick();
       passBuf[passLen++] = k;
       passBuf[passLen] = '\0';
-      printMaskedAt(4, 1, passLen);
+      printMaskedAt(4, 2, passLen);
     }
   } else if (k == '*') {
+     if (passMsgShown) { lcdClearLine(2); passMsgShown = false; }
     if (passLen > 0) {
+      buzzer.playBack();
       passLen--;
       passBuf[passLen] = '\0';
-      printMaskedAt(4, 1, passLen);
+      printMaskedAt(4, 2, passLen);
     }
   } else if (k == '#') {
     if (passLen == 4) {
@@ -815,13 +824,15 @@ void regispage(char k) {
       } else {
         // รหัสผิด
         lcd.setCursor(0, 2);
-        lcd.print(F("Wrong pass       "));
+        lcd.print(F("   Wrong Password  "));
         passLen = 0;
+        passMsgShown = true;
         passBuf[0] = '\0';
         printMaskedAt(4, 1, passLen);
       }
     } else {
       lcd.setCursor(0, 2);
+      passMsgShown = true;
       lcd.print(F("Must be 4 digits "));
     }
   }
@@ -928,19 +939,6 @@ void afterWake() {
   noteActivity();
 }
 
-/*void startPass(AdminAction a) {
-  pendingAction = a;
-  fregis = true;  // ใช้หน้าเดิม PAGE_REG_PASS
-  regisstatus = false;
-  enteredPass = "";
-  page = PAGE_REG_PASS;
-  lcd.noBlink();
-  lcd.clear();
-  lcd.setCursor(2, 0);
-  lcd.print(F("Enter pass:"));
-  lcd.setCursor(4, 1);
-  printMaskedAt(4, 1, enteredPass);
-}*/
 void startPass(AdminAction a) {
   pendingAction = a;
   fregis = true;
@@ -951,8 +949,16 @@ void startPass(AdminAction a) {
   lcd.noBlink();
   lcd.clear();
   lcd.setCursor(2, 0);
-  lcd.print(F("Enter pass:"));
-  printMaskedAt(4, 1, passLen);
+  switch (a) {
+    case ACT_REG:   lcd.print(F("Registration (PIN)")); break;
+    case ACT_TALLY: lcd.print(F("Show Tally (PIN)"));   break;
+    case ACT_CLEAR: lcd.print(F("Clear Tally (PIN)"));  break;
+    default:        lcd.print(F("Admin (PIN)"));        break;
+  }
+
+  lcd.setCursor(2, 1);
+  lcd.print(F("Enter Password :"));
+  printMaskedAt(4, 2, passLen);
 }
 
 // ============ SETUP / LOOP ============
@@ -962,7 +968,7 @@ void setup() {
   rtc.writeSqwPinMode(DS1307_OFF);
   eeprom_vote_init();
 
-  /* const DateTime buildTime(F(__DATE__), F(__TIME__));
+  /*const DateTime buildTime(F(__DATE__), F(__TIME__));
 
   // ถ้า RTC ยังไม่เดิน หรือเวลาเพี้ยนมาก (> 1 วัน) ให้ตั้งใหม่
   if (!rtc.isrunning()) {

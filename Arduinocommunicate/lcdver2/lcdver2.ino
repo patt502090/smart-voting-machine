@@ -21,6 +21,7 @@
 #include <SPI.h>
 #include <SD.h>
 #include <avr/wdt.h>
+#include <EEPROM.h>
 
 
 #define ESP_INT_PIN 3  // INT1 (D3) จาก ESP32
@@ -28,8 +29,7 @@
 #include <avr/power.h>
 #include <avr/sleep.h>
 #include <avr/interrupt.h>
-//#include <RtcDS1307.h>
-//RtcDS1307<TwoWire> Rtc(Wire);
+
 #include <RTClib.h>
 RTC_DS1307 rtc;
 // --- Sleep/Idle policy ---
@@ -85,6 +85,119 @@ unsigned long lastPlayTime6 = 0;
 unsigned long lastPlayTime7 = 0;
 
 volatile bool wokeFromEsp = false;
+
+volatile bool showingTally = false; 
+
+
+
+
+
+// ===== EEPROM vote tally (0..9) =====
+// โครงสร้าง:
+// [0..3]   : MAGIC 'VOTE' (0x564F5445) ไว้เช็คว่ามีการ init แล้ว
+// [4..43]  : ตัวนับ 10 ช่อง (0..9) อย่างละ uint32_t → รวม 40 ไบต์
+static const uint32_t EE_MAGIC = 0x564F5445UL;  // 'VOTE'
+static const int EE_MAGIC_ADDR = 0;
+static const int EE_COUNTS_ADDR = 4;  // เริ่มเก็บตัวนับที่นี่
+
+static inline int ee_ofs(uint8_t idx) {
+  return EE_COUNTS_ADDR + (idx * 4);
+}
+
+// เรียกครั้งเดียวตอนบูต: ถ้ายังไม่เคยเซ็ต ให้เคลียร์ตัวนับทั้งหมดเป็น 0
+void eeprom_vote_init() {
+  uint32_t m;
+  EEPROM.get(EE_MAGIC_ADDR, m);
+  if (m != EE_MAGIC) {
+    // เขียน MAGIC
+    EEPROM.put(EE_MAGIC_ADDR, EE_MAGIC);
+    // เคลียร์ตัวนับ 0..9
+    for (uint8_t i = 0; i < 10; ++i) {
+      uint32_t z = 0;
+      EEPROM.put(ee_ofs(i), z);
+    }
+  }
+}
+
+// อ่านคะแนนของหมายเลข idx (0..9)
+uint32_t eeprom_vote_get(uint8_t idx) {
+  uint32_t v = 0;
+  if (idx < 10) EEPROM.get(ee_ofs(idx), v);
+  return v;
+}
+
+// เพิ่มคะแนนหมายเลข idx (0..9) ทีละ delta (ปกติ = 1)
+void eeprom_vote_add(uint8_t idx, uint32_t delta = 1) {
+  if (idx >= 10) return;
+  uint32_t v = 0;
+  EEPROM.get(ee_ofs(idx), v);
+  v += delta;
+  EEPROM.put(ee_ofs(idx), v);  // EEPROM.put ใช้การเขียนแบบ update เพื่อลด wear
+}
+
+// (ออปชัน) คำสั่ง debug พิมพ์คะแนนทั้งหมดทาง Serial
+void eeprom_vote_dump() {
+  // ----- Serial out (เหมือนเดิม) -----
+  showingTally = true;  
+  Serial.println(F("[VOTE TALLY]"));
+
+  lcd.clear();
+  for (uint8_t i = 0; i < 10; ++i) {
+  uint32_t v = eeprom_vote_get(i);
+
+  // Serial เหมือนเดิม
+  Serial.print(F("No.")); Serial.print(i);
+  Serial.print(F(" = "));  Serial.println(v);
+
+  // LCD: แถวละ 3 ตัว (คอลัมน์ 0,7,14) และเลข 9 อยู่แถวล่างซ้าย
+  if (!tmrpcm.isPlaying()) {                 // กันไปชนเสียง
+    uint8_t row = (i <= 8) ? (i / 3) : 3;
+    uint8_t col = (i <= 8) ? (i % 3) : 0;
+    uint8_t x   = (col == 0) ? 0 : (col == 1) ? 7 : 14;
+
+    lcd.setCursor(x, row);
+    lcd.print('N'); lcd.print(i); lcd.print('=');
+    lcd.print(v);
+    lcd.print(' '); lcd.print(' ');          // เคลียร์เศษนิดหน่อย
+  }
+}
+ 
+}
+
+
+// (ออปชัน) ล้างคะแนนทั้งหมด
+void eeprom_vote_clear_all() {
+  for (uint8_t i = 0; i < 10; ++i) {
+    uint32_t z = 0;
+    EEPROM.put(ee_ofs(i), z);
+  }
+  Serial.println(F("TALLY CLEARED"));
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 void isrEsp() {
   wokeFromEsp = true;
 }
@@ -330,33 +443,40 @@ void animateReady() {
   }
 }
 */
-inline void lcd2(uint8_t v){ lcd.print(v/10); lcd.print(v%10); }
+inline void lcd2(uint8_t v) {
+  lcd.print(v / 10);
+  lcd.print(v % 10);
+}
 
-void clock_ready_tick(bool forceFirst=false) {
+void clock_ready_tick(bool forceFirst = false) {
   static uint8_t lastSec = 255;
-
-  if (page != PAGE_WAIT) return;     // อัปเดตเฉพาะหน้า READY
-  if (tmrpcm.isPlaying()) return;    // เลี่ยงช่วงกำลังเล่นเสียง (กันสะดุด)
+  if (showingTally) return;
+  if (page != PAGE_WAIT) return;   // อัปเดตเฉพาะหน้า READY
+  if (tmrpcm.isPlaying()) return;  // เลี่ยงช่วงกำลังเล่นเสียง (กันสะดุด)
 
   DateTime t = rtc.now();
 
   if (!forceFirst) {
-    if (t.second() == lastSec) return;   // เขียนเฉพาะตอนวินาทีเปลี่ยน
+    if (t.second() == lastSec) return;  // เขียนเฉพาะตอนวินาทีเปลี่ยน
   }
   lastSec = t.second();
 
   // บรรทัด 0: วันที่ → dd/mm/yyyy
-  lcd.setCursor(0, 0);
-  lcd2(t.day());   lcd.print('/');
-  lcd2(t.month()); lcd.print('/');
+  lcd.setCursor(5, 0);
+  lcd2(t.day());
+  lcd.print('/');
+  lcd2(t.month());
+  lcd.print('/');
   lcd.print(t.year());
   // เติมช่องว่างลบเศษตัวอักษรถ้าเคยพิมพ์ยาว
   lcd.print(F("       "));  // ให้ครบถึงคอลัมน์ท้าย ๆ
 
   // บรรทัด 1: เวลา → hh:mm:ss
-  lcd.setCursor(0, 1);
-  lcd2(t.hour());  lcd.print(':');
-  lcd2(t.minute());lcd.print(':');
+  lcd.setCursor(5, 1);
+  lcd2(t.hour());
+  lcd.print(':');
+  lcd2(t.minute());
+  lcd.print(':');
   lcd2(t.second());
   lcd.print(F("             "));
 }
@@ -374,12 +494,14 @@ void drawReadyUI_base() {
   lcd.print(F("Ready to vote"));
 
   // เคลียร์บรรทัดวันที่/เวลา (บรรทัด 0 และ 1) ให้โล่งไว้ก่อน
-  lcd.setCursor(0, 0); lcd.print(F("                    "));
-  lcd.setCursor(0, 1); lcd.print(F("                    "));
+  lcd.setCursor(0, 0);
+  lcd.print(F("                    "));
+  lcd.setCursor(0, 1);
+  lcd.print(F("                    "));
 
   // รีเซ็ตตัวจับวินาทีเพื่อให้ฟังก์ชันนาฬิกาเขียนครั้งแรกทันที
   extern void clock_ready_tick(bool forceFirst);
-  clock_ready_tick(true);   // บังคับอัปเดตครั้งแรกทันที (และไม่ไปยุ่งตอนยังเล่นเสียง)
+  clock_ready_tick(true);  // บังคับอัปเดตครั้งแรกทันที (และไม่ไปยุ่งตอนยังเล่นเสียง)
 }
 
 
@@ -530,11 +652,17 @@ BuzzerSFX buzzer;
 
 // ===== Hook: เรียกเมื่อยืนยัน =====
 void onConfirmVote(int choice) {
+  // บันทึกคะแนนลง EEPROM (0..9 รวม "งดออกเสียง" = 0)
+  if (choice >= 0 && choice <= 9) {
+    eeprom_vote_add((uint8_t)choice, 1);  // CF: n 1 ครั้ง → +1
+  }
+
   Serial.print(F("CF:"));
   Serial.println(choice);
-  buzzer.playFanfare();  // ในตัวมันเช็ค tmrpcm.isPlaying() แล้ว
+  buzzer.playFanfare();
   noteActivity();
 }
+
 
 // ===== Watchdog helpers =====
 void wdt_sanity_boot() {
@@ -653,38 +781,15 @@ void afterWake() {
 }
 
 
-static inline void two(char* p, uint8_t v){ p[0] = '0' + v/10; p[1] = '0' + v%10; }
-
-static void printDateTimeLight(const DateTime& t) {
-  // "dd/mm/yyyy hh:mm:ss" = 19 chars + '\0'
-  char buf[20];
-  two(buf+0, t.day());
-  buf[2]  = '/';
-  two(buf+3, t.month());
-  buf[5]  = '/';
-  uint16_t y = t.year();
-  buf[6]  = '0' + (y/1000)%10;
-  buf[7]  = '0' + (y/100)%10;
-  buf[8]  = '0' + (y/10)%10;
-  buf[9]  = '0' + (y%10);
-  buf[10] = ' ';
-  two(buf+11, t.hour());
-  buf[13] = ':';
-  two(buf+14, t.minute());
-  buf[16] = ':';
-  two(buf+17, t.second());
-  buf[19] = '\0';
-  Serial.println(buf);
-}
 
 // ============ SETUP / LOOP ============
 void setup() {
 
   rtc.begin();
   rtc.writeSqwPinMode(DS1307_OFF);
-    
- // RtcDateTime compiled = RtcDateTime(__DATE__, __TIME__);
-   /* const DateTime buildTime(F(__DATE__), F(__TIME__));
+  eeprom_vote_init();
+  
+  /* const DateTime buildTime(F(__DATE__), F(__TIME__));
 
   // ถ้า RTC ยังไม่เดิน หรือเวลาเพี้ยนมาก (> 1 วัน) ให้ตั้งใหม่
   if (!rtc.isrunning()) {
@@ -701,29 +806,21 @@ void setup() {
   wdt_sanity_boot();
   pinMode(10, OUTPUT);
   Serial.begin(9600);
-
   tmrpcm.speakerPin = 9;  // UNO/Nano ใช้ D9
   tmrpcm.setVolume(5);    // 0..7
   tmrpcm.quality(1);
-
   initSD_orReset();
-
   Wire.begin();  // UNO: SDA=A4, SCL=A5
   lcd.init();
   lcd.backlight();
 
   // เล่นไฟเปิดเครื่อง (ถ้าหาไฟล์ไม่เจอจะเงียบ)
- //clock_to_lcd_tick();
- clock_ready_tick();
   tmrpcm.play((char*)"sa.wav");
   if (!tmrpcm.isPlaying()) {
     tmrpcm.play((char*)"sa.wav");
   }
-
   delay(1000);
-
   buzzer.init();
-  //buzzer.playBoot();  // jingle เปิดเครื่อง
 
   // เริ่มที่หน้า WAIT (Ready)
   canVote = false;
@@ -741,64 +838,11 @@ void setup() {
 
   noteActivity();  // เริ่มนับเวลาตั้งแต่บูต
 
-
-
-  //rtc_tick_1s();
-//DateTime now = rtc.now();  
-//char buf[] = "DD/MM/YYYY hh:mm:ss";
-
-//now.toString(buf);
-//Serial.println(now.toString(buf));  // 26/09/2025 23:58:07
-    //RtcDateTime now = Rtc.GetDateTime();
-    
-    //ตั้ง่าเวลาของ RTC ให้ตรงกับอคอมพิวเตอร์
-    //if (now < compiled) Rtc.SetDateTime(compiled);
-    //Rtc.SetSquareWavePin(DS1307SquareWaveOut_Low); 
-
-}
-
-
-
-
-
-// เรียกบ่อย ๆ ใน loop (และข้ามทันทีถ้ากำลังเล่นเสียง)
-void clock_to_lcd_tick() {
-  static uint8_t lastSec = 255;
-  if (tmrpcm.isPlaying()) return;        // ห้ามรบกวนตอนเล่นเสียง
-
-  DateTime t = rtc.now();                 // I2C ครั้งเดียว
-  if (t.second() == lastSec) return;      // อัปเดตเฉพาะตอนวินาทีเปลี่ยน
-  lastSec = t.second();
-
-    lcd.setCursor(0,0);
-  lcd2(t.day());   lcd.print('/'); 
-  lcd2(t.month()); lcd.print('/'); 
-  lcd.print(t.year());
-  lcd.print(' ');
-  lcd.setCursor(0,1);
-  lcd2(t.hour());  lcd.print(':'); 
-  lcd2(t.minute());lcd.print(':'); 
-  lcd2(t.second());
-  lcd.print(' ');  // เคลียร์ช่องสุดท้ายกันเศษตัวอักษร
-}
-
-void rtc_tick_1s() {
-  /*static unsigned long next = 0;
-  unsigned long nowMs = millis();
-  if ((long)(nowMs - next) >= 0) {
-    DateTime now = rtc.now();        // I2C ครั้งเดียวต่อวินาที
-    printDateTimeLight(now);         // ไม่มี String
-    next = nowMs + 10000;
-  }*/
-  DateTime now = rtc.now();        // I2C ครั้งเดียวต่อวินาที
-    printDateTimeLight(now);   
 }
 
 
 void loop() {
-  
 
-   // uint8_t buttons = tm.readButtons();
   // อ่านคีย์จาก keypad
   char k = kpd.getKey();
   if (k) {
@@ -811,8 +855,8 @@ void loop() {
     if (!canVote && page != PAGE_REG_PASS) {
       buzzer.playError();
     } else {
-        //Serial.print(F("CF:"));
-        //Serial.println(k);
+      //Serial.print(F("CF:"));
+      //Serial.println(k);
       if (page == PAGE_VOTE || page == PAGE_CONFIRM) {
         vote(k);
       } else if (page == PAGE_REG_PASS) {
@@ -882,19 +926,21 @@ void loop() {
       tmrpcm.play("l.wav");
     } else if (msg == 'O') {  // ยืนยันตัวตนสำเร็จ -> เปิดสิทธิ์
 
-      tmrpcm.play("c.wav");
+      
       canVote = true;
       page = PAGE_VOTE;
       drawVoteUI_base();
       tmrpcm.play("c.wav");
+      while (tmrpcm.isPlaying());
+      tmrpcm.play("ch.wav");
       //buzzer.playConfirm();
-    } else if (msg == 'V') {  // พร้อมโหวต (ใช้ร่วมได้)
+    } /*else if (msg == 'V') {  // พร้อมโหวต (ใช้ร่วมได้)
       canVote = true;
       page = PAGE_VOTE;
       drawVoteUI_base();
       //playIfIdle("ch.wav");
       tmrpcm.play("ch.wav");
-    } else if (msg == 'R') {
+    } */else if (msg == 'R') {
       // Toggle registration mode every time we receive 'R' from ESP32
       fregis = !fregis;
 
@@ -918,6 +964,12 @@ void loop() {
         page = PAGE_WAIT;
         drawReadyUI_base();  // กลับไปหน้า Ready to vote
       }
+    }
+    if (msg == 'T') {  // พิมพ์สรุปคะแนนทั้งหมด
+      eeprom_vote_dump();
+    }
+    if (msg == 'X') {  // ล้างคะแนนทั้งหมด
+      eeprom_vote_clear_all();
     }
 
 
@@ -993,6 +1045,8 @@ void loop() {
       afterWake();           // ตื่นแล้วเปิดจอ + วาด UI ใหม่
     }
   }
-  clock_ready_tick(); 
-  //rtc_tick_1s();
+  clock_ready_tick();
+
 }
+
+

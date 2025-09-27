@@ -1217,12 +1217,31 @@ void uidToFixed16(const String &uidHex, char out16[UID_HEX_MAX]) {
 int findByUID(const String &uidHex) {
   char key[UID_HEX_MAX];
   uidToFixed16(uidHex, key);
+  
+  Serial.printf("[DEBUG] findByUID: searching for UID='%s'\n", uidHex.c_str());
+  Serial.printf("[DEBUG] findByUID: key array: ");
+  for (int j = 0; j < UID_HEX_MAX; j++) {
+    Serial.printf("%02X ", (uint8_t)key[j]);
+  }
+  Serial.println();
+  
   for (int i = 0; i < MAX_RECORDS; ++i) {
     Rec r;
     readRec(i, r);
-    if (r.valid == VALID_FLAG && sameUID16(r.uid, key))
-      return i;
+    if (r.valid == VALID_FLAG) {
+      Serial.printf("[DEBUG] Record[%d]: UID=", i);
+      for (int j = 0; j < UID_HEX_MAX; j++) {
+        Serial.printf("%02X ", (uint8_t)r.uid[j]);
+      }
+      Serial.printf("(valid=0x%02X)\n", r.valid);
+      
+      if (sameUID16(r.uid, key)) {
+        Serial.printf("[DEBUG] Found match at index %d\n", i);
+        return i;
+      }
+    }
   }
+  Serial.println("[DEBUG] No match found");
   return -1;
 }
 
@@ -1354,13 +1373,19 @@ int matchFingerprint() {
 String readRFIDasHex() {
   // คืนเป็นตัวอักษร hex (ไม่เว้นวรรค), ตัวพิมพ์ใหญ่, ยาวเท่าจำนวน uid.size*2 (สูงสุด ~20 chars)
   String ID = "";
+  Serial.printf("[DEBUG] RFID UID size: %d bytes\n", rfid.uid.size);
+  Serial.printf("[DEBUG] RFID UID raw: ");
   for (byte i = 0; i < rfid.uid.size; i++) {
+    Serial.printf("%02X ", rfid.uid.uidByte[i]);
     if (rfid.uid.uidByte[i] < 0x10)
       ID += "0";
     ID += String(rfid.uid.uidByte[i], HEX);
   }
+  Serial.println();
+  
   ID.toUpperCase();
   ID.replace(" ", "");
+  Serial.printf("[DEBUG] RFID UID hex string: '%s'\n", ID.c_str());
   return ID;
 }
 
@@ -1427,7 +1452,7 @@ void registerCardAndFingerprint() {
   Serial.println("Registration mode... Tap a new card");
 
   // UI: เริ่มโหมดลงทะเบียน → รอแตะบัตร
-  showUIx(UI_SCAN_CARD, "แตะบัตรเพื่อเริ่มลงทะเบียน", TR_SLIDE_UP);
+  showUIx(UI_SCAN_CARD, "แตะบัตรเพื่อเริ่มลงทะเบียน", TR_NONE);
 
   // --- รอการ์ดแบบล็อคบัสทุกครั้ง ---
   while (true) {
@@ -1451,29 +1476,29 @@ void registerCardAndFingerprint() {
   bus_release_after_rfid();
 
   // โชว์ "บัตรถูกต้อง" สั้นๆ ก่อนดำเนินการต่อ
-  showUIx(UI_CARD_OK, "บัตรถูกต้อง", TR_FADE);
-  showUIx(UI_SENDING, "เตรียมลงทะเบียนนิ้ว...", TR_FADE);
+  showUIx(UI_CARD_OK, "บัตรถูกต้อง", TR_NONE);
+  showUIx(UI_SENDING, "เตรียมลงทะเบียนนิ้ว...", TR_NONE);
   delay(300);
   uiSetLoading(true);
   delay(500);
   uiSetLoading(false);
-  showUIx(UI_SCAN_FINGER, "วางนิ้ว 2 ครั้งเพื่อลงทะเบียน", TR_SLIDE_L);
+  showUIx(UI_SCAN_FINGER, "วางนิ้ว 2 ครั้งเพื่อลงทะเบียน", TR_NONE);
 
 
   // --- การ์ดซ้ำ? ---
   if (findByUID(uidHex) >= 0) {
     Serial.println("This card is already registered.");
-    showUIx(UI_CARD_FAIL, "บัตรนี้ลงทะเบียนแล้ว", TR_SLIDE_DOWN);
+    showUIx(UI_CARD_FAIL, "บัตรนี้ลงทะเบียนแล้ว", TR_NONE);
    
     delay(900);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
 
   // --- ตรวจนิ้วซ้ำก่อน Enroll ---
   Serial.println("Place finger to check duplication...");
   mySerial.println("J");
-  showUIx(UI_SCAN_FINGER, "ตรวจสอบลายนิ้วมือเดิม", TR_SLIDE_L);
+  showUIx(UI_SCAN_FINGER, "ตรวจสอบลายนิ้วมือเดิม", TR_NONE);
   int existing_fp = quickSearchFingerprint(10000);
   if (existing_fp >= 0) {
     int idxExisting = findByFPID(existing_fp);
@@ -1481,15 +1506,15 @@ void registerCardAndFingerprint() {
       Rec rExist;
       readRec(idxExisting, rExist);
       Serial.printf("Duplicate finger detected! Already linked to another card (FP_ID=%d). Abort.\n", existing_fp);
-      showUIx(UI_FINGER_FAIL, "ลายนิ้วมือนี้เชื่อมบัตรอื่นอยู่", TR_SLIDE_DOWN);
+      showUIx(UI_FINGER_FAIL, "ลายนิ้วมือนี้เชื่อมบัตรอื่นอยู่", TR_NONE);
      
       delay(1000);
-      showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+      showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
       return;
     } else {
       Serial.printf("Found stale FP template (id=%d) without EEPROM record. Deleting stale template.\n", existing_fp);
       finger.deleteModel(existing_fp);
-      showUIx(UI_ERROR, "ล้างข้อมูลลายนิ้วมือที่ค้าง", TR_FADE);
+      showUIx(UI_ERROR, "ล้างข้อมูลลายนิ้วมือที่ค้าง", TR_NONE);
       delay(400);
     }
   }
@@ -1511,20 +1536,20 @@ void registerCardAndFingerprint() {
     Serial.println("No free FP ID slot.");
    
     delay(1000);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
 
   // --- Enroll นิ้ว ---
   Serial.printf("Enroll fingerprint for this card (UID=%s) at FP_ID=%d\n", uidHex.c_str(), chosen_fp_id);
-  showUIx(UI_SCAN_FINGER, "วางนิ้ว 2 ครั้งเพื่อลงทะเบียน", TR_SLIDE_L);
+  showUIx(UI_SCAN_FINGER, "วางนิ้ว 2 ครั้งเพื่อลงทะเบียน", TR_NONE);
   int p = enrollFingerprint(chosen_fp_id);
   if (p != FINGERPRINT_OK) {
     Serial.printf("Enroll failed (code=%d). Abort.\n", p);
-    showUIx(UI_FINGER_FAIL, "บันทึกลายนิ้วมือไม่สำเร็จ", TR_SLIDE_DOWN);
+    showUIx(UI_FINGER_FAIL, "บันทึกลายนิ้วมือไม่สำเร็จ", TR_NONE);
    
     delay(1000);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
 
@@ -1532,26 +1557,26 @@ void registerCardAndFingerprint() {
   if (storeNewRecord(uidHex, chosen_fp_id)) {
     Serial.println("Card+Fingerprint registered successfully.");
     mySerial.println("G");
-    showUIx(UI_FINGER_OK, "ลงทะเบียนสำเร็จ", TR_FADE);
+    showUIx(UI_FINGER_OK, "ลงทะเบียนสำเร็จ", TR_NONE);
    
     delay(200);
   
     delay(700);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
   } else {
     Serial.println("EEPROM full. Cannot store new record.");
-    showUIx(UI_ERROR, "หน่วยความจำเต็ม", TR_FADE);
+    showUIx(UI_ERROR, "หน่วยความจำเต็ม", TR_NONE);
   
     finger.deleteModel(chosen_fp_id);  // roll back
     delay(1000);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
   }
 }
 
 void deleteCardFlow() {
   exitPhotoMode();
   Serial.println("Delete mode... Tap a card to delete");
-  showUIx(UI_SCAN_CARD, "แตะบัตรเพื่อลบข้อมูล", TR_SLIDE_UP);
+  showUIx(UI_SCAN_CARD, "แตะบัตรเพื่อลบข้อมูล", TR_NONE);
 
   while (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) {
     delay(50);
@@ -1563,22 +1588,22 @@ void deleteCardFlow() {
   int idx = findByUID(uidHex);
   if (idx < 0) {
     Serial.println("Card not found");
-    showUIx(UI_CARD_FAIL, "ไม่พบข้อมูลบัตรในระบบ", TR_SLIDE_DOWN);
+    showUIx(UI_CARD_FAIL, "ไม่พบข้อมูลบัตรในระบบ", TR_NONE);
 
     delay(900);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
 
   // การ์ดถูกต้อง
-  showUIx(UI_CARD_OK, "บัตรถูกต้อง", TR_FADE);
+  showUIx(UI_CARD_OK, "บัตรถูกต้อง", TR_NONE);
 
   delay(300);
-  showUIx(UI_SENDING, "เตรียมยืนยันการลบ...", TR_FADE);
+  showUIx(UI_SENDING, "เตรียมยืนยันการลบ...", TR_NONE);
   uiSetLoading(true);
   delay(500);
   uiSetLoading(false);
-  showUIx(UI_SCAN_FINGER, "วางนิ้วเพื่อยืนยันการลบ", TR_SLIDE_L);
+  showUIx(UI_SCAN_FINGER, "วางนิ้วเพื่อยืนยันการลบ", TR_NONE);
 
   // โหลดเรคคอร์ดเพื่อรู้ fp_id ของเจ้าของบัตร
   Rec r;
@@ -1586,7 +1611,7 @@ void deleteCardFlow() {
 
   // ✅ ขั้นตอน "ยืนยันลายนิ้วมือก่อนลบ"
   Serial.printf("Verify fingerprint to delete (expect FP_ID=%d)\n", r.fp_id);
-  showUIx(UI_SCAN_FINGER, "วางนิ้วเพื่อยืนยันการลบ", TR_SLIDE_L);
+  showUIx(UI_SCAN_FINGER, "วางนิ้วเพื่อยืนยันการลบ", TR_NONE);
   unsigned long t0 = millis();
   int matched = -1;
   while (millis() - t0 < 15000) {  // รอสูงสุด 15 วินาที
@@ -1598,10 +1623,10 @@ void deleteCardFlow() {
   }
   if (matched < 0 || matched != r.fp_id) {
     Serial.println("Fingerprint verify failed / timeout. Abort delete.");
-    showUIx(UI_FINGER_FAIL, (matched < 0) ? "ไม่ตรวจพบลายนิ้ว" : "ลายนิ้วไม่ตรงเจ้าของบัตร", TR_SLIDE_DOWN);
+    showUIx(UI_FINGER_FAIL, (matched < 0) ? "ไม่ตรวจพบลายนิ้ว" : "ลายนิ้วไม่ตรงเจ้าของบัตร", TR_NONE);
 
     delay(1000);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
 
@@ -1610,7 +1635,7 @@ void deleteCardFlow() {
     uint8_t p = finger.deleteModel(r.fp_id);
     if (p != FINGERPRINT_OK) {
       Serial.printf("Delete template failed (code=%d). Continue to clear record.\n", p);
-      showUIx(UI_ERROR, "ลบลายนิ้วในเซ็นเซอร์ไม่สำเร็จ", TR_FADE);
+      showUIx(UI_ERROR, "ลบลายนิ้วในเซ็นเซอร์ไม่สำเร็จ", TR_NONE);
       delay(500);
       // ยังลบเรคคอร์ด EEPROM ต่อไปตามเดิม
     }
@@ -1620,13 +1645,13 @@ void deleteCardFlow() {
   clearRec(idx);
   Serial.println("Card + Fingerprint deleted");
 
-  showUIx(UI_FINGER_OK, "ลบข้อมูลสำเร็จ", TR_FADE);
+  showUIx(UI_FINGER_OK, "ลบข้อมูลสำเร็จ", TR_NONE);
 
   delay(150);
 
   delay(700);
 
-  showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+  showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
 }
 void normalScanFlow() {
   exitPhotoMode();
@@ -1635,7 +1660,7 @@ void normalScanFlow() {
 
   Serial.println("Scan card...");
   mySerial.println("S");  // โปรโตคอลตามเดิม
-  showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_SLIDE_UP);
+  showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_NONE);
 
   // --- อ่าน UID อย่างปลอดภัย (รอการ์ดใน flow ด้วย) ---
   uint32_t tWait = millis();
@@ -1657,47 +1682,53 @@ void normalScanFlow() {
     delay(20);
   }
   if (!got || uidHex.length() == 0) {
-    showUIx(UI_CARD_FAIL, "อ่านบัตรไม่สำเร็จ", TR_SLIDE_DOWN);
+    showUIx(UI_CARD_FAIL, "อ่านบัตรไม่สำเร็จ", TR_NONE);
     delay(600);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
 
   // --- ตรวจว่าการ์ดอยู่ในระบบ? ---
+  Serial.printf("[DEBUG] Card UID: %s\n", uidHex.c_str());
   int idx = findByUID(uidHex);
+  Serial.printf("[DEBUG] Card index: %d\n", idx);
+  
   if (idx < 0) {
-    Serial.println("Unknown card");
-    showUIx(UI_CARD_FAIL, "บัตรนี้ไม่อยู่ในระบบ", TR_SLIDE_DOWN);
+    Serial.println("[DEBUG] Unknown card - not found in database");
+    showUIx(UI_CARD_FAIL, "บัตรนี้ไม่อยู่ในระบบ", TR_NONE);
 
     delay(200);
 
     delay(500);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
 
   // การ์ด OK
-  showUIx(UI_CARD_OK, "บัตรถูกต้อง", TR_FADE);
+  showUIx(UI_CARD_OK, "บัตรถูกต้อง", TR_NONE);
 
   delay(250);
 
   Rec r;
   readRec(idx, r);
+  
+  Serial.printf("[DEBUG] Card record - FP_ID: %d, Voted: %d, Valid: 0x%02X\n", 
+                r.fp_id, r.voted, r.valid);
 
   // ถ้าโหมดโหวต: เคยทำรายการแล้วหรือยัง?
   if (r.voted == 1) {
-    Serial.println("Already voted for this card holder.");
+    Serial.println("[DEBUG] Already voted for this card holder.");
     //mySerial.println("W");
-    showUIx(UI_ERROR, "บัตรนี้ทำรายการแล้ว", TR_SLIDE_DOWN);
+    showUIx(UI_ERROR, "บัตรนี้ทำรายการแล้ว", TR_NONE);
 
     delay(700);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
 
   // --- ขอให้สแกนนิ้วให้ "ตรงกับ fp_id" ของบัตรนี้ ---
   Serial.printf("Card OK. Please verify fingerprint (expect FP_ID=%d)\n", r.fp_id);
-  showUIx(UI_SCAN_FINGER, "วางนิ้วเพื่อยืนยันตัวตน", TR_SLIDE_L);
+  showUIx(UI_SCAN_FINGER, "วางนิ้วเพื่อยืนยันตัวตน", TR_NONE);
   mySerial.println("J");
   unsigned long t0 = millis();
   int matched = -1;
@@ -1712,10 +1743,10 @@ void normalScanFlow() {
   if (matched < 0) {
     Serial.println("Fingerprint not matched / timeout.");
     //mySerial.println("W");
-    showUIx(UI_FINGER_FAIL, "ไม่ตรวจพบลายนิ้วมือ", TR_SLIDE_DOWN);
+    showUIx(UI_FINGER_FAIL, "ไม่ตรวจพบลายนิ้วมือ", TR_NONE);
   
     delay(700);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
 
@@ -1723,10 +1754,10 @@ void normalScanFlow() {
   if (matched != r.fp_id) {
     Serial.println("Fingerprint does not belong to this card.");
     //mySerial.println("W");
-    showUIx(UI_FINGER_FAIL, "ลายนิ้วมือต้องตรงกับผู้ถือบัตร", TR_SLIDE_DOWN);
+    showUIx(UI_FINGER_FAIL, "ลายนิ้วมือต้องตรงกับผู้ถือบัตร", TR_NONE);
 
     delay(700);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
 
@@ -1742,7 +1773,7 @@ void normalScanFlow() {
   // (ออปชัน) ถ้าต้องการบังคับโชว์หน้าเลือกทันทีอยู่ดี:
   mySerial.println("V");        // UNO ก็รองรับคำสั่งนี้เหมือนกัน
   barStart(1500, "รอการเลือก");  // เติมเต็มทุก 1 วิ แล้ววน
-  showUIx(UI_WAIT_CHOICE, "โปรดเลือกผู้สมัครที่หน้าจอใหญ่", TR_FADE);
+  showUIx(UI_WAIT_CHOICE, "โปรดเลือกผู้สมัครที่หน้าจอใหญ่", TR_NONE);
   g_votePosted = false;
   g_idxPending = idx;
 
@@ -1763,7 +1794,7 @@ void normalScanFlow() {
         // UI: โชว์หมายเลขที่เลือก แล้วเข้าส่งทันที
         {
           String sub = "เลือกหมายเลข " + String(g_selectedCandidate);
-          showUIx(UI_SELECTED, sub.c_str(), TR_FADE);
+          showUIx(UI_SELECTED, sub.c_str(), TR_NONE);
           delay(400);
         }
 
@@ -1780,14 +1811,14 @@ void normalScanFlow() {
             g_votePosted = true;
             g_waitingChoice = false;
 
-            showUIx(UI_THANKS, "โหวตเสร็จสิ้น", TR_FADE);
+            showUIx(UI_THANKS, "โหวตเสร็จสิ้น", TR_NONE);
             delay(5000);  // แสดง 5 วินาที
-            showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+            showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
             finished = true;
           } else {
-            showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_FADE);
+            showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_NONE);
             delay(700);
-            showUIx(UI_WAIT_CHOICE, "โปรดเลือกใหม่หรือลองอีกครั้ง", TR_SLIDE_R);
+            showUIx(UI_WAIT_CHOICE, "โปรดเลือกใหม่หรือลองอีกครั้ง", TR_NONE);
             // finished คงไว้เป็น false เพื่อรอ CF ใหม่ได้
           }
         }
@@ -1797,17 +1828,17 @@ void normalScanFlow() {
       } else if (line.equalsIgnoreCase("VOTE:OK")) {
         // กรณีอนาคตถ้ามีส่ง VOTE:OK ก็เคลียร์ให้จบเหมือนกัน
         uiSetLoading(false);
-        showUIx(UI_THANKS, "ทำรายการสำเร็จ", TR_FADE);
+        showUIx(UI_THANKS, "ทำรายการสำเร็จ", TR_NONE);
         if (g_idxPending >= 0)
           setVotedByIndex(g_idxPending, 1);
         finished = true;
       } else if (line.equalsIgnoreCase("VOTE:ERR")) {
         uiSetLoading(false);
-        showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_FADE);
+        showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_NONE);
         // ให้ผู้ใช้เลือกใหม่
       } else if (line.equalsIgnoreCase("ABORT")) {
         uiSetLoading(false);
-        showUIx(UI_ERROR, "ยกเลิกรายการ", TR_FADE);
+        showUIx(UI_ERROR, "ยกเลิกรายการ", TR_NONE);
         finished = true;
       }
     }
@@ -1818,13 +1849,13 @@ void normalScanFlow() {
 
   if (!finished) {
     barStop();
-    showUIx(UI_ERROR, "หมดเวลารอการเลือก", TR_FADE);
+    showUIx(UI_ERROR, "หมดเวลารอการเลือก", TR_NONE);
   }
 
   g_waitingChoice = false;
   barStop();
   delay(800);
-  showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+  showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
 }
 // วัด echo ครั้งเดียว (เวอร์ชันสั้น ใช้กับ measureDistanceCm)
 inline unsigned long us_read_once() {
@@ -2545,9 +2576,9 @@ void setup() {
   }
   showIdleScreen(sdOK ? "SD OK" : "No SD");
 
-  showUIx(UI_BOOT, "กำลังตรวจสอบระบบ", TR_FADE);
+  showUIx(UI_BOOT, "กำลังตรวจสอบระบบ", TR_NONE);
   delay(600);
-  showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+  showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
 
   // --- RC522 init (ปล่อยบัสจริง + รีเซ็ต RST ก่อน) ---
   Serial.println("Init RC522...");
@@ -2597,7 +2628,7 @@ void handleU2Line(const String &raw) {
     if (m.equalsIgnoreCase("SEL:CLEAR")) {
       isShowingPhoto = false;
       uiSetScanning(true);
-      showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_SLIDE_UP);
+      showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_NONE);
     } else {
       int n = m.substring(4).toInt();  // หลัง "SEL:"
       if (n >= 0 && n <= 99) {
@@ -2620,7 +2651,7 @@ void handleU2Line(const String &raw) {
     if (g_waitingChoice) {
       barStop();
       String sub = "เลือกหมายเลข " + String(n);
-      showUIx(UI_SELECTED, sub.c_str(), TR_FADE);
+      showUIx(UI_SELECTED, sub.c_str(), TR_NONE);
       delay(400);
     }
 
@@ -2637,13 +2668,13 @@ void handleU2Line(const String &raw) {
         g_votePosted = true;
         g_waitingChoice = false;
 
-        showUIx(UI_THANKS, "โหวตเสร็จสิ้น", TR_FADE);
+        showUIx(UI_THANKS, "โหวตเสร็จสิ้น", TR_NONE);
         delay(5000);  // 5 วิ ตามที่ขอ
-        showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+        showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
       } else {
-        showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_FADE);
+        showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_NONE);
         delay(700);
-        showUIx(UI_WAIT_CHOICE, "โปรดเลือกใหม่หรือลองอีกครั้ง", TR_SLIDE_R);
+        showUIx(UI_WAIT_CHOICE, "โปรดเลือกใหม่หรือลองอีกครั้ง", TR_NONE);
       }
     }
     return;
@@ -2654,15 +2685,15 @@ void handleU2Line(const String &raw) {
     return;
   } else if (m.equalsIgnoreCase("VOTE:OK")) {
     barStop();
-    showUIx(UI_THANKS, "ทำรายการสำเร็จ", TR_FADE);
+    showUIx(UI_THANKS, "ทำรายการสำเร็จ", TR_NONE);
     delay(700);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   } else if (m.equalsIgnoreCase("VOTE:ERR")) {
     barStop();
-    showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_FADE);
+    showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_NONE);
     delay(700);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
 
@@ -2708,7 +2739,7 @@ void loop() {
   valmjoy = analogRead(mjoy);
 
   if (valmjoy <= 2) {
-    showUIx(UI_CONFIRM, "โหมดลงทะเบียน", TR_SLIDE_UP);
+    showUIx(UI_CONFIRM, "โหมดลงทะเบียน", TR_NONE);
     waitForAnalogRelease();  // ✅ debounce analog
     registerCardAndFingerprint();
     uiShownScanCard = false;
@@ -2716,7 +2747,7 @@ void loop() {
   }
 
   if ((valmjoy > 5) && (valmjoy <= 100)) {
-    showUIx(UI_ERROR, "โหมดลบข้อมูล", TR_SLIDE_UP);
+    showUIx(UI_ERROR, "โหมดลบข้อมูล", TR_NONE);
     waitForAnalogRelease();  // ✅ debounce analog
     deleteCardFlow();
     uiShownScanCard = false;
@@ -2752,7 +2783,7 @@ void loop() {
 
   // NEW: แสดง "สแกนบัตร" 1 ครั้ง เมื่อเข้าลูปว่างครั้งแรก
   if (!uiShownScanCard) {
-    showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_SLIDE_UP);
+    showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_NONE);
     uiShownScanCard = true;
     uiScanCardShownAt = millis();
   }
@@ -2848,7 +2879,7 @@ void loop() {
       g_votePosted = false;
       g_idxPending = -1;  // โหมดเทส: ไม่ mark EEPROM
       barStart(1500, "รอการเลือก");
-      showUIx(UI_WAIT_CHOICE, "โหมดทดสอบ: รอ CF:x ทาง USB", TR_FADE);
+      showUIx(UI_WAIT_CHOICE, "โหมดทดสอบ: รอ CF:x ทาง USB", TR_NONE);
       Serial.println("[TEST] AUTHOK -> waiting choice");
     } else if (cmd.equalsIgnoreCase("TFTDEBUG") || cmd.equalsIgnoreCase("TFT")) {
       debugTFT();
@@ -2905,6 +2936,43 @@ void loop() {
       } else {
         Serial.println("SD Card reinitialization failed");
       }
+    } else if (cmd.equalsIgnoreCase("DBGEEPROM") || cmd.equalsIgnoreCase("DBG")) {
+      // แสดงข้อมูล EEPROM ทั้งหมด
+      Serial.println("=== EEPROM Debug ===");
+      Serial.printf("Header OK: %s\n", headerOK() ? "YES" : "NO");
+      Serial.printf("MAX_RECORDS: %d\n", MAX_RECORDS);
+      
+      for (int i = 0; i < MAX_RECORDS; i++) {
+        Rec r;
+        readRec(i, r);
+        if (r.valid == VALID_FLAG) {
+          String uidStr = String(r.uid, UID_HEX_MAX);
+          Serial.printf("Record[%d]: UID=%s, FP_ID=%d, Voted=%d, Valid=0x%02X\n", 
+                        i, uidStr.c_str(), r.fp_id, r.voted, r.valid);
+        } else {
+          Serial.printf("Record[%d]: EMPTY (Valid=0x%02X)\n", i, r.valid);
+        }
+      }
+    } else if (cmd.equalsIgnoreCase("CLEAREEPROM") || cmd.equalsIgnoreCase("CLEAR")) {
+      // ล้าง EEPROM ทั้งหมด
+      Serial.println("Clearing all EEPROM records...");
+      for (int i = 0; i < MAX_RECORDS; i++) {
+        clearRec(i);
+      }
+      Serial.println("EEPROM cleared!");
+    } else if (cmd.equalsIgnoreCase("TESTCARD")) {
+      // ทดสอบการอ่านบัตร
+      Serial.println("Testing card read...");
+      rfid_bus_begin();
+      if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
+        String uidHex = readRFIDasHex();
+        Serial.printf("Card detected: %s\n", uidHex.c_str());
+        rfid.PICC_HaltA();
+        rfid.PCD_StopCrypto1();
+      } else {
+        Serial.println("No card detected");
+      }
+      rfid_bus_end();
     } else if (cmd.startsWith("CF:") || cmd.startsWith("SEL:") || cmd.equalsIgnoreCase("SENDING") || cmd.equalsIgnoreCase("VOTE:OK") || cmd.equalsIgnoreCase("VOTE:ERR")) {
       // ส่งต่อข้อความจาก USB Serial ให้ใช้ logic เดียวกับ UART2
       handleU2Line(cmd);

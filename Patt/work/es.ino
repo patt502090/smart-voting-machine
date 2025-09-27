@@ -1264,7 +1264,7 @@ volatile float NEAR_ON_CM = 25.0;   // เข้าสถานะ NEAR เม�
 volatile float NEAR_OFF_CM = 35.0;  // กลับ FAR เมื่อ >= 35 cm (ฮิสเทอรีส)
 
 // รอบวัดและ timeout
-const uint16_t US_INTERVAL_MS = 200;     // วัดทุก ~200ms
+const uint16_t US_INTERVAL_MS = 100;     // วัดทุก ~100ms (เร็วขึ้น)
 const unsigned long US_TIMEOUT = 25000;  // pulseIn timeout ~25ms
 
 // ===== [ADD] counters & confirm windows for noise filtering =====
@@ -1274,7 +1274,7 @@ static const uint8_t NEAR_CONFIRM_N = 2;  // ต้องเห็น NEAR 2 เ
 static const uint8_t FAR_CONFIRM_N = 2;   // ต้องเห็น FAR  2 เฟรมติดถึงจะเปลี่ยนเป็น FAR
 
 // จับเวลาเพื่อหลับ
-const uint32_t NO_NEAR_SLEEP_MS = 15000;  // FAR ต่อเนื่อง 15 วินาที -> หลับ
+const uint32_t NO_NEAR_SLEEP_MS = 30000;  // FAR ต่อเนื่อง 30 วินาที -> หลับ
 
 // ตัวแปรสถานะ
 static bool nearState = false;
@@ -1282,7 +1282,7 @@ static uint32_t lastUSms = 0;
 static uint32_t lastNearSeenMs = 0;
 
 // [ADD] Debug logging for Ultrasonic
-#define DEBUG_ULTRA 1
+// DEBUG_ULTRA is defined below with other debug flags
 static uint32_t lastUltraLogMs = 0;
 
 // (ออปชัน) ถ้าจะให้หลับเองเมื่อไม่มีเหตุการณ์นาน X ms ให้เปิดใช้ 2 บรรทัดนี้ได้ภายหลัง
@@ -1430,7 +1430,7 @@ const int FINGER_TX = 25;  // ESP32 TX1 pin to sensor RX
 #define DEBUG_24C32_DETAIL 0
 #define DEBUG_RFID_DETAIL 0  
 #define DEBUG_KEYPAD_DETAIL 0
-#define DEBUG_ULTRA 0
+#define DEBUG_ULTRA 1  // เปิด ultrasonic debug logging
 
 // Use ESP32 EEPROM instead of 24C32
 #define USE_ESP32_EEPROM 1
@@ -2432,7 +2432,7 @@ void ultrasonicTickForSleep() {
     farConsec = min<uint8_t>(FAR_CONFIRM_N, farConsec + 1);
     nearConsec = 0;
 
-    if (DEBUG_ULTRA && (millis() - lastUltraLogMs >= 5000)) {
+    if (DEBUG_ULTRA && (millis() - lastUltraLogMs >= 1000)) {
       uint32_t timeSinceNear = millis() - lastNearSeenMs;
       uint32_t timeToSleep = 0;
       if (timeSinceNear < NO_NEAR_SLEEP_MS) {
@@ -2465,8 +2465,8 @@ void ultrasonicTickForSleep() {
     if (nearState && farConsec >= FAR_CONFIRM_N)
       newNear = false;
 
-    // log เฉพาะเมื่อเปลี่ยนสถานะ หรือทุก ๆ 5 วินาที
-    bool timeToLog = (millis() - lastUltraLogMs >= 5000);
+    // log เฉพาะเมื่อเปลี่ยนสถานะ หรือทุก ๆ 1 วินาที
+    bool timeToLog = (millis() - lastUltraLogMs >= 1000);
     if (DEBUG_ULTRA && (newNear != nearState || timeToLog)) {
       uint32_t timeSinceNear = millis() - lastNearSeenMs;
       uint32_t timeToSleep = 0;
@@ -2494,9 +2494,9 @@ void ultrasonicTickForSleep() {
     }
   }
 
-  // ไม่มี NEAR ต่อเนื่องครบ 15s → หลับ
+  // ไม่มี NEAR ต่อเนื่องครบ 30s → หลับ
   if (!nearState && (millis() - lastNearSeenMs >= NO_NEAR_SLEEP_MS)) {
-    Serial.println("No NEAR for 15s -> Deep-sleep");
+    Serial.println("No NEAR for 30s -> Deep-sleep");
     goDeepSleepNow();
   }
   
@@ -3892,12 +3892,11 @@ void waitForKeyRelease() {
   
   Serial.println("[KEYPAD] Waiting for key release...");
   
-  while (stableCount < 10) { // ต้องอ่านค่าติดต่อกัน 10 ครั้ง
+  while (stableCount < 3) { // ต้องอ่านค่าติดต่อกัน 10 ครั้ง
     int val = readKeypadStable();
     
     // Log ค่าเมื่อเปลี่ยนแปลง
     if (val != lastVal) {
-      Serial.printf("[KEYPAD] Release check - value: %d, stable count: %d\n", val, stableCount);
       lastVal = val;
     }
     

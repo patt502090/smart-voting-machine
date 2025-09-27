@@ -54,16 +54,28 @@ void setup() {
   tft.setTextColor(TFT_YELLOW, TFT_BLACK);
   tft.drawString("Mounting SD...", 10, 10);
 
-  // แชร์ SPI เดียวกับจอ
-  if (!SD.begin(SD_CS, tft.getSPIinstance())) {
+  // แชร์ SPI เดียวกับจอ - retry ไปเรื่อยๆจนกว่าจะสำเร็จ
+  int retryCount = 0;
+  while (!SD.begin(SD_CS, tft.getSPIinstance())) {
+    retryCount++;
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_RED, TFT_BLACK);
     tft.drawString("SD mount failed", 10, 10);
-    Serial.println("SD mount failed");
-    return;
+    tft.drawString("Retry: " + String(retryCount), 10, 30);
+    tft.drawString("Please insert SD card", 10, 50);
+    Serial.printf("SD mount failed - Retry %d\n", retryCount);
+    delay(2000);  // รอ 2 วินาทีก่อนลองใหม่
   }
+  
+  // สำเร็จแล้ว - แสดงข้อความสำเร็จ
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.drawString("SD mounted successfully!", 10, 10);
+  tft.drawString("After " + String(retryCount) + " retries", 10, 30);
+  Serial.printf("SD mounted successfully after %d retries!\n", retryCount);
+  delay(1500);
 
-  // แสดงชนิดและขนาด
+  // แสดงชนิดและขนาดå
   uint8_t ct = SD.cardType();
   const char* type = (ct==CARD_MMC)?"MMC":(ct==CARD_SD)?"SDSC":(ct==CARD_SDHC)?"SDHC":"UNKNOWN";
   uint64_t sizeMB = SD.cardSize() / (1024ULL*1024ULL);
@@ -74,5 +86,56 @@ void setup() {
 }
 
 void loop() {
-  // ไม่ทำอะไรต่อ ปล่อยให้ดูรายการไฟล์
+  // ตรวจสอบ SD card status ทุก 5 วินาที
+  static unsigned long lastCheck = 0;
+  if (millis() - lastCheck > 5000) {
+    lastCheck = millis();
+    
+    uint8_t cardType = SD.cardType();
+    if (cardType == CARD_NONE) {
+      // SD card ถูกลบออก - แสดงข้อความและรอ
+      tft.fillScreen(TFT_BLACK);
+      tft.setTextColor(TFT_RED, TFT_BLACK);
+      tft.drawString("SD card removed!", 10, 10);
+      tft.drawString("Please reinsert SD card", 10, 30);
+      tft.drawString("System will retry...", 10, 50);
+      Serial.println("SD card removed - waiting for reinsertion...");
+      
+      // รอจนกว่า SD card จะกลับมา
+      while (SD.cardType() == CARD_NONE) {
+        delay(1000);
+        Serial.println("Waiting for SD card...");
+      }
+      
+      // SD card กลับมาแล้ว - remount
+      Serial.println("SD card detected - remounting...");
+      SD.end();
+      delay(1000);
+      
+      // Retry mount
+      int retryCount = 0;
+      while (!SD.begin(SD_CS, tft.getSPIinstance())) {
+        retryCount++;
+        tft.fillScreen(TFT_BLACK);
+        tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+        tft.drawString("Remounting SD...", 10, 10);
+        tft.drawString("Retry: " + String(retryCount), 10, 30);
+        Serial.printf("SD remount failed - Retry %d\n", retryCount);
+        delay(2000);
+      }
+      
+      // สำเร็จแล้ว
+      tft.fillScreen(TFT_BLACK);
+      tft.setTextColor(TFT_GREEN, TFT_BLACK);
+      tft.drawString("SD remounted!", 10, 10);
+      tft.drawString("After " + String(retryCount) + " retries", 10, 30);
+      Serial.printf("SD remounted successfully after %d retries!\n", retryCount);
+      delay(1500);
+      
+      // แสดงรายการไฟล์ใหม่
+      showRootOnTFT();
+    }
+  }
+  
+  delay(100);
 }

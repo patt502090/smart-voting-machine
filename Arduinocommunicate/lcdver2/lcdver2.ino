@@ -690,25 +690,15 @@ bool playIfIdle(const char* path) {
 }
 
 // สำหรับหน้าตั้งรหัส
-String enteredPass = "";
-String savedPass = "1234";
+//String enteredPass = "";
+//String savedPass = "1234";
 bool fregis = false;
 bool regisstatus = false;
 
-void printMaskedAt(uint8_t x, uint8_t y, const String& s) {
-  lcd.setCursor(x, y);
-  for (uint8_t i = 0; i < s.length(); i++) lcd.print('*');
-  for (uint8_t i = s.length(); i < 4; i++) lcd.print(' ');
-}
+char passBuf[5] = {0};   // 4 หลัก + '\0'
+uint8_t passLen = 0;     // 0..4
+const char savedPass[] = "1234";
 
-
-
-/*
-
-char passBuf[5];      // 4 หลัก + '\0'
-uint8_t passLen = 0;  // 0..4
-
-// เรียกแทน printMaskedAt(String)
 void printMaskedAt(uint8_t x, uint8_t y, uint8_t len) {
   lcd.setCursor(x, y);
   for (uint8_t i = 0; i < 4; i++) {
@@ -716,7 +706,11 @@ void printMaskedAt(uint8_t x, uint8_t y, uint8_t len) {
   }
 }
 
-*/
+
+
+
+
+
 
 void sendPreview() {
   if (currentChoice < 0) {
@@ -767,7 +761,72 @@ void vote(char k) {
   }
 }
 
+void regispage(char k) {
+  if (!k) return;
 
+  if (k >= '0' && k <= '9') {
+    if (passLen < 4) {
+      passBuf[passLen++] = k;
+      passBuf[passLen] = '\0';
+      printMaskedAt(4, 1, passLen);
+    }
+  } else if (k == '*') {
+    if (passLen > 0) {
+      passLen--;
+      passBuf[passLen] = '\0';
+      printMaskedAt(4, 1, passLen);
+    }
+  } else if (k == '#') {
+    if (passLen == 4) {
+      if (strcmp(passBuf, savedPass) == 0) {
+        // รหัสถูก
+        switch (pendingAction) {
+          case ACT_REG:
+            lcd.clear();
+            Serial.print(F("R"));
+            lcd.setCursor(2, 0);
+            lcd.print(F("Registration OK"));
+            page = PAGE_REG_PASS;  // ค้างแสดงข้อความชั่วคราว
+            fregis = true;
+            break;
+
+          case ACT_TALLY:
+            eeprom_vote_dump();    // แสดงผลบน LCD/Serial; ตั้ง showingTally = true
+            page = PAGE_REG_PASS;
+            fregis = true;
+            break;
+
+          case ACT_CLEAR:
+            eeprom_vote_clear_all();
+            lcd.clear();
+            lcd.setCursor(2, 0);
+            lcd.print(F("Tally cleared"));
+            delay(800);
+            break;
+        }
+
+        if (!waitRToExit && !waitTToExit) {
+          pendingAction = ACT_NONE;
+          fregis = false;
+          canVote = false;
+          page = PAGE_WAIT;
+          drawReadyUI_base();
+        }
+      } else {
+        // รหัสผิด
+        lcd.setCursor(0, 2);
+        lcd.print(F("Wrong pass       "));
+        passLen = 0;
+        passBuf[0] = '\0';
+        printMaskedAt(4, 1, passLen);
+      }
+    } else {
+      lcd.setCursor(0, 2);
+      lcd.print(F("Must be 4 digits "));
+    }
+  }
+}
+/*
 void regispage(char k) {
   char kk = k;  // ใช้คีย์ที่อ่านไว้ข้างบน
   if (kk) {
@@ -794,7 +853,7 @@ void regispage(char k) {
               //Serial.println();
               //restartSerial();
               //Serial.write('R');
-              lcd.clear();
+              //lcd.clear();
               lcd.setCursor(2, 0);
               lcd.print(F("Registration OK"));
 
@@ -847,7 +906,7 @@ void regispage(char k) {
       }
     }
   }
-}
+}*/
 
 void prepareBeforeSleep() {
   lcd.noBacklight();
@@ -869,7 +928,7 @@ void afterWake() {
   noteActivity();
 }
 
-void startPass(AdminAction a) {
+/*void startPass(AdminAction a) {
   pendingAction = a;
   fregis = true;  // ใช้หน้าเดิม PAGE_REG_PASS
   regisstatus = false;
@@ -881,8 +940,20 @@ void startPass(AdminAction a) {
   lcd.print(F("Enter pass:"));
   lcd.setCursor(4, 1);
   printMaskedAt(4, 1, enteredPass);
-}
+}*/
+void startPass(AdminAction a) {
+  pendingAction = a;
+  fregis = true;
+  passLen = 0;
+  passBuf[0] = '\0';
+  page = PAGE_REG_PASS;
 
+  lcd.noBlink();
+  lcd.clear();
+  lcd.setCursor(2, 0);
+  lcd.print(F("Enter pass:"));
+  printMaskedAt(4, 1, passLen);
+}
 
 // ============ SETUP / LOOP ============
 void setup() {

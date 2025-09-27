@@ -564,6 +564,7 @@ static void drawFancyBorder(float phase) {
 
 // Forward declaration for painter used by uiTick animation refresh
 void paintScreenToSprite(UIState s, const char *subtitle, bool popIcon, float popK);
+void showUIxFallback(UIState s, const char *subtitle);
 
 void uiTick() {
   bool painted = false;
@@ -1074,11 +1075,20 @@ void showUIx(UIState s, const char *subtitle = nullptr, UITrans tr = TR_SLIDE_L)
   g_lastSubtitle = sub;
   g_lastPaintMs = now;
 
+  Serial.printf("[UI] showUIx: state=%d, subtitle='%s'\n", (int)s, subtitle ? subtitle : "");
+
   // ปล่อยบัสอื่นก่อนทำงานกับ TFT
   spi_deselect_all();
   delay(10);
 
   const int W = tft.width(), H = tft.height();
+  
+  // ตรวจสอบว่า sprite ใช้งานได้หรือไม่
+  if (!spr.created()) {
+    Serial.println("[UI] Sprite not created, using fallback mode");
+    showUIxFallback(s, subtitle);
+    return;
+  }
 
   spr.setTextDatum(TL_DATUM);
 
@@ -1120,6 +1130,122 @@ void showUIx(UIState s, const char *subtitle = nullptr, UITrans tr = TR_SLIDE_L)
   }
 
   uiSetScanning(s == UI_SCAN_CARD || s == UI_SCAN_FINGER || s == UI_FINGER_LIFT || s == UI_SENDING || s == UI_WAIT_CHOICE);
+}
+
+// Fallback UI function สำหรับกรณีที่ sprite ไม่ทำงาน
+void showUIxFallback(UIState s, const char *subtitle = nullptr) {
+  Serial.println("[UI] Using fallback mode (direct TFT)");
+  
+  spi_deselect_all();
+  delay(10);
+  spi_select_tft();
+  
+  // เคลียร์จอ
+  tft.fillScreen(TFT_BLACK);
+  
+  // กำหนดสีตาม state
+  uint16_t headerColor = TFT_WHITE;
+  uint16_t bgColor = TFT_BLACK;
+  
+  switch (s) {
+    case UI_CARD_OK:
+    case UI_FINGER_OK:
+    case UI_THANKS:
+      headerColor = TFT_GREEN;
+      break;
+    case UI_CARD_FAIL:
+    case UI_FINGER_FAIL:
+    case UI_ERROR:
+    case UI_CARD_NOT_FOUND:
+      headerColor = TFT_RED;
+      break;
+    case UI_CARD_DUPLICATE:
+    case UI_CARD_ALREADY_VOTED:
+    case UI_SD_CHECK:
+    case UI_SD_RETRY:
+      headerColor = TFT_ORANGE;
+      break;
+    case UI_MODE_REGISTER:
+    case UI_REGISTER_SCAN:
+      headerColor = TFT_GREEN;
+      break;
+    case UI_MODE_DELETE:
+    case UI_DELETE_SCAN:
+      headerColor = TFT_RED;
+      break;
+    default:
+      headerColor = TFT_CYAN;
+      break;
+  }
+  
+  // วาดกรอบ
+  tft.drawRect(0, 0, tft.width(), tft.height(), headerColor);
+  tft.drawRect(1, 1, tft.width()-2, tft.height()-2, headerColor);
+  
+  // Header text
+  const char *hdr = 
+    (s == UI_READY) ? "พร้อมให้บริการ"
+    : (s == UI_SCAN_CARD) ? "โปรดแตะบัตร"
+    : (s == UI_CARD_OK) ? "บัตรถูกต้อง"
+    : (s == UI_CARD_FAIL) ? "บัตรไม่ถูกต้อง"
+    : (s == UI_CARD_DUPLICATE) ? "บัตรลงทะเบียนแล้ว"
+    : (s == UI_CARD_NOT_FOUND) ? "บัตรไม่อยู่ในระบบ"
+    : (s == UI_CARD_ALREADY_VOTED) ? "บัตรใช้งานแล้ว"
+    : (s == UI_SCAN_FINGER) ? "โปรดสแกนลายนิ้วมือ"
+    : (s == UI_FINGER_OK) ? "ยืนยันตัวตนสำเร็จ"
+    : (s == UI_FINGER_FAIL) ? "ยืนยันตัวตนไม่ผ่าน"
+    : (s == UI_FINGER_LIFT) ? "โปรดยกนิ้วขึ้น"
+    : (s == UI_SD_CHECK) ? "กำลังตรวจสอบ SD Card"
+    : (s == UI_SD_FAIL) ? "SD Card ไม่ทำงาน"
+    : (s == UI_SD_RETRY) ? "กำลังลอง SD Card ใหม่"
+    : (s == UI_MODE_REGISTER) ? "โหมดลงทะเบียน"
+    : (s == UI_MODE_DELETE) ? "โหมดลบข้อมูล"
+    : (s == UI_BOOT) ? "ระบบกำลังเริ่มทำงาน"
+    : "ระบบทำงาน";
+  
+  // วาด header
+  tft.fillRect(5, 5, tft.width()-10, 30, headerColor);
+  tft.setTextColor(TFT_BLACK, headerColor);
+  tft.drawString(hdr, 10, 10, 2);
+  
+  // วาด main text
+  const char *mainText = 
+    (s == UI_READY) ? "READY"
+    : (s == UI_SCAN_CARD) ? "SCAN CARD"
+    : (s == UI_CARD_OK) ? "CARD OK"
+    : (s == UI_CARD_FAIL) ? "CARD FAIL"
+    : (s == UI_CARD_DUPLICATE) ? "CARD EXISTS"
+    : (s == UI_CARD_NOT_FOUND) ? "CARD UNKNOWN"
+    : (s == UI_CARD_ALREADY_VOTED) ? "ALREADY VOTED"
+    : (s == UI_SCAN_FINGER) ? "SCAN FINGER"
+    : (s == UI_FINGER_OK) ? "FINGER OK"
+    : (s == UI_FINGER_FAIL) ? "FINGER FAIL"
+    : (s == UI_FINGER_LIFT) ? "LIFT FINGER"
+    : (s == UI_SD_CHECK) ? "SD CHECK"
+    : (s == UI_SD_FAIL) ? "SD FAIL"
+    : (s == UI_SD_RETRY) ? "SD RETRY"
+    : (s == UI_MODE_REGISTER) ? "REGISTER"
+    : (s == UI_MODE_DELETE) ? "DELETE"
+    : (s == UI_BOOT) ? "BOOT"
+    : "SYSTEM";
+  
+  tft.setTextColor(headerColor, TFT_BLACK);
+  int textX = (tft.width() - tft.textWidth(mainText, 4)) / 2;
+  tft.drawString(mainText, textX, 80, 4);
+  
+  // วาด subtitle
+  if (subtitle && subtitle[0]) {
+    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+    int subX = (tft.width() - tft.textWidth(subtitle, 2)) / 2;
+    tft.drawString(subtitle, subX, 120, 2);
+  }
+  
+  // วาดสถานะที่ด้านล่าง
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString("Fallback Mode", 10, tft.height()-25, 1);
+  
+  spi_deselect_all();
+  Serial.println("[UI] Fallback UI completed");
 }
 
 // ใช้ GPIO35 เป็นขาปลุก (ต่อมาจาก ODROID PIN_33 ผ่าน R อนุกรม ~1k)
@@ -2100,7 +2226,7 @@ void normalScanFlow() {
   g_votePosted = false;
   g_idxPending = idx;
 
-  // วนรออีเวนต์: CF:xx / (อาจมี) SENDING / VOTE:OK / VOTE:ERR (สูงสุด 20 วินาที)
+  // วนรออีเวนต์: CF:xx / SEL:xx / SENDING / VOTE:OK / VOTE:ERR (สูงสุด 20 วินาที)
   uint32_t tStart = millis();
   bool finished = false;
 
@@ -2109,7 +2235,11 @@ void normalScanFlow() {
       String line = mySerial.readStringUntil('\n');
       line.trim();
 
-      if (line.startsWith("CF:")) {
+      // จัดการ SEL: commands ระหว่างรอ
+      if (line.startsWith("SEL:")) {
+        handleU2Line(line);  // ใช้ handler ที่มีอยู่แล้ว
+        continue;  // ยังคงรออยู่ ไม่จบ flow
+      } else if (line.startsWith("CF:")) {
         // ได้เบอร์ผู้สมัคร → ถือว่ายืนยันแล้ว
         g_selectedCandidate = line.substring(3).toInt();
         barStop();
@@ -2163,6 +2293,16 @@ void normalScanFlow() {
         uiSetLoading(false);
         showUIx(UI_ERROR, "ยกเลิกรายการ", TR_NONE);
         finished = true;
+      }
+    }
+
+    // ตรวจสอบ USB Serial commands ระหว่างรอด้วย
+    if (Serial.available()) {
+      String usbCmd = Serial.readStringUntil('\n');
+      usbCmd.trim();
+      if (usbCmd.startsWith("SEL:") || usbCmd.startsWith("CF:")) {
+        Serial.printf("[WAIT] USB command: %s\n", usbCmd.c_str());
+        handleU2Line(usbCmd);
       }
     }
 
@@ -2292,8 +2432,14 @@ void ultrasonicTickForSleep() {
     farConsec = min<uint8_t>(FAR_CONFIRM_N, farConsec + 1);
     nearConsec = 0;
 
-    if (DEBUG_ULTRA && (millis() - lastUltraLogMs >= 1000)) {
-      Serial.println("[US] cm=NaN (treat FAR)");
+    if (DEBUG_ULTRA && (millis() - lastUltraLogMs >= 5000)) {
+      uint32_t timeSinceNear = millis() - lastNearSeenMs;
+      uint32_t timeToSleep = 0;
+      if (timeSinceNear < NO_NEAR_SLEEP_MS) {
+        timeToSleep = NO_NEAR_SLEEP_MS - timeSinceNear;
+      }
+      Serial.printf("[US] cm=NaN (treat FAR, sleep in %u.%us)\n", 
+                    timeToSleep/1000, (timeToSleep%1000)/100);
       lastUltraLogMs = millis();
     }
   } else {
@@ -2319,9 +2465,21 @@ void ultrasonicTickForSleep() {
     if (nearState && farConsec >= FAR_CONFIRM_N)
       newNear = false;
 
-    // log เฉพาะเมื่อเปลี่ยนสถานะ
-    if (DEBUG_ULTRA && newNear != nearState) {
-      Serial.printf("[US] cm=%.1f near=%d\n", cm, newNear ? 1 : 0);
+    // log เฉพาะเมื่อเปลี่ยนสถานะ หรือทุก ๆ 5 วินาที
+    bool timeToLog = (millis() - lastUltraLogMs >= 5000);
+    if (DEBUG_ULTRA && (newNear != nearState || timeToLog)) {
+      uint32_t timeSinceNear = millis() - lastNearSeenMs;
+      uint32_t timeToSleep = 0;
+      if (!newNear && timeSinceNear < NO_NEAR_SLEEP_MS) {
+        timeToSleep = NO_NEAR_SLEEP_MS - timeSinceNear;
+      }
+      
+      if (newNear) {
+        Serial.printf("[US] cm=%.1f near=%d (person detected)\n", cm, newNear ? 1 : 0);
+      } else {
+        Serial.printf("[US] cm=%.1f near=%d (sleep in %u.%us)\n", 
+                      cm, newNear ? 1 : 0, timeToSleep/1000, (timeToSleep%1000)/100);
+      }
       lastUltraLogMs = millis();
     }
 
@@ -2734,12 +2892,26 @@ void showCandidateJpg(uint8_t n) {
 }
 
 void showIdleScreen(const char *msg = "Ready") {
+  Serial.printf("[UI] showIdleScreen: %s\n", msg);
+  
   spi_deselect_all();
+  delay(10);
   spi_select_tft();
+  
+  // ทดสอบ TFT ด้วยการเขียนสีทั้งจอก่อน
   tft.fillScreen(TFT_BLACK);
+  delay(100);
+  
+  // เขียนข้อความ
   tft.setTextColor(TFT_GREEN, TFT_BLACK);
   tft.drawString(msg, 10, 10, 2);
+  tft.drawString("System Starting...", 10, 30, 2);
+  
+  // เขียนกรอบเพื่อทดสอบว่า TFT ทำงาน
+  tft.drawRect(5, 5, tft.width()-10, tft.height()-10, TFT_WHITE);
+  
   spi_deselect_all();
+  Serial.println("[UI] showIdleScreen completed");
 }
 
 // ฟังก์ชัน debug TFT
@@ -3017,9 +3189,24 @@ void setup() {
   // ทดสอบการเขียนสี
   spi_select_tft();
   tft.fillScreen(TFT_BLACK);
+  delay(100);
+  tft.fillScreen(TFT_RED);
+  delay(200);
+  tft.fillScreen(TFT_GREEN);
+  delay(200);
+  tft.fillScreen(TFT_BLUE);
+  delay(200);
+  tft.fillScreen(TFT_BLACK);
+  delay(100);
+  
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.drawString("TFT Ready", 10, 10, 2);
   tft.drawString("System OK", 10, 30, 2);
+  tft.drawString("Color Test Done", 10, 50, 2);
+  
+  // วาดกรอบทดสอบ
+  tft.drawRect(0, 0, tft.width(), tft.height(), TFT_WHITE);
+  
   spi_deselect_all();
   
   // ตั้งค่า TJpgDec
@@ -3027,22 +3214,46 @@ void setup() {
   
   Serial.println("TFT initialization completed");
 
-  if (!spr.created())
-    spr.setColorDepth(8);
-  {
+  // สร้าง sprite สำหรับ UI
+  Serial.println("[UI] Creating sprite...");
+  if (!spr.created()) {
     spr.setColorDepth(8);
     if (!spr.createSprite(tft.width(), tft.height())) {
       Serial.println("[UI] createSprite(8bpp) failed, retry 4bpp");
       spr.setColorDepth(4);
       if (!spr.createSprite(tft.width(), tft.height())) {
-        Serial.println("[UI] createSprite failed.");
+        Serial.println("[UI] createSprite(4bpp) failed, retry 1bpp");
+        spr.setColorDepth(1);
+        if (!spr.createSprite(tft.width(), tft.height())) {
+          Serial.println("[UI] createSprite failed completely!");
+        } else {
+          Serial.println("[UI] Sprite created with 1bpp");
+        }
+      } else {
+        Serial.println("[UI] Sprite created with 4bpp");
       }
+    } else {
+      Serial.println("[UI] Sprite created with 8bpp");
     }
+  } else {
+    Serial.println("[UI] Sprite already exists");
   }
-  showIdleScreen(sdOK ? "SD OK" : "No SD");
 
+  // แสดงข้อมูล TFT
+  Serial.printf("[TFT] Width: %d, Height: %d\n", tft.width(), tft.height());
+  Serial.printf("[SPRITE] Created: %s, ColorDepth: %d\n", spr.created() ? "YES" : "NO", spr.getColorDepth());
+
+  // ทดสอบการแสดงผลพื้นฐาน
+  Serial.println("[UI] Testing basic display...");
+  showIdleScreen(sdOK ? "SD OK" : "No SD");
+  delay(1000);
+
+  // แสดง UI แรก
+  Serial.println("[UI] Showing boot screen...");
   showUIx(UI_BOOT, "กำลังตรวจสอบระบบ", TR_NONE);
   delay(600);
+  
+  Serial.println("[UI] Showing ready screen...");
   showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
 
   // --- RC522 init (ปล่อยบัสจริง + รีเซ็ต RST ก่อน) ---
@@ -3089,22 +3300,27 @@ void handleU2Line(const String &raw) {
   String m = raw;
   m.trim();
 
+  Serial.printf("[HANDLE] Processing: '%s'\n", m.c_str());
+
   if (m.startsWith("SEL:")) {
+    Serial.printf("[HANDLE] SEL command detected\n");
     if (m.equalsIgnoreCase("SEL:CLEAR")) {
+      Serial.println("[SEL] Clearing photo mode");
       isShowingPhoto = false;
       uiSetScanning(true);
       showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_NONE);
     } else {
       int n = m.substring(4).toInt();  // หลัง "SEL:"
+      Serial.printf("[SEL] Extracted number: %d\n", n);
       if (n >= 0 && n <= 99) {
+        Serial.printf("[SEL] Setting photo mode, showing candidate %d\n", n);
         isShowingPhoto = true;
         uiSetScanning(false);
-        Serial.printf("[SEL] Showing candidate %d\n", n);
         showCandidateJpg((uint8_t)n);
       } else {
+        Serial.printf("[SEL] Invalid candidate number: %d\n", n);
         isShowingPhoto = true;
         uiSetScanning(false);
-        Serial.printf("[SEL] Invalid candidate number: %d\n", n);
         showIdleScreen("Bad SEL");
       }
     }
@@ -3220,6 +3436,7 @@ void loop() {
     uiShownScanCard = false;
     return;
   }
+  
   // int switchReg = digitalRead(switchPin33);
   // int switchDel = digitalRead(switchPin32);
 
@@ -3280,6 +3497,11 @@ void loop() {
       mySerial.println("OK SLEEP");
       delay(30);
       goDeepSleepNow();  // ไม่กลับจากฟังก์ชันนี้
+    }
+
+    // จัดการ SEL: commands ทันที
+    if (msg.startsWith("SEL:")) {
+      Serial.printf("[MAIN] Received SEL command: %s\n", msg.c_str());
     }
 
     handleU2Line(msg);
@@ -3550,6 +3772,7 @@ void loop() {
       Serial.printf("Max records: %d\n", MAX_RECORDS);
     } else if (cmd.startsWith("CF:") || cmd.startsWith("SEL:") || cmd.equalsIgnoreCase("SENDING") || cmd.equalsIgnoreCase("VOTE:OK") || cmd.equalsIgnoreCase("VOTE:ERR")) {
       // ส่งต่อข้อความจาก USB Serial ให้ใช้ logic เดียวกับ UART2
+      Serial.printf("[USB] Processing command: %s\n", cmd.c_str());
       handleU2Line(cmd);
     }
     // ปล่อยบัสและจัดการ TFT

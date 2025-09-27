@@ -33,6 +33,7 @@ int valmjoy = 0;
 const int KEY_NONE = 4095;          // ไม่กดปุ่ม (HIGH)
 const int KEY_REGISTER = 0;         // ปุ่มลงทะเบียน (0V)
 const int KEY_DELETE = 1950;        // ปุ่มลบ (~1950)
+const int KEY_TEST = 350;           // ปุ่มทดสอบ (300-400) - ส่ง T ไป Arduino
 
 const int KEY_TOLERANCE = 150;      // ความคลาดเคลื่อนที่ยอมรับได้ (เพิ่มเป็น 150)
 
@@ -3432,6 +3433,14 @@ void loop() {
     uiShownScanCard = false;
     return;
   }
+
+  if (keyPressed == KEY_TEST) {  // Test mode - ส่ง T ไป Arduino
+    Serial.println("[KEYPAD] TEST key held for 3 seconds - sending T to Arduino");
+    mySerial.println("T");  // ส่ง T ไปยัง Arduino ผ่าน UART2
+    Serial.println("[UART2] Sent: T");
+    waitForKeyRelease();  // รอให้ปล่อยปุ่ม
+    return;
+  }
   
   // int switchReg = digitalRead(switchPin33);
   // int switchDel = digitalRead(switchPin32);
@@ -3680,6 +3689,8 @@ void loop() {
           Serial.println("KEY_REGISTER (HELD 3s)");
         } else if (keyPressed == KEY_DELETE) {
           Serial.println("KEY_DELETE (HELD 3s)");
+        } else if (keyPressed == KEY_TEST) {
+          Serial.println("KEY_TEST (HELD 3s) - Send T to Arduino");
         } else if (keyPressed == KEY_NONE) {
           Serial.println("NONE");
         } else if (keyPressed > 0) {
@@ -3702,6 +3713,7 @@ void loop() {
       Serial.println("Press each key and observe values:");
       Serial.println("KEY_REGISTER should be ~0");
       Serial.println("KEY_DELETE should be ~1950"); 
+      Serial.println("KEY_TEST should be ~350 (sends T to Arduino)");
       Serial.println("NONE should be ~4095");
       Serial.println("Press any key for 30 seconds...");
       
@@ -3830,6 +3842,8 @@ int getKeyPressed() {
     pressedKey = KEY_REGISTER;
   } else if (abs(currentValue - KEY_DELETE) <= KEY_TOLERANCE) {
     pressedKey = KEY_DELETE;
+  } else if (abs(currentValue - KEY_TEST) <= KEY_TOLERANCE) {
+    pressedKey = KEY_TEST;
   } else if (currentValue >= KEY_NONE - KEY_TOLERANCE) {
     pressedKey = KEY_NONE;
   }

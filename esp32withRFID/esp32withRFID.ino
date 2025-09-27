@@ -28,6 +28,28 @@ static int g_idxPending = -1;      // เก็บ index ของบัตร�
 int mjoy = 35;
 int valmjoy = 0;
 
+// ===== Analog Keypad Configuration =====
+// ค่า analog ที่อ่านได้จาก keypad แต่ละปุ่ม (5 ปุ่ม)
+const int KEY_NONE = 4095;  // ไม่กดปุ่ม (HIGH)
+const int KEY_1 = 0;        // ปุ่ม 1 (0V)
+const int KEY_2 = 1024;     // ปุ่ม 2 (1.2V)
+const int KEY_3 = 2048;     // ปุ่ม 3 (2.4V)
+const int KEY_4 = 3072;     // ปุ่ม 4 (3.6V)
+const int KEY_5 = 4064;     // ปุ่ม 5 (4.8V)
+
+// กำหนดปุ่มที่ใช้
+const int KEY_REGISTER = KEY_1;  // ใช้ปุ่ม 1 สำหรับลงทะเบียน
+const int KEY_DELETE = KEY_2;    // ใช้ปุ่ม 2 สำหรับลบ
+
+const int KEY_TOLERANCE = 100;  // ความคลาดเคลื่อนที่ยอมรับได้
+
+// ตัวแปรสำหรับ debounce
+static int lastKeyValue = KEY_NONE;
+static uint32_t lastKeyTime = 0;
+static const uint32_t KEY_DEBOUNCE_MS = 200;  // เพิ่มเป็น 200ms
+static uint32_t lastKeyPollTime = 0;
+static const uint32_t KEY_POLL_INTERVAL = 50;  // polling ทุก 50ms
+
 #include "driver/rtc_io.h"  // สำหรับ rtc_gpio_get_level()
 #include "esp_system.h"
 
@@ -36,7 +58,7 @@ int valmjoy = 0;
 const int      UID_HEX_MAX = 16;
 #endif
 
-// ต้อง “นิยาม” struct Rec ให้เสร็จก่อนฟังก์ชัน readRec()/writeRec()
+// ต้อง "นิยาม" struct Rec ให้เสร็จก่อนฟังก์ชัน readRec()/writeRec()
 // (forward declare เฉยๆ ไม่พอ เพราะฟังก์ชันแตะฟิลด์ใน struct)
 #if 0  // DISABLE: duplicate struct Rec (already defined at top)
 struct Rec {
@@ -82,7 +104,7 @@ inline void spi_deselect_all() {
   digitalWrite(SD_CS, HIGH);
   digitalWrite(TFT_CS, HIGH);
   digitalWrite(SS_PIN, HIGH);  // RC522 CS
-  delayMicroseconds(50);  // หน่วงนานขึ้น
+  delayMicroseconds(50);       // หน่วงนานขึ้น
 }
 
 inline void spi_select_tft() {
@@ -110,17 +132,28 @@ enum UIState {
   UI_SCAN_CARD,
   UI_CARD_OK,
   UI_CARD_FAIL,
+  UI_CARD_DUPLICATE,      // บัตรซ้ำ (ลงทะเบียนแล้ว)
+  UI_CARD_NOT_FOUND,      // บัตรไม่อยู่ในระบบ
+  UI_CARD_ALREADY_VOTED,  // บัตรใช้งานแล้ว (โหวตไปแล้ว)
   UI_SCAN_FINGER,
   UI_FINGER_OK,
   UI_FINGER_FAIL,
+  UI_FINGER_LIFT,  // ยกนิ้วขึ้น
   UI_CONFIRM,
   UI_THANKS,
   UI_ERROR,
   UI_SLEEP,
   UI_WAKE,
-  UI_WAIT_CHOICE,  // รอผู้ใช้เลือกผู้สมัคร
-  UI_SELECTED,     // แสดงว่าผู้ใช้เลือกหมายเลขอะไรแล้ว
-  UI_SENDING       // ขณะกำลังส่ง/รอผล
+  UI_WAIT_CHOICE,    // รอผู้ใช้เลือกผู้สมัคร
+  UI_SELECTED,       // แสดงว่าผู้ใช้เลือกหมายเลขอะไรแล้ว
+  UI_SENDING,        // ขณะกำลังส่ง/รอผล
+  UI_SD_CHECK,       // กำลังตรวจสอบ SD Card
+  UI_SD_FAIL,        // SD Card ไม่ทำงาน
+  UI_SD_RETRY,       // กำลังลอง SD Card ใหม่
+  UI_MODE_REGISTER,  // โหมดลงทะเบียน
+  UI_MODE_DELETE,    // โหมดลบข้อมูล
+  UI_REGISTER_SCAN,  // สแกนบัตรในโหมดลงทะเบียน
+  UI_DELETE_SCAN     // สแกนบัตรในโหมดลบ
 };
 static bool uiShownScanCard = false;
 static uint32_t uiScanCardShownAt = 0;
@@ -183,30 +216,40 @@ enum UITrans {
 };
 
 // ==== Time-based progress bar (loop) ====
+static bool ui_isScanning = false;    // ต้องมาก่อน barStart()
+static uint32_t ui_animStart = 0;     // ต้องมาก่อน barStart()
+static bool ui_isBusyBorder = false;  // ใช้แทน progress bar ระหว่างกำลังประมวลผล/รอ
 static bool g_barOn = false;
 static uint32_t g_barStart = 0;
 static uint32_t g_barPeriod = 3000;  // ระยะเวลาเติมเต็มหนึ่งรอบ (ms)
 static String g_barLabel;
 
 void barStart(uint32_t period_ms = 1000, const String &label = "") {
-  g_barOn = true;
+  // เปลี่ยนจากแถบด้านล่างเป็น "กรอบกระพริบ" เพื่อสื่อว่าระบบกำลังทำงาน
+  // ยกเลิกการใช้ progress bar เดิม
+  g_barOn = false;
   g_barStart = millis();
   g_barPeriod = (period_ms == 0 ? 1000 : period_ms);
   g_barLabel = label;
+  // เปิดโหมดกรอบกระพริบ (busy)
+  ui_isBusyBorder = true;
+  ui_animStart = millis();
 }
 void barStop() {
   g_barOn = false;
+  // ปิดโหมดกรอบกระพริบ (busy)
+  ui_isBusyBorder = false;
 }
 
 // วาดหลอดเรียบๆ ด้านล่างจอ วิ่งเต็มตามเวลาแล้ววน
 static void drawTimedBarOverlay() {
   if (!g_barOn)
     return;
-  
+
   // ปล่อยบัสอื่นก่อนทำงานกับ TFT
   spi_deselect_all();
   delayMicroseconds(10);
-  
+
   int W = tft.width(), H = tft.height();
   int bw = W - 60, bh = 12;
   int x = (W - bw) / 2, y = H - 32;
@@ -430,7 +473,7 @@ static void drawSpinner() {
   // ปล่อยบัสอื่นก่อนทำงานกับ TFT
   spi_deselect_all();
   delayMicroseconds(10);
-  
+
   const int cx = tft.width() / 2, cy = 160, r = 14;
   float t = (millis() - ui_loadStart) / 1000.0f;  // วินาที
   // 12 แท่ง หมุนตามเวลา
@@ -447,8 +490,6 @@ static void drawSpinner() {
 
 // --------- Scan border blink ----------
 // --------- Modern scan border (glow + moving dash) ----------
-static bool ui_isScanning = false;
-static uint32_t ui_animStart = 0;
 
 void uiSetScanning(bool on) {
   ui_isScanning = on;
@@ -461,7 +502,7 @@ static void drawFancyBorder(float phase) {
   // ปล่อยบัสอื่นก่อนทำงานกับ TFT
   spi_deselect_all();
   delayMicroseconds(10);
-  
+
   const int W = tft.width(), H = tft.height();
   // ความหนาและรัศมีมุม
   const int thick = 2;
@@ -514,21 +555,39 @@ static void drawFancyBorder(float phase) {
   drawDashedV(x, y + rad, h - 2 * rad);
   drawDashedV(x + w - 1, y + rad, h - 2 * rad);
 
-  // เน้น “มุม” เล็กน้อย (จุดเล็กๆ)
+  // เน้น "มุม" เล็กน้อย (จุดเล็กๆ)
   tft.fillCircle(x + rad, y + rad, 1, col);
   tft.fillCircle(x + w - 1 - rad, y + rad, 1, col);
   tft.fillCircle(x + rad, y + h - 1 - rad, 1, col);
   tft.fillCircle(x + w - 1 - rad, y + h - 1 - rad, 1, col);
 }
 
+// Forward declaration for painter used by uiTick animation refresh
+void paintScreenToSprite(UIState s, const char *subtitle, bool popIcon, float popK);
+
 void uiTick() {
   bool painted = false;
+  static uint32_t g_lastIconAnimMs = 0;  // รีเฟรชไอคอนแบบเป็นช่วง ๆ
 
   // ปล่อยบัสอื่นก่อนทำงานกับ TFT
   spi_deselect_all();
   delayMicroseconds(10);
 
-  if (ui_isScanning) {
+  // รีเฟรชการ์ดที่หน้า Scan Card และ Wait Choice ให้ขยับตลอด (ประมาณ ~8 FPS)
+  if (!isShowingPhoto && (g_lastState == UI_SCAN_CARD || g_lastState == UI_WAIT_CHOICE)) {
+    uint32_t now = millis();
+    if (now - g_lastIconAnimMs > 120) {  // ~8.3 fps
+      g_lastIconAnimMs = now;
+      // วาดทั้งเฟรมลง sprite แล้ว push ออกจอ
+      spr.fillSprite(TFT_BLACK);
+      paintScreenToSprite(g_lastState, g_lastSubtitle.length() ? g_lastSubtitle.c_str() : "", false, 1.0f);
+      tft.endWrite();
+      spr.pushSprite(0, 0);
+      painted = true;
+    }
+  }
+
+  if (ui_isScanning || ui_isBusyBorder) {
     float t = (millis() - ui_animStart) / 600.0f;
     float phase = t - floorf(t);
     drawFancyBorder(phase);
@@ -549,24 +608,38 @@ void uiTick() {
 }
 
 // ====== Modern vector icons (no SD needed) ======
-void drawNFCIcon(TFT_eSprite &s, int cx, int cy, float scale = 1.0f) {
+void drawNFCIcon(TFT_eSprite &s, int cx, int cy, float scale = 1.0f, float animPhase = 0.0f) {
   int w = int(110 * scale), h = int(70 * scale), r = int(14 * scale);
-  // soft shadow
-  s.fillRoundRect(cx - w / 2 + 3, cy - h / 2 + 5, w, h, r, TFT_DARKGREY);
-  // card body
-  s.fillRoundRect(cx - w / 2, cy - h / 2, w, h, r, TFT_WHITE);
-  // top gradient bar
+
+  // Animation: subtle bounce and slight rotation
+  float bounce = sinf(animPhase * 2.0f * PI) * 2.0f;  // ±2 pixels bounce
+  float tilt = sinf(animPhase * 1.5f * PI) * 0.05f;   // ±0.05 radians tilt
+  int offsetY = int(bounce);
+
+  // Apply tilt by adjusting corners slightly
+  int tiltOffset = int(tilt * h * 0.3f);
+
+  // soft shadow (with animation offset)
+  s.fillRoundRect(cx - w / 2 + 3, cy - h / 2 + 5 + offsetY, w, h, r, TFT_DARKGREY);
+
+  // card body (with animation offset)
+  s.fillRoundRect(cx - w / 2, cy - h / 2 + offsetY, w, h, r, TFT_WHITE);
+
+  // top gradient bar (with animation offset)
   for (int i = 0; i < int(18 * scale); ++i)
-    s.drawFastHLine(cx - w / 2 + 6, cy - h / 2 + 10 + i, w - 12, TFT_NAVY + i);
-  // chip
+    s.drawFastHLine(cx - w / 2 + 6, cy - h / 2 + 10 + i + offsetY, w - 12, TFT_NAVY + i);
+
+  // chip (with animation offset)
   int cw = int(22 * scale), ch = int(16 * scale), cr = int(4 * scale);
-  s.fillRoundRect(cx - w / 2 + int(12 * scale), cy - int(h * 0.18f), cw, ch, cr, TFT_GOLD);
-  s.drawRoundRect(cx - w / 2 + int(12 * scale), cy - int(h * 0.18f), cw, ch, cr, TFT_BROWN);
-  // contactless waves
+  s.fillRoundRect(cx - w / 2 + int(12 * scale), cy - int(h * 0.18f) + offsetY, cw, ch, cr, TFT_GOLD);
+  s.drawRoundRect(cx - w / 2 + int(12 * scale), cy - int(h * 0.18f) + offsetY, cw, ch, cr, TFT_BROWN);
+
+  // contactless waves (with animation offset and pulsing effect)
   uint16_t waveCol = TFT_CYAN;
+  float waveIntensity = 0.7f + 0.3f * sinf(animPhase * 3.0f * PI);  // pulsing intensity
   for (int k = 0; k < 3; k++) {
-    int off = int(12 * scale + k * 8 * scale);
-    drawArcSprite(s, cx + int(w * 0.22f), cy - int(h * 0.02f),
+    int off = int((12 * scale + k * 8 * scale) * waveIntensity);
+    drawArcSprite(s, cx + int(w * 0.22f), cy - int(h * 0.02f) + offsetY,
                   int(34 * scale) + off, int(34 * scale) + off - 2, 300, 60,
                   waveCol, TFT_TRANSPARENT);
   }
@@ -625,6 +698,22 @@ void paintScreenToSprite(UIState s, const char *subtitle, bool popIcon = false, 
       c1 = TFT_MAROON;
       c2 = TFT_BLACK;
       break;
+    case UI_CARD_DUPLICATE:
+      c1 = TFT_ORANGE;  // สีส้มสำหรับบัตรซ้ำ
+      c2 = TFT_BLACK;
+      break;
+    case UI_CARD_NOT_FOUND:
+      c1 = TFT_MAROON;  // สีแดงสำหรับไม่พบบัตร
+      c2 = TFT_BLACK;
+      break;
+    case UI_CARD_ALREADY_VOTED:
+      c1 = TFT_PURPLE;  // สีม่วงสำหรับใช้งานแล้ว
+      c2 = TFT_BLACK;
+      break;
+    case UI_FINGER_LIFT:
+      c1 = TFT_PURPLE;  // สีม่วงสำหรับยกนิ้ว
+      c2 = TFT_BLACK;
+      break;
     case UI_SLEEP:
       c1 = TFT_DARKGREY;
       c2 = TFT_NAVY;
@@ -633,6 +722,25 @@ void paintScreenToSprite(UIState s, const char *subtitle, bool popIcon = false, 
     case UI_SELECTED:
     case UI_SENDING:
       c1 = TFT_NAVY;
+      c2 = TFT_BLACK;
+      break;
+    case UI_SD_CHECK:
+    case UI_SD_RETRY:
+      c1 = TFT_ORANGE;
+      c2 = TFT_BLACK;
+      break;
+    case UI_SD_FAIL:
+      c1 = TFT_MAROON;
+      c2 = TFT_BLACK;
+      break;
+    case UI_MODE_REGISTER:
+    case UI_REGISTER_SCAN:
+      c1 = TFT_DARKGREEN;
+      c2 = TFT_BLACK;
+      break;
+    case UI_MODE_DELETE:
+    case UI_DELETE_SCAN:
+      c1 = TFT_MAROON;
       c2 = TFT_BLACK;
       break;
   }
@@ -645,36 +753,42 @@ void paintScreenToSprite(UIState s, const char *subtitle, bool popIcon = false, 
     spr.drawFastHLine(0, y, W, c);
   }
 
-  // --- Header (วาดแบบ “wipe” ขวา->ซ้ายเล็กน้อย) ---
+  // --- Header (วาดแบบ "wipe" ขวา->ซ้ายเล็กน้อย) ---
   spr.fillRect(0, 0, W, 30, TFT_BLACK);
   spr.drawRect(0, 0, W, 30, TFT_WHITE);
 
   const char *hdr =
-    (s == UI_BOOT) ? "ระบบกำลังเริ่มทำงาน" : (s == UI_WAKE)        ? "กำลังพร้อมใช้งาน"
-                                        : (s == UI_READY)       ? "พร้อมให้บริการ"
-                                        : (s == UI_SCAN_CARD)   ? "โปรดแตะบัตร"
-                                        : (s == UI_CARD_OK)     ? "บัตรถูกต้อง"
-                                        : (s == UI_CARD_FAIL)   ? "บัตรไม่ถูกต้อง"
-                                        : (s == UI_SCAN_FINGER) ? "โปรดสแกนลายนิ้วมือ"
-                                        : (s == UI_FINGER_OK)   ? "ยืนยันตัวตนสำเร็จ"
-                                        : (s == UI_FINGER_FAIL) ? "ยืนยันตัวตนไม่ผ่าน"
-                                        : (s == UI_CONFIRM)     ? "ยืนยันการทำรายการ"
-                                        : (s == UI_THANKS)      ? "ขอบคุณ"
-                                        : (s == UI_ERROR)       ? "ข้อผิดพลาด"
-                                        : (s == UI_SLEEP)       ? "พักการทำงาน"
-                                        : (s == UI_WAIT_CHOICE) ? "รอเลือกผู้สมัคร"
-                                        : (s == UI_SELECTED)    ? "ยืนยันตัวเลือก"
-                                        : (s == UI_SENDING)     ? "กำลังส่งข้อมูล"
-                                                                : "";
+    (s == UI_BOOT) ? "ระบบกำลังเริ่มทำงาน" : (s == UI_WAKE)               ? "กำลังพร้อมใช้งาน"
+                                        : (s == UI_READY)              ? "พร้อมให้บริการ"
+                                        : (s == UI_SCAN_CARD)          ? "โปรดแตะบัตร"
+                                        : (s == UI_CARD_OK)            ? "บัตรถูกต้อง"
+                                        : (s == UI_CARD_FAIL)          ? "บัตรไม่ถูกต้อง"
+                                        : (s == UI_CARD_DUPLICATE)     ? "บัตรลงทะเบียนแล้ว"
+                                        : (s == UI_CARD_NOT_FOUND)     ? "บัตรไม่อยู่ในระบบ"
+                                        : (s == UI_CARD_ALREADY_VOTED) ? "บัตรใช้งานแล้ว"
+                                        : (s == UI_SCAN_FINGER)        ? "โปรดสแกนลายนิ้วมือ"
+                                        : (s == UI_FINGER_OK)          ? "ยืนยันตัวตนสำเร็จ"
+                                        : (s == UI_FINGER_FAIL)        ? "ยืนยันตัวตนไม่ผ่าน"
+                                        : (s == UI_FINGER_LIFT)        ? "โปรดยกนิ้วขึ้น"
+                                        : (s == UI_CONFIRM)            ? "ยืนยันการทำรายการ"
+                                        : (s == UI_THANKS)             ? "ขอบคุณ"
+                                        : (s == UI_ERROR)              ? "ข้อผิดพลาด"
+                                        : (s == UI_SLEEP)              ? "พักการทำงาน"
+                                        : (s == UI_WAIT_CHOICE)        ? "รอเลือกผู้สมัคร"
+                                        : (s == UI_SELECTED)           ? "ยืนยันตัวเลือก"
+                                        : (s == UI_SENDING)            ? "กำลังส่งข้อมูล"
+                                        : (s == UI_SD_CHECK)           ? "กำลังตรวจสอบ SD Card"
+                                        : (s == UI_SD_FAIL)            ? "SD Card ไม่ทำงาน"
+                                        : (s == UI_SD_RETRY)           ? "กำลังลอง SD Card ใหม่"
+                                        : (s == UI_MODE_REGISTER)      ? "โหมดลงทะเบียน"
+                                        : (s == UI_MODE_DELETE)        ? "โหมดลบข้อมูล"
+                                        : (s == UI_REGISTER_SCAN)      ? "แตะบัตรเพื่อลงทะเบียน"
+                                        : (s == UI_DELETE_SCAN)        ? "แตะบัตรเพื่อลบข้อมูล"
+                                                                       : "";
 
-  // wipe แถบขาวใต้โล่ (ความยาวสัมพันธ์ popK)
-  // spr.setTextColor(TFT_WHITE, TFT_BLACK);
-  // spr.drawString(hdr, (W - spr.textWidth(hdr, 2)) / 2, 6, 2);
-  // int cx = W / 2;
-  // spr.fillTriangle(cx - 20, 34, cx + 20, 34, cx, 64, TFT_DARKGREY);
-  // spr.fillTriangle(cx - 16, 36, cx + 16, 36, cx, 60, TFT_NAVY);
-  // int wipeW = (int)(52 * popK);
-  // spr.fillRect(cx - 26, 70, wipeW, 3, TFT_WHITE);
+  // Header text
+  spr.setTextColor(TFT_WHITE, TFT_BLACK);
+  spr.drawString(hdr, (W - spr.textWidth(hdr, 2)) / 2, 6, 2);
 
   // --- Icon / Badge (pop-in scale) ---
   int icx = W / 2, icy = 150;
@@ -697,10 +811,58 @@ void paintScreenToSprite(UIState s, const char *subtitle, bool popIcon = false, 
     spr.drawCircle(cx, cy, (int)(R * 0.4f), TFT_CYAN);
   };
 
-  if (s == UI_SCAN_CARD)
-    drawNFCIcon(spr, W / 2, 150, 1.0f * scale);
-  else if (s == UI_SCAN_FINGER)
+  if (s == UI_SCAN_CARD) {
+    // Add animation phase for card bouncing effect
+    float animPhase = (millis() % 2000) / 2000.0f;  // 2-second cycle
+    drawNFCIcon(spr, W / 2, 150, 1.0f * scale, animPhase);
+
+    // Draw animated pulsing circles around the card
+    int cx = W / 2, cy = 150;
+    float pulsePhase = (millis() % 3000) / 3000.0f;  // 3-second cycle
+    uint16_t pulseCol = TFT_CYAN;
+
+    // Draw 3 concentric pulsing circles
+    for (int i = 0; i < 3; i++) {
+      float phase = fmod(pulsePhase + i * 0.33f, 1.0f);
+      float pulse = (sinf(phase * 2.0f * PI) + 1.0f) * 0.5f;  // 0..1
+      int radius = 80 + int(pulse * 20) + (i * 15);           // 80-100, 95-115, 110-130
+      int alpha = int(255 * (1.0f - pulse * 0.7f));           // fade out as it grows
+
+      // Draw circle with fading effect
+      for (int r = radius - 2; r <= radius + 2; r++) {
+        spr.drawCircle(cx, cy, r, pulseCol);
+      }
+    }
+
+    // Draw floating particles around the card
+    int particleCount = 8;
+    for (int i = 0; i < particleCount; i++) {
+      float angle = (millis() / 2000.0f + i * 0.785f) * 2.0f * PI;  // 8 particles, rotating
+      int distance = 60 + int(sinf(millis() / 1500.0f + i) * 15);   // varying distance
+      int px = cx + int(cosf(angle) * distance);
+      int py = cy + int(sinf(angle) * distance);
+
+      // Draw small glowing particle
+      spr.fillCircle(px, py, 2, TFT_WHITE);
+      spr.fillCircle(px, py, 1, pulseCol);
+    }
+  } else if (s == UI_SCAN_FINGER)
     drawFingerprintIconModern(spr, W / 2, 150, 1.0f * scale);
+  else if (s == UI_WAIT_CHOICE) {
+    // Animated waiting indicator - pulsing dots
+    int cx = W / 2, cy = 150;
+    float animPhase = (millis() % 1500) / 1500.0f;  // 1.5-second cycle
+    uint16_t dotCol = TFT_CYAN;
+
+    // Draw 3 pulsing dots
+    for (int i = 0; i < 3; i++) {
+      float phase = fmod(animPhase + i * 0.33f, 1.0f);
+      float pulse = (sinf(phase * 2.0f * PI) + 1.0f) * 0.5f;  // 0..1
+      int radius = 4 + int(pulse * 6);                        // 4-10 pixels
+      int x = cx - 20 + i * 20;
+      spr.fillCircle(x, cy, radius, dotCol);
+    }
+  }
 
   // Badge OK/Fail
   auto drawCheck = [&](int cx, int cy, float s) {
@@ -726,30 +888,171 @@ void paintScreenToSprite(UIState s, const char *subtitle, bool popIcon = false, 
     drawCheck(icx, icy, scale);
   if (s == UI_CARD_FAIL || s == UI_FINGER_FAIL || s == UI_ERROR)
     drawCross(icx, icy, scale);
+  if (s == UI_CARD_DUPLICATE) {
+    // วาดไอคอนบัตรซ้ำ (การ์ด + เครื่องหมายซ้ำ)
+    drawCardScaled(icx, icy - 20, scale * 0.8f);
+    // วาดเครื่องหมาย = (ซ้ำ)
+    int lineW = 20 * scale;
+    spr.drawLine(icx - lineW / 2, icy + 15, icx + lineW / 2, icy + 15, TFT_ORANGE);
+    spr.drawLine(icx - lineW / 2, icy + 25, icx + lineW / 2, icy + 25, TFT_ORANGE);
+  }
+  if (s == UI_CARD_NOT_FOUND) {
+    // วาดไอคอนไม่พบบัตร (การ์ด + เครื่องหมาย?)
+    drawCardScaled(icx, icy - 10, scale * 0.8f);
+    // วาดเครื่องหมาย ?
+    spr.setTextColor(TFT_WHITE, TFT_BLACK);
+    spr.drawString("?", icx - 8, icy + 20, 4);
+  }
+  if (s == UI_CARD_ALREADY_VOTED) {
+    // วาดไอคอนบัตรใช้งานแล้ว (การ์ด + เครื่องหมายถูก)
+    drawCardScaled(icx, icy - 15, scale * 0.8f);
+    // วาดเครื่องหมายถูก
+    int checkSize = 25 * scale;
+    spr.drawLine(icx - checkSize / 2, icy + 10, icx - 5, icy + 20, TFT_GREEN);
+    spr.drawLine(icx - 5, icy + 20, icx + checkSize / 2, icy - 5, TFT_GREEN);
+    spr.drawLine(icx - checkSize / 2 + 1, icy + 10, icx - 4, icy + 20, TFT_GREEN);
+    spr.drawLine(icx - 4, icy + 20, icx + checkSize / 2 + 1, icy - 5, TFT_GREEN);
+  }
+  if (s == UI_FINGER_LIFT) {
+    // วาดไอคอนยกนิ้ว (รูปมือ + ลูกศรขึ้น)
+    drawFingerScaled(icx, icy + 10, scale * 0.8f);
+    // วาดลูกศรขึ้น
+    int arrowH = 30 * scale;
+    int arrowW = 15 * scale;
+    spr.drawLine(icx, icy - arrowH, icx, icy - 5, TFT_WHITE);                         // เส้นตรง
+    spr.drawLine(icx, icy - arrowH, icx - arrowW / 2, icy - arrowH + 10, TFT_WHITE);  // ซ้าย
+    spr.drawLine(icx, icy - arrowH, icx + arrowW / 2, icy - arrowH + 10, TFT_WHITE);  // ขวา
+  }
+
+  // SD Card icons
+  if (s == UI_SD_CHECK || s == UI_SD_RETRY) {
+    // วาดไอคอน SD Card พร้อม spinner
+    int cx = W / 2, cy = 150;
+    int w = 60, h = 40, r = 8;
+
+    // SD Card body
+    spr.fillRoundRect(cx - w / 2, cy - h / 2, w, h, r, TFT_WHITE);
+    spr.fillRoundRect(cx - w / 2 + 2, cy - h / 2 + 2, w - 4, h - 4, r, TFT_ORANGE);
+
+    // SD text
+    spr.setTextColor(TFT_WHITE, TFT_ORANGE);
+    spr.drawString("SD", cx - 8, cy - 8, 2);
+
+    // Spinner dots around the card
+    float animPhase = (millis() % 2000) / 2000.0f;
+    for (int i = 0; i < 8; i++) {
+      float angle = (i / 8.0f + animPhase) * 2.0f * PI;
+      int x = cx + int(cosf(angle) * 50);
+      int y = cy + int(sinf(angle) * 50);
+      spr.fillCircle(x, y, 2, TFT_WHITE);
+    }
+  }
+
+  if (s == UI_SD_FAIL) {
+    // วาดไอคอน SD Card พร้อม X
+    int cx = W / 2, cy = 150;
+    int w = 60, h = 40, r = 8;
+
+    // SD Card body
+    spr.fillRoundRect(cx - w / 2, cy - h / 2, w, h, r, TFT_WHITE);
+    spr.fillRoundRect(cx - w / 2 + 2, cy - h / 2 + 2, w - 4, h - 4, r, TFT_RED);
+
+    // SD text
+    spr.setTextColor(TFT_WHITE, TFT_RED);
+    spr.drawString("SD", cx - 8, cy - 8, 2);
+
+    // X mark
+    spr.drawLine(cx - 15, cy - 15, cx + 15, cy + 15, TFT_WHITE);
+    spr.drawLine(cx - 15, cy + 15, cx + 15, cy - 15, TFT_WHITE);
+  }
+
+  // Register Mode Icons
+  if (s == UI_MODE_REGISTER || s == UI_REGISTER_SCAN) {
+    int cx = W / 2, cy = 150;
+
+    // วาดไอคอน + (บวก) ใหญ่
+    int size = 50;
+    spr.drawLine(cx - size / 2, cy, cx + size / 2, cy, TFT_WHITE);  // แนวนอน
+    spr.drawLine(cx, cy - size / 2, cx, cy + size / 2, TFT_WHITE);  // แนวตั้ง
+
+    // วาดวงกลมรอบ
+    spr.drawCircle(cx, cy, size / 2 + 10, TFT_WHITE);
+
+    // วาดการ์ดเล็กๆ ด้านล่าง
+    int cardW = 30, cardH = 20;
+    spr.fillRoundRect(cx - cardW / 2, cy + 40, cardW, cardH, 4, TFT_WHITE);
+    spr.fillRoundRect(cx - cardW / 2 + 2, cy + 42, cardW - 4, cardH - 4, 4, TFT_DARKGREEN);
+
+    // วาดนิ้วมือเล็กๆ ด้านบน
+    int fingerR = 15;
+    spr.drawCircle(cx, cy - 40, fingerR, TFT_WHITE);
+    spr.drawCircle(cx, cy - 40, fingerR - 3, TFT_WHITE);
+    spr.drawCircle(cx, cy - 40, fingerR - 6, TFT_WHITE);
+  }
+
+  // Delete Mode Icons
+  if (s == UI_MODE_DELETE || s == UI_DELETE_SCAN) {
+    int cx = W / 2, cy = 150;
+
+    // วาดไอคอน - (ลบ) ใหญ่
+    int size = 50;
+    spr.drawLine(cx - size / 2, cy, cx + size / 2, cy, TFT_WHITE);  // แนวนอน
+
+    // วาดวงกลมรอบ
+    spr.drawCircle(cx, cy, size / 2 + 10, TFT_WHITE);
+
+    // วาดการ์ดเล็กๆ ด้านล่าง
+    int cardW = 30, cardH = 20;
+    spr.fillRoundRect(cx - cardW / 2, cy + 40, cardW, cardH, 4, TFT_WHITE);
+    spr.fillRoundRect(cx - cardW / 2 + 2, cy + 42, cardW - 4, cardH - 4, 4, TFT_RED);
+
+    // วาด X ด้านบน
+    int xSize = 20;
+    spr.drawLine(cx - xSize / 2, cy - 40 - xSize / 2, cx + xSize / 2, cy - 40 + xSize / 2, TFT_WHITE);
+    spr.drawLine(cx - xSize / 2, cy - 40 + xSize / 2, cx + xSize / 2, cy - 40 - xSize / 2, TFT_WHITE);
+  }
 
   // Big headline + subtitle
   const char *big =
-    (s == UI_BOOT) ? "INITIALIZING" : (s == UI_WAKE)        ? "WAKE"
-                                    : (s == UI_READY)       ? "READY"
-                                    : (s == UI_SCAN_CARD)   ? "SCAN CARD"
-                                    : (s == UI_CARD_OK)     ? "CARD OK"
-                                    : (s == UI_CARD_FAIL)   ? "CARD REJECTED"
-                                    : (s == UI_SCAN_FINGER) ? "SCAN FINGER"
-                                    : (s == UI_FINGER_OK)   ? "FINGER OK"
-                                    : (s == UI_FINGER_FAIL) ? "FINGER FAIL"
-                                    : (s == UI_CONFIRM)     ? "CONFIRM"
-                                    : (s == UI_THANKS)      ? "THANK YOU"
-                                    : (s == UI_ERROR)       ? "ERROR"
-                                    : (s == UI_SLEEP)       ? "SLEEP"
-                                    : (s == UI_WAIT_CHOICE) ? "WAIT"
-                                    : (s == UI_SELECTED)    ? "SELECTED"
-                                    : (s == UI_SENDING)     ? "SENDING"
-                                                            : "";
+    (s == UI_BOOT) ? "INITIALIZING" : (s == UI_WAKE)               ? "WAKE"
+                                    : (s == UI_READY)              ? "READY"
+                                    : (s == UI_SCAN_CARD)          ? "SCAN CARD"
+                                    : (s == UI_CARD_OK)            ? "CARD OK"
+                                    : (s == UI_CARD_FAIL)          ? "CARD REJECTED"
+                                    : (s == UI_CARD_DUPLICATE)     ? "CARD EXISTS"
+                                    : (s == UI_CARD_NOT_FOUND)     ? "CARD UNKNOWN"
+                                    : (s == UI_CARD_ALREADY_VOTED) ? "ALREADY VOTED"
+                                    : (s == UI_SCAN_FINGER)        ? "SCAN FINGER"
+                                    : (s == UI_FINGER_OK)          ? "FINGER OK"
+                                    : (s == UI_FINGER_FAIL)        ? "FINGER FAIL"
+                                    : (s == UI_FINGER_LIFT)        ? "LIFT FINGER"
+                                    : (s == UI_CONFIRM)            ? "CONFIRM"
+                                    : (s == UI_THANKS)             ? "THANK YOU"
+                                    : (s == UI_ERROR)              ? "ERROR"
+                                    : (s == UI_SLEEP)              ? "SLEEP"
+                                    : (s == UI_WAIT_CHOICE)        ? "WAIT"
+                                    : (s == UI_SELECTED)           ? "SELECTED"
+                                    : (s == UI_SENDING)            ? "SENDING"
+                                    : (s == UI_SD_CHECK)           ? "SD CHECK"
+                                    : (s == UI_SD_FAIL)            ? "SD FAIL"
+                                    : (s == UI_SD_RETRY)           ? "SD RETRY"
+                                    : (s == UI_MODE_REGISTER)      ? "REGISTER MODE"
+                                    : (s == UI_MODE_DELETE)        ? "DELETE MODE"
+                                    : (s == UI_REGISTER_SCAN)      ? "REGISTER CARD"
+                                    : (s == UI_DELETE_SCAN)        ? "DELETE CARD"
+                                                                   : "";
 
   spr.setTextColor(TFT_WHITE, TFT_BLACK);
   spr.drawString(big, (W - spr.textWidth(big, 4)) / 2, 200, 4);
   if (subtitle && subtitle[0]) {
-    spr.setTextColor(TFT_YELLOW, TFT_BLACK);
+    // Pulse subtitle color on scan card to show liveness
+    if (s == UI_SCAN_CARD) {
+      float p = (sinf((millis() % 1600) / 1600.0f * 2.0f * PI) + 1.0f) * 0.5f;  // 0..1
+      uint16_t col = (p > 0.5f) ? TFT_YELLOW : TFT_WHITE;
+      spr.setTextColor(col, TFT_BLACK);
+    } else {
+      spr.setTextColor(TFT_YELLOW, TFT_BLACK);
+    }
     spr.drawString(subtitle, (W - spr.textWidth(subtitle, 2)) / 2, 230, 2);
   }
 }
@@ -815,7 +1118,7 @@ void showUIx(UIState s, const char *subtitle = nullptr, UITrans tr = TR_SLIDE_L)
     }
   }
 
-  uiSetScanning(s == UI_SCAN_CARD || s == UI_SCAN_FINGER);
+  uiSetScanning(s == UI_SCAN_CARD || s == UI_SCAN_FINGER || s == UI_FINGER_LIFT || s == UI_SENDING || s == UI_WAIT_CHOICE);
 }
 
 // ใช้ GPIO35 เป็นขาปลุก (ต่อมาจาก ODROID PIN_33 ผ่าน R อนุกรม ~1k)
@@ -829,7 +1132,7 @@ struct Rec;  // ให้คอมไพเลอร์รู้จักชื�
 const int TRIG_PIN = 4;
 const int ECHO_PIN = 34;  // ต้องลดเป็น 3.3V ก่อนเข้า ESP32
 
-// เกณฑ์ “ใกล้”
+// เกณฑ์ "ใกล้"
 volatile float NEAR_ON_CM = 25.0;   // เข้าสถานะ NEAR เมื่อ <= 25 cm
 volatile float NEAR_OFF_CM = 35.0;  // กลับ FAR เมื่อ >= 35 cm (ฮิสเทอรีส)
 
@@ -844,7 +1147,7 @@ static const uint8_t NEAR_CONFIRM_N = 2;  // ต้องเห็น NEAR 2 เ
 static const uint8_t FAR_CONFIRM_N = 2;   // ต้องเห็น FAR  2 เฟรมติดถึงจะเปลี่ยนเป็น FAR
 
 // จับเวลาเพื่อหลับ
-const uint32_t NO_NEAR_SLEEP_MS = 20000;  // FAR ต่อเนื่อง 10 วินาที -> หลับ
+const uint32_t NO_NEAR_SLEEP_MS = 15000;  // FAR ต่อเนื่อง 15 วินาที -> หลับ
 
 // ตัวแปรสถานะ
 static bool nearState = false;
@@ -933,7 +1236,7 @@ void goDeepSleepNow() {
   // esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
   // esp_sleep_enable_ext1_wakeup(1ULL << WAKE_PIN, ESP_EXT1_WAKEUP_ALL_LOW);
 
-  // กันเด้ง: ถ้าตอนนี้อยู่ในระดับที่จะปลุก ให้ “ไม่หลับ”
+  // กันเด้ง: ถ้าตอนนี้อยู่ในระดับที่จะปลุก ให้ "ไม่หลับ"
   if (rtc_gpio_get_level((gpio_num_t)WAKE_PIN) == 1 /* ถ้าใช้ ANY_HIGH ให้เท่ากับ 1; ถ้าใช้ ALL_LOW ให้ 0 */) {
     Serial.println("[SLEEP] Wake pin already at trigger level -> skip sleep");
     return;
@@ -981,7 +1284,7 @@ inline void rfid_bus_end() {
 }
 
 // ---------- I/O ----------
-const int EEPROM_SIZE = 512;
+// EEPROM_SIZE moved to conditional section below
 
 // const int switchPin33 = 99; // สวิตช์ Register
 // const int switchPin32 =99; // สวิตช์ Delete
@@ -993,7 +1296,32 @@ const int FINGER_TX = 25;  // ESP32 TX1 pin to sensor RX
 
 
 
-// ---------- Durable Storage Layout (EEPROM) ----------
+// ===== EEPROM Configuration =====
+#include <EEPROM.h>
+
+// Debug controls
+#define DEBUG_24C32_DETAIL 0
+#define DEBUG_RFID_DETAIL 0
+#define DEBUG_KEYPAD_DETAIL 0
+#define DEBUG_ULTRA 0
+
+// Use ESP32 EEPROM instead of 24C32
+#define USE_ESP32_EEPROM 1
+
+#if USE_ESP32_EEPROM
+const int EEPROM_SIZE = 512;
+const int MAX_RECORDS = (EEPROM_SIZE - 16) / 20;  // ~= 24 records
+#else
+  // 24C32 EEPROM settings (DISABLED)
+#define I2C_SDA_PIN 32
+#define I2C_SCL_PIN 33
+#define EEPROM_24C32_ADDR 0x50
+#define EEPROM_24C32_SIZE 4096
+#define EEPROM_PAGE_SIZE 32
+  // MAX_RECORDS is now defined above based on USE_ESP32_EEPROM
+#endif
+
+// ---------- Durable Storage Layout (24C32 EEPROM) ----------
 /*
   Header (offset 0..15)
     0..3   : MAGIC 'VOTE' (0x56 0x4F 0x54 0x45)
@@ -1015,7 +1343,7 @@ const int RECORD_SIZE = 20;
 const int BASE = HDR_SIZE;
 const uint8_t VALID_FLAG = 0xA5;
 const uint8_t EMPTY_FLAG = 0xFF;
-const int MAX_RECORDS = (EEPROM_SIZE - BASE) / RECORD_SIZE;  // ~= 24
+// MAX_RECORDS is now defined above based on USE_ESP32_EEPROM
 
 // ---------- Utils ----------
 struct Rec {
@@ -1026,6 +1354,9 @@ struct Rec {
   uint8_t reserved;
 };
 
+// ===== EEPROM Functions =====
+#if USE_ESP32_EEPROM
+// ESP32 EEPROM functions
 void eepromWriteBytes(int addr, const uint8_t *data, int len) {
   for (int i = 0; i < len; ++i)
     EEPROM.write(addr + i, data[i]);
@@ -1035,6 +1366,61 @@ void eepromReadBytes(int addr, uint8_t *data, int len) {
   for (int i = 0; i < len; ++i)
     data[i] = EEPROM.read(addr + i);
 }
+#else
+// 24C32 EEPROM functions (DISABLED)
+bool eeprom24C32WriteBytes(int addr, const uint8_t *data, int len) {
+  // Do nothing - 24C32 disabled
+  return true;
+}
+
+bool eeprom24C32ReadBytes(int addr, uint8_t *data, int len) {
+  // Do nothing - 24C32 disabled
+  return true;
+}
+#endif
+
+// Page-aware write function
+#if !USE_ESP32_EEPROM
+bool eeprom24C32WritePageSafe(int addr, const uint8_t *data, int len) {
+  int remaining = len;
+  int currentAddr = addr;
+  const uint8_t *currentData = data;
+
+  while (remaining > 0) {
+    // Calculate how many bytes we can write in this page
+    int pageStart = (currentAddr / EEPROM_PAGE_SIZE) * EEPROM_PAGE_SIZE;
+    int pageEnd = pageStart + EEPROM_PAGE_SIZE;
+    int bytesInPage = pageEnd - currentAddr;
+    int bytesToWrite = min(remaining, bytesInPage);
+
+    if (!eeprom24C32WriteBytes(currentAddr, currentData, bytesToWrite)) {
+      return false;
+    }
+
+    currentAddr += bytesToWrite;
+    currentData += bytesToWrite;
+    remaining -= bytesToWrite;
+
+    // Small delay between pages
+    if (remaining > 0) {
+      delay(2);
+    }
+  }
+
+  return true;
+}
+#endif
+
+// Compatibility functions
+#if !USE_ESP32_EEPROM
+void eepromWriteBytes(int addr, const uint8_t *data, int len) {
+  eeprom24C32WritePageSafe(addr, data, len);
+}
+
+void eepromReadBytes(int addr, uint8_t *data, int len) {
+  eeprom24C32ReadBytes(addr, data, len);
+}
+#endif
 
 void writeHeader() {
   uint8_t hdr[HDR_SIZE] = { 0 };
@@ -1045,13 +1431,15 @@ void writeHeader() {
   hdr[4] = VERSION;
   // rest zero
   eepromWriteBytes(0, hdr, HDR_SIZE);
+#if USE_ESP32_EEPROM
   EEPROM.commit();
+#endif
+  Serial.println("Header written");
 }
 
 bool headerOK() {
   uint8_t h[5];
-  for (int i = 0; i < 5; i++)
-    h[i] = EEPROM.read(i);
+  eepromReadBytes(0, h, 5);
   return (h[0] == 'V' && h[1] == 'O' && h[2] == 'T' && h[3] == 'E' && h[4] == VERSION);
 }
 
@@ -1079,7 +1467,12 @@ void writeRec(int idx, const Rec &r) {
   buf[18] = r.valid;
   buf[19] = r.reserved;
   eepromWriteBytes(recAddr(idx), buf, RECORD_SIZE);
+#if USE_ESP32_EEPROM
   EEPROM.commit();
+#endif
+  if (DEBUG_24C32_DETAIL) {
+    Serial.printf("[EEPROM] Record[%d] written\n", idx);
+  }
 }
 
 void clearRec(int idx) {
@@ -1121,11 +1514,38 @@ void uidToFixed16(const String &uidHex, char out16[UID_HEX_MAX]) {
 int findByUID(const String &uidHex) {
   char key[UID_HEX_MAX];
   uidToFixed16(uidHex, key);
+
+  if (DEBUG_RFID_DETAIL) {
+    Serial.printf("[DEBUG] findByUID: searching for UID='%s'\n", uidHex.c_str());
+    Serial.printf("[DEBUG] findByUID: key array: ");
+    for (int j = 0; j < UID_HEX_MAX; j++) {
+      Serial.printf("%02X ", (uint8_t)key[j]);
+    }
+    Serial.println();
+  }
+
   for (int i = 0; i < MAX_RECORDS; ++i) {
     Rec r;
     readRec(i, r);
-    if (r.valid == VALID_FLAG && sameUID16(r.uid, key))
-      return i;
+    if (r.valid == VALID_FLAG) {
+      if (DEBUG_RFID_DETAIL) {
+        Serial.printf("[DEBUG] Record[%d]: UID=", i);
+        for (int j = 0; j < UID_HEX_MAX; j++) {
+          Serial.printf("%02X ", (uint8_t)r.uid[j]);
+        }
+        Serial.printf("(valid=0x%02X)\n", r.valid);
+      }
+
+      if (sameUID16(r.uid, key)) {
+        if (DEBUG_RFID_DETAIL) {
+          Serial.printf("[DEBUG] Found match at index %d\n", i);
+        }
+        return i;
+      }
+    }
+  }
+  if (DEBUG_RFID_DETAIL) {
+    Serial.println("[DEBUG] No match found");
   }
   return -1;
 }
@@ -1212,6 +1632,7 @@ int enrollFingerprint(uint8_t fp_id) {
 
   Serial.println("Remove finger");
   mySerial.println("L");
+  showUIx(UI_FINGER_LIFT, "โปรดยกนิ้วขึ้น", TR_NONE);
   while (finger.getImage() != FINGERPRINT_NOFINGER)
     delay(50);
 
@@ -1258,13 +1679,31 @@ int matchFingerprint() {
 String readRFIDasHex() {
   // คืนเป็นตัวอักษร hex (ไม่เว้นวรรค), ตัวพิมพ์ใหญ่, ยาวเท่าจำนวน uid.size*2 (สูงสุด ~20 chars)
   String ID = "";
+
+  if (DEBUG_RFID_DETAIL) {
+    Serial.printf("[DEBUG] RFID UID size: %d bytes\n", rfid.uid.size);
+    Serial.printf("[DEBUG] RFID UID raw: ");
+  }
+
   for (byte i = 0; i < rfid.uid.size; i++) {
+    if (DEBUG_RFID_DETAIL) {
+      Serial.printf("%02X ", rfid.uid.uidByte[i]);
+    }
     if (rfid.uid.uidByte[i] < 0x10)
       ID += "0";
     ID += String(rfid.uid.uidByte[i], HEX);
   }
+
+  if (DEBUG_RFID_DETAIL) {
+    Serial.println();
+  }
+
   ID.toUpperCase();
   ID.replace(" ", "");
+
+  if (DEBUG_RFID_DETAIL) {
+    Serial.printf("[DEBUG] RFID UID hex string: '%s'\n", ID.c_str());
+  }
   return ID;
 }
 
@@ -1327,11 +1766,11 @@ inline void noTone(int /*pin*/) {}
 // ---------- High-level flows ----------
 void registerCardAndFingerprint() {
   exitPhotoMode();
-  
+
   Serial.println("Registration mode... Tap a new card");
 
   // UI: เริ่มโหมดลงทะเบียน → รอแตะบัตร
-  showUIx(UI_SCAN_CARD, "แตะบัตรเพื่อเริ่มลงทะเบียน", TR_SLIDE_UP);
+  showUIx(UI_REGISTER_SCAN, "แตะบัตรเพื่อเริ่มลงทะเบียน", TR_NONE);
 
   // --- รอการ์ดแบบล็อคบัสทุกครั้ง ---
   while (true) {
@@ -1354,30 +1793,30 @@ void registerCardAndFingerprint() {
   rfid.PCD_StopCrypto1();
   bus_release_after_rfid();
 
-  // โชว์ “บัตรถูกต้อง” สั้นๆ ก่อนดำเนินการต่อ
-  showUIx(UI_CARD_OK, "บัตรถูกต้อง", TR_FADE);
-  showUIx(UI_SENDING, "เตรียมลงทะเบียนนิ้ว...", TR_FADE);
+  // โชว์ "บัตรถูกต้อง" สั้นๆ ก่อนดำเนินการต่อ
+  showUIx(UI_CARD_OK, "บัตรถูกต้อง", TR_NONE);
+  showUIx(UI_SENDING, "เตรียมลงทะเบียนนิ้ว...", TR_NONE);
   delay(300);
   uiSetLoading(true);
   delay(500);
   uiSetLoading(false);
-  showUIx(UI_SCAN_FINGER, "วางนิ้ว 2 ครั้งเพื่อลงทะเบียน", TR_SLIDE_L);
+  showUIx(UI_SCAN_FINGER, "วางนิ้ว 2 ครั้งเพื่อลงทะเบียน", TR_NONE);
 
 
   // --- การ์ดซ้ำ? ---
   if (findByUID(uidHex) >= 0) {
     Serial.println("This card is already registered.");
-    showUIx(UI_CARD_FAIL, "บัตรนี้ลงทะเบียนแล้ว", TR_SLIDE_DOWN);
-   
+    showUIx(UI_CARD_DUPLICATE, "บัตรนี้ลงทะเบียนแล้ว", TR_NONE);
+
     delay(900);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
 
   // --- ตรวจนิ้วซ้ำก่อน Enroll ---
   Serial.println("Place finger to check duplication...");
   mySerial.println("J");
-  showUIx(UI_SCAN_FINGER, "ตรวจสอบลายนิ้วมือเดิม", TR_SLIDE_L);
+  showUIx(UI_SCAN_FINGER, "ตรวจสอบลายนิ้วมือเดิม", TR_NONE);
   int existing_fp = quickSearchFingerprint(10000);
   if (existing_fp >= 0) {
     int idxExisting = findByFPID(existing_fp);
@@ -1385,15 +1824,15 @@ void registerCardAndFingerprint() {
       Rec rExist;
       readRec(idxExisting, rExist);
       Serial.printf("Duplicate finger detected! Already linked to another card (FP_ID=%d). Abort.\n", existing_fp);
-      showUIx(UI_FINGER_FAIL, "ลายนิ้วมือนี้เชื่อมบัตรอื่นอยู่", TR_SLIDE_DOWN);
-     
+      showUIx(UI_FINGER_FAIL, "ลายนิ้วมือนี้เชื่อมบัตรอื่นอยู่", TR_NONE);
+
       delay(1000);
-      showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+      showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
       return;
     } else {
       Serial.printf("Found stale FP template (id=%d) without EEPROM record. Deleting stale template.\n", existing_fp);
       finger.deleteModel(existing_fp);
-      showUIx(UI_ERROR, "ล้างข้อมูลลายนิ้วมือที่ค้าง", TR_FADE);
+      showUIx(UI_ERROR, "ล้างข้อมูลลายนิ้วมือที่ค้าง", TR_NONE);
       delay(400);
     }
   }
@@ -1413,22 +1852,22 @@ void registerCardAndFingerprint() {
     chosen_fp_id++;
   if (chosen_fp_id >= 200) {
     Serial.println("No free FP ID slot.");
-   
+
     delay(1000);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
 
   // --- Enroll นิ้ว ---
   Serial.printf("Enroll fingerprint for this card (UID=%s) at FP_ID=%d\n", uidHex.c_str(), chosen_fp_id);
-  showUIx(UI_SCAN_FINGER, "วางนิ้ว 2 ครั้งเพื่อลงทะเบียน", TR_SLIDE_L);
+  showUIx(UI_SCAN_FINGER, "วางนิ้ว 2 ครั้งเพื่อลงทะเบียน", TR_NONE);
   int p = enrollFingerprint(chosen_fp_id);
   if (p != FINGERPRINT_OK) {
     Serial.printf("Enroll failed (code=%d). Abort.\n", p);
-    showUIx(UI_FINGER_FAIL, "บันทึกลายนิ้วมือไม่สำเร็จ", TR_SLIDE_DOWN);
-   
+    showUIx(UI_FINGER_FAIL, "บันทึกลายนิ้วมือไม่สำเร็จ", TR_NONE);
+
     delay(1000);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
 
@@ -1436,26 +1875,26 @@ void registerCardAndFingerprint() {
   if (storeNewRecord(uidHex, chosen_fp_id)) {
     Serial.println("Card+Fingerprint registered successfully.");
     mySerial.println("G");
-    showUIx(UI_FINGER_OK, "ลงทะเบียนสำเร็จ", TR_FADE);
-   
+    showUIx(UI_FINGER_OK, "ลงทะเบียนสำเร็จ", TR_NONE);
+
     delay(200);
-  
+
     delay(700);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
   } else {
     Serial.println("EEPROM full. Cannot store new record.");
-    showUIx(UI_ERROR, "หน่วยความจำเต็ม", TR_FADE);
-  
+    showUIx(UI_ERROR, "หน่วยความจำเต็ม", TR_NONE);
+
     finger.deleteModel(chosen_fp_id);  // roll back
     delay(1000);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
   }
 }
 
 void deleteCardFlow() {
   exitPhotoMode();
   Serial.println("Delete mode... Tap a card to delete");
-  showUIx(UI_SCAN_CARD, "แตะบัตรเพื่อลบข้อมูล", TR_SLIDE_UP);
+  showUIx(UI_DELETE_SCAN, "แตะบัตรเพื่อลบข้อมูล", TR_NONE);
 
   while (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) {
     delay(50);
@@ -1467,30 +1906,30 @@ void deleteCardFlow() {
   int idx = findByUID(uidHex);
   if (idx < 0) {
     Serial.println("Card not found");
-    showUIx(UI_CARD_FAIL, "ไม่พบข้อมูลบัตรในระบบ", TR_SLIDE_DOWN);
+    showUIx(UI_CARD_NOT_FOUND, "ไม่พบข้อมูลบัตรในระบบ", TR_NONE);
 
     delay(900);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
 
   // การ์ดถูกต้อง
-  showUIx(UI_CARD_OK, "บัตรถูกต้อง", TR_FADE);
+  showUIx(UI_CARD_OK, "บัตรถูกต้อง", TR_NONE);
 
   delay(300);
-  showUIx(UI_SENDING, "เตรียมยืนยันการลบ...", TR_FADE);
+  showUIx(UI_SENDING, "เตรียมยืนยันการลบ...", TR_NONE);
   uiSetLoading(true);
   delay(500);
   uiSetLoading(false);
-  showUIx(UI_SCAN_FINGER, "วางนิ้วเพื่อยืนยันการลบ", TR_SLIDE_L);
+  showUIx(UI_SCAN_FINGER, "วางนิ้วเพื่อยืนยันการลบ", TR_NONE);
 
   // โหลดเรคคอร์ดเพื่อรู้ fp_id ของเจ้าของบัตร
   Rec r;
   readRec(idx, r);
 
-  // ✅ ขั้นตอน “ยืนยันลายนิ้วมือก่อนลบ”
+  // ✅ ขั้นตอน "ยืนยันลายนิ้วมือก่อนลบ"
   Serial.printf("Verify fingerprint to delete (expect FP_ID=%d)\n", r.fp_id);
-  showUIx(UI_SCAN_FINGER, "วางนิ้วเพื่อยืนยันการลบ", TR_SLIDE_L);
+  showUIx(UI_SCAN_FINGER, "วางนิ้วเพื่อยืนยันการลบ", TR_NONE);
   unsigned long t0 = millis();
   int matched = -1;
   while (millis() - t0 < 15000) {  // รอสูงสุด 15 วินาที
@@ -1502,19 +1941,19 @@ void deleteCardFlow() {
   }
   if (matched < 0 || matched != r.fp_id) {
     Serial.println("Fingerprint verify failed / timeout. Abort delete.");
-    showUIx(UI_FINGER_FAIL, (matched < 0) ? "ไม่ตรวจพบลายนิ้ว" : "ลายนิ้วไม่ตรงเจ้าของบัตร", TR_SLIDE_DOWN);
+    showUIx(UI_FINGER_FAIL, (matched < 0) ? "ไม่ตรวจพบลายนิ้ว" : "ลายนิ้วไม่ตรงเจ้าของบัตร", TR_NONE);
 
     delay(1000);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
-
+  /*
   // ลบ fingerprint template ในเซ็นเซอร์
   if (r.fp_id > 0) {
     uint8_t p = finger.deleteModel(r.fp_id);
     if (p != FINGERPRINT_OK) {
       Serial.printf("Delete template failed (code=%d). Continue to clear record.\n", p);
-      showUIx(UI_ERROR, "ลบลายนิ้วในเซ็นเซอร์ไม่สำเร็จ", TR_FADE);
+      showUIx(UI_ERROR, "ลบลายนิ้วในเซ็นเซอร์ไม่สำเร็จ", TR_NONE);
       delay(500);
       // ยังลบเรคคอร์ด EEPROM ต่อไปตามเดิม
     }
@@ -1523,15 +1962,38 @@ void deleteCardFlow() {
   // ลบเรคคอร์ดบัตรใน EEPROM
   clearRec(idx);
   Serial.println("Card + Fingerprint deleted");
+*/
 
-  showUIx(UI_FINGER_OK, "ลบข้อมูลสำเร็จ", TR_FADE);
+  // ===== ลบ fingerprint template ก่อน แล้วค่อยลบ EEPROM ถ้าสำเร็จ =====
+  bool okToClear = true;
 
-  delay(150);
+  if (r.fp_id > 0) {
+    uint8_t p = finger.deleteModel(r.fp_id);
+    if (p != FINGERPRINT_OK) {
+      okToClear = false;
+      Serial.printf("Delete template failed (code=%d). Abort clearing EEPROM.\n", p);
+      showUIx(UI_ERROR, "ลบลายนิ้วในเซ็นเซอร์ไม่สำเร็จ", TR_NONE);
+      delay(700);
+    }
+  }
 
-  delay(700);
+  if (okToClear) {
+    clearRec(idx);
+    Serial.println("Card + Fingerprint deleted");
+    showUIx(UI_FINGER_OK, "ลบข้อมูลสำเร็จ", TR_NONE);
+    delay(150);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
+  } else {
+    // ถ้าอยากให้ย้อนกลับหน้าพร้อมใช้งาน
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
+  }
 
-  showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+  //showUIx(UI_FINGER_OK, "ลบข้อมูลสำเร็จ", TR_NONE);
+  //delay(150);
+  //delay(700);
+  //showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
 }
+
 void normalScanFlow() {
   exitPhotoMode();
   // เวอร์ชันเดิม + เติม UI อย่างเดียว (ไม่สลับลำดับ logic/protocol)
@@ -1539,7 +2001,7 @@ void normalScanFlow() {
 
   Serial.println("Scan card...");
   mySerial.println("S");  // โปรโตคอลตามเดิม
-  showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_SLIDE_UP);
+  showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_NONE);
 
   // --- อ่าน UID อย่างปลอดภัย (รอการ์ดใน flow ด้วย) ---
   uint32_t tWait = millis();
@@ -1561,47 +2023,57 @@ void normalScanFlow() {
     delay(20);
   }
   if (!got || uidHex.length() == 0) {
-    showUIx(UI_CARD_FAIL, "อ่านบัตรไม่สำเร็จ", TR_SLIDE_DOWN);
+    showUIx(UI_CARD_FAIL, "อ่านบัตรไม่สำเร็จ", TR_NONE);
     delay(600);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
 
   // --- ตรวจว่าการ์ดอยู่ในระบบ? ---
+  if (DEBUG_RFID_DETAIL) {
+    Serial.printf("[DEBUG] Card UID: %s\n", uidHex.c_str());
+  }
   int idx = findByUID(uidHex);
+  if (DEBUG_RFID_DETAIL) {
+    Serial.printf("[DEBUG] Card index: %d\n", idx);
+  }
+
   if (idx < 0) {
     Serial.println("Unknown card");
-    showUIx(UI_CARD_FAIL, "บัตรนี้ไม่อยู่ในระบบ", TR_SLIDE_DOWN);
+    showUIx(UI_CARD_NOT_FOUND, "บัตรนี้ไม่อยู่ในระบบ", TR_NONE);
 
     delay(200);
 
     delay(500);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
 
   // การ์ด OK
-  showUIx(UI_CARD_OK, "บัตรถูกต้อง", TR_FADE);
+  showUIx(UI_CARD_OK, "บัตรถูกต้อง", TR_NONE);
 
   delay(250);
 
   Rec r;
   readRec(idx, r);
 
+  Serial.printf("[DEBUG] Card record - FP_ID: %d, Voted: %d, Valid: 0x%02X\n",
+                r.fp_id, r.voted, r.valid);
+
   // ถ้าโหมดโหวต: เคยทำรายการแล้วหรือยัง?
   if (r.voted == 1) {
-    Serial.println("Already voted for this card holder.");
+    Serial.println("[DEBUG] Already voted for this card holder.");
     //mySerial.println("W");
-    showUIx(UI_ERROR, "บัตรนี้ทำรายการแล้ว", TR_SLIDE_DOWN);
+    showUIx(UI_CARD_ALREADY_VOTED, "บัตรนี้ใช้งานแล้ว (โหวตไปแล้ว)", TR_NONE);
 
     delay(700);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
 
   // --- ขอให้สแกนนิ้วให้ "ตรงกับ fp_id" ของบัตรนี้ ---
   Serial.printf("Card OK. Please verify fingerprint (expect FP_ID=%d)\n", r.fp_id);
-  showUIx(UI_SCAN_FINGER, "วางนิ้วเพื่อยืนยันตัวตน", TR_SLIDE_L);
+  showUIx(UI_SCAN_FINGER, "วางนิ้วเพื่อยืนยันตัวตน", TR_NONE);
   mySerial.println("J");
   unsigned long t0 = millis();
   int matched = -1;
@@ -1616,10 +2088,10 @@ void normalScanFlow() {
   if (matched < 0) {
     Serial.println("Fingerprint not matched / timeout.");
     //mySerial.println("W");
-    showUIx(UI_FINGER_FAIL, "ไม่ตรวจพบลายนิ้วมือ", TR_SLIDE_DOWN);
-  
+    showUIx(UI_FINGER_FAIL, "ไม่ตรวจพบลายนิ้วมือ", TR_NONE);
+
     delay(700);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
 
@@ -1627,10 +2099,10 @@ void normalScanFlow() {
   if (matched != r.fp_id) {
     Serial.println("Fingerprint does not belong to this card.");
     //mySerial.println("W");
-    showUIx(UI_FINGER_FAIL, "ลายนิ้วมือต้องตรงกับผู้ถือบัตร", TR_SLIDE_DOWN);
+    showUIx(UI_FINGER_FAIL, "ลายนิ้วมือต้องตรงกับผู้ถือบัตร", TR_NONE);
 
     delay(700);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
 
@@ -1646,7 +2118,7 @@ void normalScanFlow() {
   // (ออปชัน) ถ้าต้องการบังคับโชว์หน้าเลือกทันทีอยู่ดี:
   mySerial.println("V");        // UNO ก็รองรับคำสั่งนี้เหมือนกัน
   barStart(1500, "รอการเลือก");  // เติมเต็มทุก 1 วิ แล้ววน
-  showUIx(UI_WAIT_CHOICE, "โปรดเลือกผู้สมัครที่หน้าจอใหญ่", TR_FADE);
+  showUIx(UI_WAIT_CHOICE, "โปรดเลือกผู้สมัครที่หน้าจอใหญ่", TR_NONE);
   g_votePosted = false;
   g_idxPending = idx;
 
@@ -1667,7 +2139,7 @@ void normalScanFlow() {
         // UI: โชว์หมายเลขที่เลือก แล้วเข้าส่งทันที
         {
           String sub = "เลือกหมายเลข " + String(g_selectedCandidate);
-          showUIx(UI_SELECTED, sub.c_str(), TR_FADE);
+          showUIx(UI_SELECTED, sub.c_str(), TR_NONE);
           delay(400);
         }
 
@@ -1684,14 +2156,14 @@ void normalScanFlow() {
             g_votePosted = true;
             g_waitingChoice = false;
 
-            showUIx(UI_THANKS, "โหวตเสร็จสิ้น", TR_FADE);
+            showUIx(UI_THANKS, "โหวตเสร็จสิ้น", TR_NONE);
             delay(5000);  // แสดง 5 วินาที
-            showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+            showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
             finished = true;
           } else {
-            showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_FADE);
+            showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_NONE);
             delay(700);
-            showUIx(UI_WAIT_CHOICE, "โปรดเลือกใหม่หรือลองอีกครั้ง", TR_SLIDE_R);
+            showUIx(UI_WAIT_CHOICE, "โปรดเลือกใหม่หรือลองอีกครั้ง", TR_NONE);
             // finished คงไว้เป็น false เพื่อรอ CF ใหม่ได้
           }
         }
@@ -1701,17 +2173,17 @@ void normalScanFlow() {
       } else if (line.equalsIgnoreCase("VOTE:OK")) {
         // กรณีอนาคตถ้ามีส่ง VOTE:OK ก็เคลียร์ให้จบเหมือนกัน
         uiSetLoading(false);
-        showUIx(UI_THANKS, "ทำรายการสำเร็จ", TR_FADE);
+        showUIx(UI_THANKS, "ทำรายการสำเร็จ", TR_NONE);
         if (g_idxPending >= 0)
           setVotedByIndex(g_idxPending, 1);
         finished = true;
       } else if (line.equalsIgnoreCase("VOTE:ERR")) {
         uiSetLoading(false);
-        showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_FADE);
+        showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_NONE);
         // ให้ผู้ใช้เลือกใหม่
       } else if (line.equalsIgnoreCase("ABORT")) {
         uiSetLoading(false);
-        showUIx(UI_ERROR, "ยกเลิกรายการ", TR_FADE);
+        showUIx(UI_ERROR, "ยกเลิกรายการ", TR_NONE);
         finished = true;
       }
     }
@@ -1722,14 +2194,18 @@ void normalScanFlow() {
 
   if (!finished) {
     barStop();
-    showUIx(UI_ERROR, "หมดเวลารอการเลือก", TR_FADE);
+    showUIx(UI_ERROR, "หมดเวลารอการเลือก", TR_NONE);
   }
 
   g_waitingChoice = false;
   barStop();
   delay(800);
-  showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+  showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
 }
+
+
+
+
 // วัด echo ครั้งเดียว (เวอร์ชันสั้น ใช้กับ measureDistanceCm)
 inline unsigned long us_read_once() {
   digitalWrite(TRIG_PIN, LOW);
@@ -1862,19 +2338,16 @@ void ultrasonicTickForSleep() {
       nearConsec = 0;
     }
 
-    // เปลี่ยนสถานะเมื่อ “ยืนยัน” ครบ N เฟรม
+    // เปลี่ยนสถานะเมื่อ "ยืนยัน" ครบ N เฟรม
     bool newNear = nearState;
     if (!nearState && nearConsec >= NEAR_CONFIRM_N)
       newNear = true;
     if (nearState && farConsec >= FAR_CONFIRM_N)
       newNear = false;
 
-    // log ทุก 1s หรือเมื่อมีการสลับสถานะ
-    if (DEBUG_ULTRA && (millis() - lastUltraLogMs >= 1000 || newNear != nearState)) {
-      Serial.print("[US] cm=");
-      Serial.printf("%.1f", cm);
-      Serial.print(" near=");
-      Serial.println(newNear ? 1 : 0);
+    // log เฉพาะเมื่อเปลี่ยนสถานะ
+    if (DEBUG_ULTRA && newNear != nearState) {
+      Serial.printf("[US] cm=%.1f near=%d\n", cm, newNear ? 1 : 0);
       lastUltraLogMs = millis();
     }
 
@@ -1889,15 +2362,28 @@ void ultrasonicTickForSleep() {
     }
   }
 
-  // ไม่มี NEAR ต่อเนื่องครบ 5s → หลับ
+  // ไม่มี NEAR ต่อเนื่องครบ 15s → หลับ
   if (!nearState && (millis() - lastNearSeenMs >= NO_NEAR_SLEEP_MS)) {
-    Serial.println("No NEAR (valid) for 5s -> Deep-sleep");
+    Serial.println("No NEAR for 15s -> Deep-sleep");
     goDeepSleepNow();
+  }
+
+  // แจ้งเตือน 10 วินาทีก่อน sleep
+  static bool warningShown = false;
+  if (!nearState && (millis() - lastNearSeenMs >= (NO_NEAR_SLEEP_MS - 10000))) {
+    if (!warningShown) {
+      Serial.println("Warning: Will sleep in 10 seconds if no person detected");
+      showUIx(UI_SLEEP, "กำลังจะพักการทำงาน", TR_NONE);
+      warningShown = true;
+    }
+  } else if (nearState) {
+    // Reset warning when person detected
+    warningShown = false;
   }
 }
 
 // Callback ของ TJpgDec แบบง่ายๆ
-static volatile bool g_jpgAnyScanline = false;   // set true when at least 1 scanline drawn
+static volatile bool g_jpgAnyScanline = false;  // set true when at least 1 scanline drawn
 
 bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap) {
   // ปล่อยบัสอื่นก่อน และเลือก TFT เฉพาะช่วง pushImage
@@ -1950,7 +2436,7 @@ bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap) 
 // วาด JPEG พอดีจอ เริ่มที่ (0,0) โดยไม่จัดกึ่งกลาง/ไม่ครอบ
 bool drawJpgExactFromSD(const String &path) {
   Serial.printf("[JPG] Starting drawJpgExactFromSD: %s\n", path.c_str());
-  
+
   // ปล่อยบัสอื่นก่อน
   spi_deselect_all();
   delay(50);
@@ -1984,9 +2470,12 @@ bool drawJpgExactFromSD(const String &path) {
   Serial.printf("[JPG] Image size: %dx%d\n", jw, jh);
 
   // หยุด UI effect ชั่วคราวระหว่างวาดรูป เพื่อลดการชนบัส
-  bool prevScan = ui_isScanning; ui_isScanning = false;
-  bool prevLoad = ui_isLoading;  ui_isLoading  = false;
-  bool prevBar  = g_barOn;       g_barOn       = false;
+  bool prevScan = ui_isScanning;
+  ui_isScanning = false;
+  bool prevLoad = ui_isLoading;
+  ui_isLoading = false;
+  bool prevBar = g_barOn;
+  g_barOn = false;
 
   // เคลียร์จอก่อนวาดรูป
   spi_select_tft();
@@ -2000,11 +2489,11 @@ bool drawJpgExactFromSD(const String &path) {
   bool ok = TJpgDec.drawSdJpg(0, 0, path.c_str());
   if (!ok && !g_jpgAnyScanline) {
     Serial.println("[JPG] First draw failed, retrying once after SD reinit...");
-    sd_reinit();
+    // sd_reinit();
     g_jpgAnyScanline = false;
     ok = TJpgDec.drawSdJpg(0, 0, path.c_str());
   }
-  
+
   if (ok) {
     Serial.printf("[JPG] Successfully drew: %s\n", path.c_str());
   } else {
@@ -2025,8 +2514,8 @@ bool drawJpgExactFromSD(const String &path) {
 
   // คืนค่า UI effect
   ui_isScanning = prevScan;
-  ui_isLoading  = prevLoad;
-  g_barOn       = prevBar;
+  ui_isLoading = prevLoad;
+  g_barOn = prevBar;
 
   return ok;
 }
@@ -2079,29 +2568,137 @@ bool drawJpgCoverFromSD(const String &path) {
 
 
 // ===== SD re-init + retry helpers =====
-bool sd_reinit(uint32_t hz = 4000000) {
+bool sd_reinit(uint32_t hz) {
+  Serial.println("[SD] Ending previous SD session...");
   SD.end();
-  delay(5);
+  delay(10);
+
   // ปล่อยทุก CS = HIGH
   digitalWrite(SD_CS, HIGH);
   digitalWrite(TFT_CS, HIGH);
   digitalWrite(SS_PIN, HIGH);
+  delay(10);
 
+  Serial.println("[SD] Trying 1MHz...");
   // ลองความเร็วต่ำก่อน (1 MHz) แล้วค่อยเพิ่ม
-  if (SD.begin(SD_CS, SPI, 1000000)) return SD.cardType() != CARD_NONE;
+  if (SD.begin(SD_CS, SPI, 1000000)) {
+    if (SD.cardType() != CARD_NONE) {
+      Serial.println("[SD] 1MHz successful!");
+      return true;
+    }
+  }
   SD.end();
-  delay(2);
-  if (SD.begin(SD_CS, SPI, hz)) return SD.cardType() != CARD_NONE;
+  delay(10);
+
+  Serial.printf("[SD] Trying %dHz...\n", hz);
+  if (SD.begin(SD_CS, SPI, hz)) {
+    if (SD.cardType() != CARD_NONE) {
+      Serial.printf("[SD] %dHz successful!\n", hz);
+      return true;
+    }
+  }
   SD.end();
-  delay(2);
+  delay(10);
+
+  Serial.println("[SD] All frequencies failed");
   return false;
+}
+
+// ===== SD Card Check with UI =====
+bool checkSDCardWithUI() {
+  Serial.println("[SD] Starting SD Card check...");
+  showUIx(UI_SD_CHECK, "กำลังตรวจสอบ SD Card", TR_NONE);
+  uiTick();    // Force UI refresh
+  delay(500);  // ให้เวลา UI แสดง
+
+  // ตรวจสอบ SD Card
+  if (SD.cardType() != CARD_NONE) {
+    Serial.println("[SD] SD Card detected and working");
+    return true;
+  }
+
+  // SD Card ไม่ทำงาน - แสดง UI และลองใหม่
+  Serial.println("[SD] SD Card not working, showing retry UI");
+  showUIx(UI_SD_FAIL, "SD Card ไม่ทำงาน", TR_NONE);
+  uiTick();  // Force UI refresh
+  delay(2000);
+
+  // ลองใหม่ 3 ครั้ง
+  for (int retry = 0; retry < 3; retry++) {
+    Serial.printf("[SD] Retry attempt %d/3\n", retry + 1);
+
+    // สร้างข้อความ retry แบบ static
+    char retryMsg[64];
+    snprintf(retryMsg, sizeof(retryMsg), "กำลังลอง SD Card ใหม่... (%d/3)", retry + 1);
+    showUIx(UI_SD_RETRY, retryMsg, TR_NONE);
+
+    // บังคับให้ TFT update และรอให้ UI แสดงออกมาก่อน
+    uiTick();  // Force UI refresh
+    delay(200);
+
+    // แสดงข้อความเพิ่มเติมระหว่าง retry
+    char statusMsg[64];
+    snprintf(statusMsg, sizeof(statusMsg), "กำลังทดสอบความเร็ว SD Card...");
+    showUIx(UI_SD_RETRY, statusMsg, TR_NONE);
+    uiTick();  // Force UI refresh
+    delay(300);
+
+    // ลองเริ่ม SD Card ใหม่
+    if (sd_reinit(4000000)) {
+      Serial.println("[SD] SD Card recovered!");
+      showUIx(UI_SD_CHECK, "SD Card ทำงานได้แล้ว", TR_NONE);
+      delay(1000);
+      return true;
+    }
+
+    // แสดงผลลัพธ์การลองแต่ละครั้ง
+    if (retry < 2) {  // ไม่ใช่ครั้งสุดท้าย
+      char failMsg[64];
+      snprintf(failMsg, sizeof(failMsg), "ลองครั้งที่ %d ไม่สำเร็จ", retry + 1);
+      showUIx(UI_SD_FAIL, failMsg, TR_NONE);
+      uiTick();  // Force UI refresh
+      delay(1000);
+    }
+  }
+
+  // ล้มเหลวทั้งหมด
+  Serial.println("[SD] All retry attempts failed");
+  showUIx(UI_SD_FAIL, "SD Card ไม่สามารถใช้งานได้", TR_NONE);
+  uiTick();  // Force UI refresh
+  return false;
+}
+
+// ===== SD Card Wait Loop =====
+void waitForSDCard() {
+  Serial.println("[SD] Waiting for SD Card to be ready...");
+
+  while (true) {
+    if (checkSDCardWithUI()) {
+      Serial.println("[SD] SD Card is ready, continuing...");
+      break;
+    }
+
+    // แสดงข้อความรอ
+    showUIx(UI_SD_FAIL, "กรุณาใส่ SD Card หรือตรวจสอบการเชื่อมต่อ", TR_NONE);
+    delay(3000);
+
+    // ตรวจสอบว่าผู้ใช้กดปุ่มเพื่อข้าม
+    int keyPressed = getKeyPressed();
+    if (keyPressed == KEY_1 || keyPressed == KEY_2) {
+      Serial.println("[SD] User pressed key to skip SD Card check");
+      waitForKeyRelease();
+      showUIx(UI_SD_FAIL, "ข้ามการตรวจสอบ SD Card", TR_NONE);
+      delay(1000);
+      break;
+    }
+  }
 }
 
 bool sd_retry_wrap(std::function<bool()> io, int retries = 2) {
   for (int i = 0; i <= retries; ++i) {
     if (io()) return true;
     // ถ้า fail: re-init แล้วลองใหม่
-    if (!sd_reinit()) delay(10);
+    // if (!sd_reinit()) delay(10);
   }
   return false;
 }
@@ -2109,7 +2706,7 @@ bool sd_retry_wrap(std::function<bool()> io, int retries = 2) {
 // [ADD] ช่วยแสดงรูปตามหมายเลข (รองรับ .jpg/.JPG)
 void showCandidateJpg(uint8_t n) {
   Serial.printf("[JPG] Looking for candidate %d\n", n);
-  
+
   String p_plain = "/" + String(n) + ".jpg";
   String p_plainU = "/" + String(n) + ".JPG";
   char buf[16];
@@ -2177,53 +2774,53 @@ void showIdleScreen(const char *msg = "Ready") {
 // ฟังก์ชัน debug TFT
 void debugTFT() {
   Serial.println("=== TFT Debug ===");
-  
+
   // ตรวจสอบ CS pins
-  Serial.printf("CS Pins - SD:%d TFT:%d RC522:%d\n", 
+  Serial.printf("CS Pins - SD:%d TFT:%d RC522:%d\n",
                 digitalRead(SD_CS), digitalRead(TFT_CS), digitalRead(SS_PIN));
-  
+
   // ตรวจสอบการเชื่อมต่อ SPI
   Serial.println("Testing SPI...");
   digitalWrite(SD_CS, HIGH);
   digitalWrite(SS_PIN, HIGH);
   digitalWrite(TFT_CS, LOW);
-  
+
   // ทดสอบ SPI โดยตรง
   SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
-  for(int i = 0; i < 10; i++) {
+  for (int i = 0; i < 10; i++) {
     SPI.transfer(0x00);
   }
   SPI.endTransaction();
   Serial.println("SPI test completed");
-  
+
   // ทดสอบการเขียนสีแบบละเอียด
   Serial.println("Testing colors...");
-  
+
   // ทดสอบ 1: สีแดง
   tft.fillScreen(TFT_RED);
   delay(1000);
   Serial.println("Red test");
-  
+
   // ทดสอบ 2: สีเขียว
   tft.fillScreen(TFT_GREEN);
   delay(1000);
   Serial.println("Green test");
-  
+
   // ทดสอบ 3: สีน้ำเงิน
   tft.fillScreen(TFT_BLUE);
   delay(1000);
   Serial.println("Blue test");
-  
+
   // ทดสอบ 4: สีขาว
   tft.fillScreen(TFT_WHITE);
   delay(1000);
   Serial.println("White test");
-  
+
   // ทดสอบ 5: สีดำ
   tft.fillScreen(TFT_BLACK);
   delay(500);
   Serial.println("Black test");
-  
+
   // ทดสอบข้อความ
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.drawString("TFT OK", 10, 10, 2);
@@ -2231,14 +2828,14 @@ void debugTFT() {
   tft.drawString("Debug", 10, 50, 2);
   delay(1000);
   Serial.println("Text test");
-  
+
   // ทดสอบการวาดรูปทรง
   tft.fillScreen(TFT_BLACK);
   tft.drawRect(10, 10, 100, 50, TFT_WHITE);
   tft.fillCircle(50, 50, 20, TFT_RED);
   delay(1000);
   Serial.println("Shape test");
-  
+
   digitalWrite(TFT_CS, HIGH);
   Serial.println("TFT debug completed");
 }
@@ -2246,21 +2843,21 @@ void debugTFT() {
 // ฟังก์ชันทดสอบ TFT แบบพื้นฐาน
 void testTFTBasic() {
   Serial.println("=== TFT Basic Test ===");
-  
+
   // ปล่อยบัสอื่น
   digitalWrite(SD_CS, HIGH);
   digitalWrite(SS_PIN, HIGH);
   digitalWrite(TFT_CS, HIGH);
   delay(100);
-  
+
   // เริ่ม TFT ใหม่
   tft.init();
   tft.endWrite();
-  
+
   // ตั้งค่าพื้นฐาน
   tft.setSwapBytes(false);
   tft.setRotation(0);
-  
+
   // ทดสอบการเขียน
   digitalWrite(TFT_CS, LOW);
   tft.fillScreen(TFT_RED);
@@ -2270,12 +2867,12 @@ void testTFTBasic() {
   tft.fillScreen(TFT_BLUE);
   delay(2000);
   tft.fillScreen(TFT_BLACK);
-  
+
   // ทดสอบข้อความ
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.drawString("TFT WORKING", 10, 10, 2);
   tft.drawString("Basic Test OK", 10, 30, 2);
-  
+
   digitalWrite(TFT_CS, HIGH);
   Serial.println("TFT basic test completed");
 }
@@ -2291,7 +2888,16 @@ void setup() {
   Serial.begin(115200);
   Serial.setTimeout(200);
   mySerial.setTimeout(200);
-  Wire.begin();
+
+  // Initialize EEPROM
+#if USE_ESP32_EEPROM
+  EEPROM.begin(EEPROM_SIZE);
+  Serial.printf("[EEPROM] ESP32 EEPROM initialized (%d bytes)\n", EEPROM_SIZE);
+#else
+  // Initialize I2C for 24C32 EEPROM (disabled)
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  Serial.printf("[24C32] I2C initialized on SDA=%d, SCL=%d\n", I2C_SDA_PIN, I2C_SCL_PIN);
+#endif
 
   // --- Make all SPI CS pins OUTPUT & HIGH as early as possible ---
   pinMode(SD_CS, OUTPUT);
@@ -2300,20 +2906,20 @@ void setup() {
   digitalWrite(SD_CS, HIGH);
   digitalWrite(TFT_CS, HIGH);
   digitalWrite(SS_PIN, HIGH);
-  
+
   // หน่วงให้ CS pins settle
   delay(100);
 
   // เริ่มบัส SPI หลังจากทุก CS ถูกปล่อยแล้ว
   SPI.begin(18, 19, 23, SD_CS);
-  
+
   // หน่วงให้ SPI settle
   delay(100);
-  
+
   // ตรวจสอบการเชื่อมต่อ SPI
   Serial.println("Testing SPI communication...");
   Serial.printf("SPI Settings: SCK=%d, MISO=%d, MOSI=%d, CS=%d\n", 18, 19, 23, SD_CS);
-  
+
   // ทดสอบการเขียน SPI โดยตรง
   digitalWrite(TFT_CS, LOW);
   SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
@@ -2349,12 +2955,28 @@ void setup() {
   lastNearSeenMs = millis();
 
   // --- EEPROM header/init ---
-  EEPROM.begin(EEPROM_SIZE);
+#if USE_ESP32_EEPROM
+  Serial.println("[EEPROM] Initializing ESP32 EEPROM...");
+#else
+  Serial.println("[24C32] Initializing EEPROM...");
+
+  // Test 24C32 connection
+  uint8_t testByte;
+  if (eeprom24C32ReadBytes(0, &testByte, 1)) {
+    Serial.println("[24C32] Connection test successful");
+  } else {
+    Serial.println("[24C32] Connection test failed - check wiring!");
+  }
+#endif
+
   if (!headerOK()) {
     Serial.println("Init header...");
     writeHeader();
     for (int i = 0; i < MAX_RECORDS; i++)
       clearRec(i);
+    Serial.printf("Initialized %d records\n", MAX_RECORDS);
+  } else {
+    Serial.println("Header OK");
   }
 
   // --- SPI / Bus guard ---
@@ -2362,66 +2984,65 @@ void setup() {
   SPI.begin(18, 19, 23, SD_CS);
   spi_idle_all();  // ดันทุก CS = HIGH
 
-  // --- SD Card: ลอง 10 MHz -> 4 MHz ---
-  // --- SD Card: เริ่มแบบปลอดภัย ไม่ดึง CS ลงเอง ---
-  bool sdOK = false;
-  {
-    // ให้แน่ใจว่า CS ทุกตัวเป็น OUTPUT และ HIGH
-    pinMode(SD_CS, OUTPUT);
-    pinMode(TFT_CS, OUTPUT);
-    pinMode(SS_PIN, OUTPUT);
-    digitalWrite(SD_CS, HIGH);  // <-- สำคัญ: ปล่อย HIGH
-    digitalWrite(TFT_CS, HIGH);
-    digitalWrite(SS_PIN, HIGH);
+  // --- SD Card: เริ่มแบบปลอดภัย ---
+  // ให้แน่ใจว่า CS ทุกตัวเป็น OUTPUT และ HIGH
+  pinMode(SD_CS, OUTPUT);
+  pinMode(TFT_CS, OUTPUT);
+  pinMode(SS_PIN, OUTPUT);
+  digitalWrite(SD_CS, HIGH);  // <-- สำคัญ: ปล่อย HIGH
+  digitalWrite(TFT_CS, HIGH);
+  digitalWrite(SS_PIN, HIGH);
 
-    // เริ่มที่ความถี่ต่ำก่อน (เสถียรสุด) แล้วค่อยเพิ่ม
-    if (SD.begin(SD_CS, SPI, 1000000)) {  // 1 MHz
+  // เริ่มที่ความถี่ต่ำก่อน (เสถียรสุด) แล้วค่อยเพิ่ม
+  bool sdOK = false;
+  if (SD.begin(SD_CS, SPI, 1000000)) {  // 1 MHz
+    sdOK = (SD.cardType() != CARD_NONE);
+    if (!sdOK)
+      SD.end();
+  }
+  if (!sdOK) {
+    if (SD.begin(SD_CS, SPI, 4000000)) {  // 4 MHz
       sdOK = (SD.cardType() != CARD_NONE);
       if (!sdOK)
         SD.end();
     }
-    if (!sdOK) {
-      if (SD.begin(SD_CS, SPI, 4000000)) {  // 4 MHz
-        sdOK = (SD.cardType() != CARD_NONE);
-        if (!sdOK)
-          SD.end();
-      }
+  }
+  if (!sdOK) {
+    if (SD.begin(SD_CS, SPI, 10000000)) {  // 10 MHz (ถ้าการ์ดดี)
+      sdOK = (SD.cardType() != CARD_NONE);
+      if (!sdOK)
+        SD.end();
     }
-    if (!sdOK) {
-      if (SD.begin(SD_CS, SPI, 10000000)) {  // 10 MHz (ถ้าการ์ดดี)
-        sdOK = (SD.cardType() != CARD_NONE);
-        if (!sdOK)
-          SD.end();
-      }
-    }
+  }
 
-    if (sdOK) {
-      Serial.printf("SD OK, type=%u, size=%llu MB\n",
-                    (unsigned)SD.cardType(),
-                    (unsigned long long)(SD.cardSize() / (1024ULL * 1024ULL)));
-    } else {
-      Serial.println("SD mount failed (tried 1/4/10 MHz)");
-    }
+  if (sdOK) {
+    Serial.printf("SD OK, type=%u, size=%llu MB\n",
+                  (unsigned)SD.cardType(),
+                  (unsigned long long)(SD.cardSize() / (1024ULL * 1024ULL)));
+  } else {
+    Serial.println("SD mount failed (tried 1/4/10 MHz)");
+    // ใช้ UI เพื่อรอ SD Card
+    waitForSDCard();
   }
 
   // --- TFT + TJpg callback ---
   Serial.println("Initializing TFT...");
-  
+
   // ปล่อยบัสอื่นก่อน init TFT
   spi_deselect_all();
   delay(200);
-  
+
   // เริ่ม TFT ด้วยการตั้งค่าที่ชัดเจน
   tft.init();
   tft.endWrite();
-  
+
   // ตั้งค่าพื้นฐานที่เสถียร
-  tft.setSwapBytes(true);   // ใช้ true สำหรับ TFT_eSPI
+  tft.setSwapBytes(true);  // ใช้ true สำหรับ TFT_eSPI
   tft.setRotation(0);
-  
+
   // ทดสอบการเขียนพื้นฐาน
   Serial.println("Testing TFT communication...");
-  
+
   // ทดสอบการเขียนสี
   spi_select_tft();
   tft.fillScreen(TFT_BLACK);
@@ -2429,10 +3050,10 @@ void setup() {
   tft.drawString("TFT Ready", 10, 10, 2);
   tft.drawString("System OK", 10, 30, 2);
   spi_deselect_all();
-  
+
   // ตั้งค่า TJpgDec
   TJpgDec.setCallback(tft_output);
-  
+
   Serial.println("TFT initialization completed");
 
   if (!spr.created())
@@ -2449,9 +3070,9 @@ void setup() {
   }
   showIdleScreen(sdOK ? "SD OK" : "No SD");
 
-  showUIx(UI_BOOT, "กำลังตรวจสอบระบบ", TR_FADE);
+  showUIx(UI_BOOT, "กำลังตรวจสอบระบบ", TR_NONE);
   delay(600);
-  showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+  showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
 
   // --- RC522 init (ปล่อยบัสจริง + รีเซ็ต RST ก่อน) ---
   Serial.println("Init RC522...");
@@ -2501,7 +3122,7 @@ void handleU2Line(const String &raw) {
     if (m.equalsIgnoreCase("SEL:CLEAR")) {
       isShowingPhoto = false;
       uiSetScanning(true);
-      showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_SLIDE_UP);
+      showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_NONE);
     } else {
       int n = m.substring(4).toInt();  // หลัง "SEL:"
       if (n >= 0 && n <= 99) {
@@ -2524,7 +3145,7 @@ void handleU2Line(const String &raw) {
     if (g_waitingChoice) {
       barStop();
       String sub = "เลือกหมายเลข " + String(n);
-      showUIx(UI_SELECTED, sub.c_str(), TR_FADE);
+      showUIx(UI_SELECTED, sub.c_str(), TR_NONE);
       delay(400);
     }
 
@@ -2541,13 +3162,13 @@ void handleU2Line(const String &raw) {
         g_votePosted = true;
         g_waitingChoice = false;
 
-        showUIx(UI_THANKS, "โหวตเสร็จสิ้น", TR_FADE);
+        showUIx(UI_THANKS, "โหวตเสร็จสิ้น", TR_NONE);
         delay(5000);  // 5 วิ ตามที่ขอ
-        showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+        showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
       } else {
-        showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_FADE);
+        showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_NONE);
         delay(700);
-        showUIx(UI_WAIT_CHOICE, "โปรดเลือกใหม่หรือลองอีกครั้ง", TR_SLIDE_R);
+        showUIx(UI_WAIT_CHOICE, "โปรดเลือกใหม่หรือลองอีกครั้ง", TR_NONE);
       }
     }
     return;
@@ -2558,15 +3179,15 @@ void handleU2Line(const String &raw) {
     return;
   } else if (m.equalsIgnoreCase("VOTE:OK")) {
     barStop();
-    showUIx(UI_THANKS, "ทำรายการสำเร็จ", TR_FADE);
+    showUIx(UI_THANKS, "ทำรายการสำเร็จ", TR_NONE);
     delay(700);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   } else if (m.equalsIgnoreCase("VOTE:ERR")) {
     barStop();
-    showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_FADE);
+    showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_NONE);
     delay(700);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_SLIDE_R);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
 
@@ -2597,7 +3218,7 @@ void tftSoftRecoverIfBlank() {
   tft.init();
   tft.setSwapBytes(true);
   tft.setRotation(0);
-  
+
   // ทดสอบการเขียนหลัง recovery
   spi_select_tft();
   tft.fillScreen(TFT_BLACK);
@@ -2609,19 +3230,21 @@ void tftSoftRecoverIfBlank() {
 // ===== วางฟังก์ชันนี้ "ถัดจาก" ปิดวงเล็บของ setup() =====
 void loop() {
   // ===== ปุ่มโหมด =====
-  valmjoy = analogRead(mjoy);
+  int keyPressed = getKeyPressed();
 
-  if (valmjoy <= 2) {
-    showUIx(UI_CONFIRM, "โหมดลงทะเบียน", TR_SLIDE_UP);
-    waitForAnalogRelease();  // ✅ debounce analog
+  if (keyPressed == KEY_1) {  // Register mode
+    Serial.println("[KEYPAD] KEY_1 (Register) pressed - entering register mode");
+    showUIx(UI_MODE_REGISTER, "โหมดลงทะเบียน", TR_NONE);
+    waitForKeyRelease();  // รอให้ปล่อยปุ่ม
     registerCardAndFingerprint();
     uiShownScanCard = false;
     return;
   }
 
-  if ((valmjoy > 5) && (valmjoy <= 100)) {
-    showUIx(UI_ERROR, "โหมดลบข้อมูล", TR_SLIDE_UP);
-    waitForAnalogRelease();  // ✅ debounce analog
+  if (keyPressed == KEY_2) {  // Delete mode
+    Serial.println("[KEYPAD] KEY_2 (Delete) pressed - entering delete mode");
+    showUIx(UI_MODE_DELETE, "โหมดลบข้อมูล", TR_NONE);
+    waitForKeyRelease();  // รอให้ปล่อยปุ่ม
     deleteCardFlow();
     uiShownScanCard = false;
     return;
@@ -2656,10 +3279,13 @@ void loop() {
 
   // NEW: แสดง "สแกนบัตร" 1 ครั้ง เมื่อเข้าลูปว่างครั้งแรก
   if (!uiShownScanCard) {
-    showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_SLIDE_UP);
+    showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_NONE);
     uiShownScanCard = true;
     uiScanCardShownAt = millis();
   }
+
+  // เรียก uiTick() เพื่อให้ animation ทำงานตลอดเวลา
+  uiTick();
 
   bool cardReady = false;
   rfid_bus_begin();
@@ -2694,18 +3320,21 @@ void loop() {
   // ===== อัลตราโซนิก: auto-sleep =====
   ultrasonicTickForSleep();
 
+  // ===== อัปเดต UI animation =====
+  uiTick();
+
   // ===== ทดสอบ TFT ทุก 30 วินาที (ลดความถี่) =====
   static uint32_t lastTFTTest = 0;
   if (millis() - lastTFTTest > 30000) {
     lastTFTTest = millis();
     // ทดสอบการเขียน TFT เฉพาะเมื่อไม่มีการแสดงผลอื่น
-    if (!isShowingPhoto && !ui_isScanning && !ui_isLoading && !g_barOn) {
+    if (!isShowingPhoto && !ui_isScanning && !ui_isLoading && !g_barOn && !ui_isBusyBorder) {
+      // ไม่แสดงข้อความบนจอเพื่อไม่ให้รบกวนผู้ใช้
+      // แค่ทดสอบการเขียนแบบเงียบๆ
       spi_deselect_all();
       delay(10);
       spi_select_tft();
       tft.fillScreen(TFT_BLACK);
-      tft.setTextColor(TFT_WHITE, TFT_BLACK);
-      tft.drawString("TFT OK", 10, 10, 2);
       spi_deselect_all();
     }
   }
@@ -2746,7 +3375,7 @@ void loop() {
       g_votePosted = false;
       g_idxPending = -1;  // โหมดเทส: ไม่ mark EEPROM
       barStart(1500, "รอการเลือก");
-      showUIx(UI_WAIT_CHOICE, "โหมดทดสอบ: รอ CF:x ทาง USB", TR_FADE);
+      showUIx(UI_WAIT_CHOICE, "โหมดทดสอบ: รอ CF:x ทาง USB", TR_NONE);
       Serial.println("[TEST] AUTHOK -> waiting choice");
     } else if (cmd.equalsIgnoreCase("TFTDEBUG") || cmd.equalsIgnoreCase("TFT")) {
       debugTFT();
@@ -2789,6 +3418,12 @@ void loop() {
       } else {
         Serial.println("No SD Card");
       }
+    } else if (cmd.equalsIgnoreCase("SDCHECK")) {
+      // ตรวจสอบ SD Card พร้อม UI
+      checkSDCardWithUI();
+    } else if (cmd.equalsIgnoreCase("SDWAIT")) {
+      // รอ SD Card พร้อม UI
+      waitForSDCard();
     } else if (cmd.equalsIgnoreCase("JPGTEST")) {
       // ทดสอบการแสดงรูป JPG
       Serial.println("Testing JPG display...");
@@ -2803,6 +3438,145 @@ void loop() {
       } else {
         Serial.println("SD Card reinitialization failed");
       }
+    } else if (cmd.equalsIgnoreCase("DBGEEPROM") || cmd.equalsIgnoreCase("DBG")) {
+      // แสดงข้อมูล EEPROM ทั้งหมด
+      Serial.println("=== EEPROM Debug ===");
+      Serial.printf("Header OK: %s\n", headerOK() ? "YES" : "NO");
+      Serial.printf("MAX_RECORDS: %d\n", MAX_RECORDS);
+
+      for (int i = 0; i < MAX_RECORDS; i++) {
+        Rec r;
+        readRec(i, r);
+        if (r.valid == VALID_FLAG) {
+          String uidStr = String(r.uid, UID_HEX_MAX);
+          Serial.printf("Record[%d]: UID=%s, FP_ID=%d, Voted=%d, Valid=0x%02X\n",
+                        i, uidStr.c_str(), r.fp_id, r.voted, r.valid);
+        } else {
+          Serial.printf("Record[%d]: EMPTY (Valid=0x%02X)\n", i, r.valid);
+        }
+      }
+    } else if (cmd.equalsIgnoreCase("CLEAREEPROM") || cmd.equalsIgnoreCase("CLEAR")) {
+      // ล้าง EEPROM ทั้งหมด
+      Serial.println("Clearing all EEPROM records...");
+      for (int i = 0; i < MAX_RECORDS; i++) {
+        clearRec(i);
+      }
+      Serial.println("EEPROM cleared!");
+    } else if (cmd.equalsIgnoreCase("TESTCARD")) {
+      // ทดสอบการอ่านบัตร
+      Serial.println("Testing card read...");
+      rfid_bus_begin();
+      if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
+        String uidHex = readRFIDasHex();
+        Serial.printf("Card detected: %s\n", uidHex.c_str());
+        rfid.PICC_HaltA();
+        rfid.PCD_StopCrypto1();
+      } else {
+        Serial.println("No card detected");
+      }
+      rfid_bus_end();
+    } else if (cmd.equalsIgnoreCase("KEYPAD") || cmd.equalsIgnoreCase("KEY")) {
+      // ทดสอบ keypad
+      Serial.println("=== Keypad Test ===");
+      Serial.println("Press keys to see values (press any key to exit)...");
+      uint32_t startTime = millis();
+
+      while (millis() - startTime < 10000) {  // ทดสอบ 10 วินาที
+        int rawValue = analogRead(mjoy);
+        int stableValue = readKeypadStable();
+        int keyPressed = getKeyPressed();
+
+        Serial.printf("Raw: %d, Stable: %d, Key: ", rawValue, stableValue);
+        if (keyPressed == KEY_1) {
+          Serial.println("KEY_1 (REGISTER)");
+        } else if (keyPressed == KEY_2) {
+          Serial.println("KEY_2 (DELETE)");
+        } else if (keyPressed == KEY_3) {
+          Serial.println("KEY_3");
+        } else if (keyPressed == KEY_4) {
+          Serial.println("KEY_4");
+        } else if (keyPressed == KEY_5) {
+          Serial.println("KEY_5");
+        } else if (keyPressed == KEY_NONE) {
+          Serial.println("NONE");
+        } else if (keyPressed > 0) {
+          Serial.printf("DETECTED(%d)\n", keyPressed);
+        } else {
+          Serial.println("NO_CHANGE");
+        }
+
+        delay(200);
+      }
+      Serial.println("Keypad test completed");
+    } else if (cmd.equalsIgnoreCase("KEYPADRAW") || cmd.equalsIgnoreCase("KEYRAW")) {
+      // แสดงค่า raw ของ keypad
+      int rawValue = analogRead(mjoy);
+      int stableValue = readKeypadStable();
+      Serial.printf("Keypad Raw: %d, Stable: %d\n", rawValue, stableValue);
+    } else if (cmd.equalsIgnoreCase("KEYCAL") || cmd.equalsIgnoreCase("CALIBRATE")) {
+      // Calibrate keypad - อ่านค่าต่อเนื่อง
+      Serial.println("=== Keypad Calibration ===");
+      Serial.println("Press each key and observe values:");
+      Serial.println("KEY_1 should be ~0");
+      Serial.println("KEY_2 should be ~1024");
+      Serial.println("KEY_3 should be ~2048");
+      Serial.println("KEY_4 should be ~3072");
+      Serial.println("KEY_5 should be ~4064");
+      Serial.println("NONE should be ~4095");
+      Serial.println("Press any key for 30 seconds...");
+
+      uint32_t startTime = millis();
+      while (millis() - startTime < 30000) {  // 30 วินาที
+        int rawValue = analogRead(mjoy);
+        int stableValue = readKeypadStable();
+
+        // แสดงค่าเมื่อมีการเปลี่ยนแปลง
+        static int lastDisplayValue = -1;
+        if (abs(stableValue - lastDisplayValue) > 50) {
+          Serial.printf("Value: %d (Raw: %d)\n", stableValue, rawValue);
+          lastDisplayValue = stableValue;
+        }
+
+        delay(50);
+      }
+      Serial.println("Calibration completed");
+    } else if (cmd.equalsIgnoreCase("24C32TEST")) {
+      // ทดสอบ 24C32 EEPROM
+      Serial.println("=== 24C32 EEPROM Test ===");
+
+      // Test write and read
+      uint8_t testData[16] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+                               0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10 };
+      uint8_t readData[16];
+
+      Serial.println("Writing test data...");
+      eepromWriteBytes(0x100, testData, 16);
+      EEPROM.commit();
+      Serial.println("Write successful");
+
+      delay(10);
+
+      Serial.println("Reading test data...");
+      eepromReadBytes(0x100, readData, 16);
+      Serial.println("Read successful");
+
+      bool match = true;
+      for (int i = 0; i < 16; i++) {
+        if (testData[i] != readData[i]) {
+          match = false;
+          break;
+        }
+      }
+
+      if (match) {
+        Serial.println("ESP32 EEPROM test PASSED!");
+      } else {
+        Serial.println("ESP32 EEPROM test FAILED - data mismatch");
+      }
+    } else if (cmd.equalsIgnoreCase("24C32SIZE") || cmd.equalsIgnoreCase("EEPROMSIZE")) {
+      // แสดงขนาด EEPROM
+      Serial.printf("ESP32 EEPROM Size: %d bytes (%d KB)\n", EEPROM_SIZE, EEPROM_SIZE / 1024);
+      Serial.printf("Max records: %d\n", MAX_RECORDS);
     } else if (cmd.startsWith("CF:") || cmd.startsWith("SEL:") || cmd.equalsIgnoreCase("SENDING") || cmd.equalsIgnoreCase("VOTE:OK") || cmd.equalsIgnoreCase("VOTE:ERR")) {
       // ส่งต่อข้อความจาก USB Serial ให้ใช้ logic เดียวกับ UART2
       handleU2Line(cmd);
@@ -2815,16 +3589,143 @@ void loop() {
   }
 }
 
-// ✅ ฟังก์ชัน debounce: รอจนกว่าค่า analog จะกลับไป > 4000 อย่างนิ่ง
-void waitForAnalogRelease() {
+// ===== Analog Keypad Functions =====
+// ฟังก์ชันอ่านค่า keypad แบบเสถียร
+int readKeypadStable() {
+  static int readings[5] = { 0 };  // เก็บค่าล่าสุด 5 ครั้ง
+  static int index = 0;
+  static bool initialized = false;
+  static uint32_t lastLogTime = 0;
+
+  // อ่านค่าใหม่
+  int newReading = analogRead(mjoy);
+
+  // เก็บค่าใน array
+  readings[index] = newReading;
+  index = (index + 1) % 5;
+
+  if (!initialized) {
+    // เติมค่าให้เต็ม array ก่อน
+    for (int i = 0; i < 5; i++) {
+      readings[i] = newReading;
+    }
+    initialized = true;
+  }
+
+  // คำนวณค่าเฉลี่ย
+  int sum = 0;
+  for (int i = 0; i < 5; i++) {
+    sum += readings[i];
+  }
+  int average = sum / 5;
+
+  // Log ค่า raw ทุก 10 วินาที (ลด logging)
+  if (DEBUG_KEYPAD_DETAIL) {
+    uint32_t now = millis();
+    if (now - lastLogTime > 10000) {
+      Serial.printf("[KEYPAD] Raw: %d, Stable: %d\n", newReading, average);
+      lastLogTime = now;
+    }
+  }
+
+  return average;
+}
+
+// ฟังก์ชันตรวจสอบว่ากดปุ่มอะไร
+int getKeyPressed() {
+  uint32_t currentTime = millis();
+
+  // Polling control - อ่านทุก 50ms เท่านั้น
+  if (currentTime - lastKeyPollTime < KEY_POLL_INTERVAL) {
+    return -1;
+  }
+  lastKeyPollTime = currentTime;
+
+  int currentValue = readKeypadStable();
+
+  // ตรวจสอบว่าค่าเปลี่ยนแปลงมากพอหรือไม่
+  if (abs(currentValue - lastKeyValue) < KEY_TOLERANCE) {
+    // ค่าไม่เปลี่ยนแปลงมาก -> ไม่ใช่การกดปุ่มใหม่
+    return -1;
+  }
+
+  // ตรวจสอบ debounce time
+  if (currentTime - lastKeyTime < KEY_DEBOUNCE_MS) {
+    return -1;
+  }
+
+  // Log ค่าที่เปลี่ยนแปลง
+  if (DEBUG_KEYPAD_DETAIL) {
+    Serial.printf("[KEYPAD] Value: %d -> %d\n", lastKeyValue, currentValue);
+  }
+
+  // อัปเดตค่า
+  lastKeyValue = currentValue;
+  lastKeyTime = currentTime;
+
+  // ตรวจสอบว่ากดปุ่มอะไร (ตรวจทุกปุ่ม)
+  if (abs(currentValue - KEY_1) <= KEY_TOLERANCE) {
+    Serial.printf("[KEYPAD] KEY_1 detected (value: %d)\n", currentValue);
+    return KEY_1;
+  } else if (abs(currentValue - KEY_2) <= KEY_TOLERANCE) {
+    Serial.printf("[KEYPAD] KEY_2 detected (value: %d)\n", currentValue);
+    return KEY_2;
+  } else if (abs(currentValue - KEY_3) <= KEY_TOLERANCE) {
+    Serial.printf("[KEYPAD] KEY_3 detected (value: %d)\n", currentValue);
+    return KEY_3;
+  } else if (abs(currentValue - KEY_4) <= KEY_TOLERANCE) {
+    Serial.printf("[KEYPAD] KEY_4 detected (value: %d)\n", currentValue);
+    return KEY_4;
+  } else if (abs(currentValue - KEY_5) <= KEY_TOLERANCE) {
+    Serial.printf("[KEYPAD] KEY_5 detected (value: %d)\n", currentValue);
+    return KEY_5;
+  } else if (currentValue >= KEY_NONE - KEY_TOLERANCE) {
+    // ไม่ log NONE key เพื่อลด spam
+    return KEY_NONE;
+  }
+
+  if (DEBUG_KEYPAD_DETAIL) {
+    Serial.printf("[KEYPAD] UNKNOWN key: %d\n", currentValue);
+  }
+  return -1;  // ไม่รู้จัก
+}
+
+// ฟังก์ชันรอให้ปล่อยปุ่ม
+void waitForKeyRelease() {
+  uint32_t startTime = millis();
   int stableCount = 0;
-  while (stableCount < 5) {  // ต้องอ่านค่าติดต่อกัน 5 ครั้ง
-    int val = analogRead(mjoy);
-    if (val > 4000) {
+  int lastVal = -1;
+
+  Serial.println("[KEYPAD] Waiting for key release...");
+
+  while (stableCount < 10) {  // ต้องอ่านค่าติดต่อกัน 10 ครั้ง
+    int val = readKeypadStable();
+
+    // Log ค่าเมื่อเปลี่ยนแปลง
+    if (val != lastVal) {
+      Serial.printf("[KEYPAD] Release check - value: %d, stable count: %d\n", val, stableCount);
+      lastVal = val;
+    }
+
+    if (val >= KEY_NONE - KEY_TOLERANCE) {
       stableCount++;
     } else {
       stableCount = 0;
     }
-    delay(10);  // กัน bounce
+
+    delay(20);  // หน่วง 20ms
+
+    // กัน infinite loop
+    if (millis() - startTime > 5000) {
+      Serial.println("[KEYPAD] Timeout waiting for key release");
+      break;
+    }
   }
+
+  Serial.printf("[KEYPAD] Key released after %d ms\n", millis() - startTime);
+}
+
+// ✅ ฟังก์ชัน debounce: รอจนกว่าค่า analog จะกลับไป > 4000 อย่างนิ่ง (เก่า - เก็บไว้)
+void waitForAnalogRelease() {
+  waitForKeyRelease();  // ใช้ฟังก์ชันใหม่แทน
 }

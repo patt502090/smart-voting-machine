@@ -28,6 +28,18 @@ static int g_idxPending = -1;      // เก็บ index ของบัตร�
 int mjoy = 35;
 int valmjoy = 0;
 
+// ===== Analog Keypad Configuration =====
+// ค่า analog ที่อ่านได้จาก keypad แต่ละปุ่ม (ปรับตามการวัดจริง)
+const int KEY_NONE = 4095;    // ไม่กดปุ่ม (HIGH)
+const int KEY_REGISTER = 0;   // ปุ่มลงทะเบียน (LOW)
+const int KEY_DELETE = 512;   // ปุ่มลบ (ประมาณ 512)
+const int KEY_TOLERANCE = 50; // ความคลาดเคลื่อนที่ยอมรับได้
+
+// ตัวแปรสำหรับ debounce
+static int lastKeyValue = KEY_NONE;
+static uint32_t lastKeyTime = 0;
+static const uint32_t KEY_DEBOUNCE_MS = 100; // หน่วงเวลา 100ms
+
 #include "driver/rtc_io.h"  // สำหรับ rtc_gpio_get_level()
 #include "esp_system.h"
 
@@ -2736,19 +2748,21 @@ void tftSoftRecoverIfBlank() {
 // ===== วางฟังก์ชันนี้ "ถัดจาก" ปิดวงเล็บของ setup() =====
 void loop() {
   // ===== ปุ่มโหมด =====
-  valmjoy = analogRead(mjoy);
-
-  if (valmjoy <= 2) {
+  int keyPressed = getKeyPressed();
+  
+  if (keyPressed == KEY_REGISTER) {
+    Serial.println("[KEYPAD] Register key pressed");
     showUIx(UI_CONFIRM, "โหมดลงทะเบียน", TR_NONE);
-    waitForAnalogRelease();  // ✅ debounce analog
+    waitForKeyRelease();  // รอให้ปล่อยปุ่ม
     registerCardAndFingerprint();
     uiShownScanCard = false;
     return;
   }
 
-  if ((valmjoy > 5) && (valmjoy <= 100)) {
+  if (keyPressed == KEY_DELETE) {
+    Serial.println("[KEYPAD] Delete key pressed");
     showUIx(UI_ERROR, "โหมดลบข้อมูล", TR_NONE);
-    waitForAnalogRelease();  // ✅ debounce analog
+    waitForKeyRelease();  // รอให้ปล่อยปุ่ม
     deleteCardFlow();
     uiShownScanCard = false;
     return;
@@ -2973,6 +2987,36 @@ void loop() {
         Serial.println("No card detected");
       }
       rfid_bus_end();
+    } else if (cmd.equalsIgnoreCase("KEYPAD") || cmd.equalsIgnoreCase("KEY")) {
+      // ทดสอบ keypad
+      Serial.println("=== Keypad Test ===");
+      Serial.println("Press keys to see values (press any key to exit)...");
+      uint32_t startTime = millis();
+      
+      while (millis() - startTime < 10000) { // ทดสอบ 10 วินาที
+        int rawValue = analogRead(mjoy);
+        int stableValue = readKeypadStable();
+        int keyPressed = getKeyPressed();
+        
+        Serial.printf("Raw: %d, Stable: %d, Key: ", rawValue, stableValue);
+        if (keyPressed == KEY_REGISTER) {
+          Serial.println("REGISTER");
+        } else if (keyPressed == KEY_DELETE) {
+          Serial.println("DELETE");
+        } else if (keyPressed == KEY_NONE) {
+          Serial.println("NONE");
+        } else {
+          Serial.println("UNKNOWN");
+        }
+        
+        delay(200);
+      }
+      Serial.println("Keypad test completed");
+    } else if (cmd.equalsIgnoreCase("KEYPADRAW") || cmd.equalsIgnoreCase("KEYRAW")) {
+      // แสดงค่า raw ของ keypad
+      int rawValue = analogRead(mjoy);
+      int stableValue = readKeypadStable();
+      Serial.printf("Keypad Raw: %d, Stable: %d\n", rawValue, stableValue);
     } else if (cmd.startsWith("CF:") || cmd.startsWith("SEL:") || cmd.equalsIgnoreCase("SENDING") || cmd.equalsIgnoreCase("VOTE:OK") || cmd.equalsIgnoreCase("VOTE:ERR")) {
       // ส่งต่อข้อความจาก USB Serial ให้ใช้ logic เดียวกับ UART2
       handleU2Line(cmd);
@@ -2985,16 +3029,96 @@ void loop() {
   }
 }
 
-// ✅ ฟังก์ชัน debounce: รอจนกว่าค่า analog จะกลับไป > 4000 อย่างนิ่ง
-void waitForAnalogRelease() {
+// ===== Analog Keypad Functions =====
+// ฟังก์ชันอ่านค่า keypad แบบเสถียร
+int readKeypadStable() {
+  static int readings[5] = {0}; // เก็บค่าล่าสุด 5 ครั้ง
+  static int index = 0;
+  static bool initialized = false;
+  
+  // อ่านค่าใหม่
+  int newReading = analogRead(mjoy);
+  
+  // เก็บค่าใน array
+  readings[index] = newReading;
+  index = (index + 1) % 5;
+  
+  if (!initialized) {
+    // เติมค่าให้เต็ม array ก่อน
+    for (int i = 0; i < 5; i++) {
+      readings[i] = newReading;
+    }
+    initialized = true;
+  }
+  
+  // คำนวณค่าเฉลี่ย
+  int sum = 0;
+  for (int i = 0; i < 5; i++) {
+    sum += readings[i];
+  }
+  int average = sum / 5;
+  
+  return average;
+}
+
+// ฟังก์ชันตรวจสอบว่ากดปุ่มอะไร
+int getKeyPressed() {
+  int currentValue = readKeypadStable();
+  uint32_t currentTime = millis();
+  
+  // ตรวจสอบว่าค่าเปลี่ยนแปลงมากพอหรือไม่
+  if (abs(currentValue - lastKeyValue) < KEY_TOLERANCE) {
+    // ค่าไม่เปลี่ยนแปลงมาก -> ไม่ใช่การกดปุ่มใหม่
+    return -1;
+  }
+  
+  // ตรวจสอบ debounce time
+  if (currentTime - lastKeyTime < KEY_DEBOUNCE_MS) {
+    return -1;
+  }
+  
+  // อัปเดตค่า
+  lastKeyValue = currentValue;
+  lastKeyTime = currentTime;
+  
+  // ตรวจสอบว่ากดปุ่มอะไร
+  if (currentValue <= KEY_REGISTER + KEY_TOLERANCE) {
+    return KEY_REGISTER;
+  } else if (currentValue >= KEY_DELETE - KEY_TOLERANCE && 
+             currentValue <= KEY_DELETE + KEY_TOLERANCE) {
+    return KEY_DELETE;
+  } else if (currentValue >= KEY_NONE - KEY_TOLERANCE) {
+    return KEY_NONE;
+  }
+  
+  return -1; // ไม่รู้จัก
+}
+
+// ฟังก์ชันรอให้ปล่อยปุ่ม
+void waitForKeyRelease() {
+  uint32_t startTime = millis();
   int stableCount = 0;
-  while (stableCount < 5) {  // ต้องอ่านค่าติดต่อกัน 5 ครั้ง
-    int val = analogRead(mjoy);
-    if (val > 4000) {
+  
+  while (stableCount < 10) { // ต้องอ่านค่าติดต่อกัน 10 ครั้ง
+    int val = readKeypadStable();
+    
+    if (val >= KEY_NONE - KEY_TOLERANCE) {
       stableCount++;
     } else {
       stableCount = 0;
     }
-    delay(10);  // กัน bounce
+    
+    delay(20); // หน่วง 20ms
+    
+    // กัน infinite loop
+    if (millis() - startTime > 5000) {
+      Serial.println("[KEYPAD] Timeout waiting for key release");
+      break;
+    }
   }
+}
+
+// ✅ ฟังก์ชัน debounce: รอจนกว่าค่า analog จะกลับไป > 4000 อย่างนิ่ง (เก่า - เก็บไว้)
+void waitForAnalogRelease() {
+  waitForKeyRelease(); // ใช้ฟังก์ชันใหม่แทน
 }

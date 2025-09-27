@@ -3450,7 +3450,7 @@ void handleU2Line(const String &raw) {
       }
     }
     return;
-  } else if (m.equalsIgnoreCase("PS")) {
+  } else if (m.equalsIgnoreCase("R")) {
     // รับ PS (Password Success) จาก Arduino
     Serial.println("[HANDLE] Received PS - Password confirmed");
     

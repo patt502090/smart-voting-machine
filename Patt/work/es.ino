@@ -132,7 +132,14 @@ enum UIState {
   UI_WAKE,
   UI_WAIT_CHOICE,  // รอผู้ใช้เลือกผู้สมัคร
   UI_SELECTED,     // แสดงว่าผู้ใช้เลือกหมายเลขอะไรแล้ว
-  UI_SENDING       // ขณะกำลังส่ง/รอผล
+  UI_SENDING,      // ขณะกำลังส่ง/รอผล
+  UI_SD_CHECK,     // กำลังตรวจสอบ SD Card
+  UI_SD_FAIL,      // SD Card ไม่ทำงาน
+  UI_SD_RETRY,     // กำลังลอง SD Card ใหม่
+  UI_MODE_REGISTER, // โหมดลงทะเบียน
+  UI_MODE_DELETE,   // โหมดลบข้อมูล
+  UI_REGISTER_SCAN, // สแกนบัตรในโหมดลงทะเบียน
+  UI_DELETE_SCAN    // สแกนบัตรในโหมดลบ
 };
 static bool uiShownScanCard = false;
 static uint32_t uiScanCardShownAt = 0;
@@ -687,6 +694,25 @@ void paintScreenToSprite(UIState s, const char *subtitle, bool popIcon = false, 
       c1 = TFT_NAVY;
       c2 = TFT_BLACK;
       break;
+    case UI_SD_CHECK:
+    case UI_SD_RETRY:
+      c1 = TFT_ORANGE;
+      c2 = TFT_BLACK;
+      break;
+    case UI_SD_FAIL:
+      c1 = TFT_MAROON;
+      c2 = TFT_BLACK;
+      break;
+    case UI_MODE_REGISTER:
+    case UI_REGISTER_SCAN:
+      c1 = TFT_DARKGREEN;
+      c2 = TFT_BLACK;
+      break;
+    case UI_MODE_DELETE:
+    case UI_DELETE_SCAN:
+      c1 = TFT_MAROON;
+      c2 = TFT_BLACK;
+      break;
   }
   for (int y = 0; y < H; ++y) {
     float k = (float)y / (float)(H - 1);
@@ -717,6 +743,13 @@ void paintScreenToSprite(UIState s, const char *subtitle, bool popIcon = false, 
                                         : (s == UI_WAIT_CHOICE) ? "รอเลือกผู้สมัคร"
                                         : (s == UI_SELECTED)    ? "ยืนยันตัวเลือก"
                                         : (s == UI_SENDING)     ? "กำลังส่งข้อมูล"
+                                        : (s == UI_SD_CHECK)    ? "กำลังตรวจสอบ SD Card"
+                                        : (s == UI_SD_FAIL)     ? "SD Card ไม่ทำงาน"
+                                        : (s == UI_SD_RETRY)    ? "กำลังลอง SD Card ใหม่"
+                                        : (s == UI_MODE_REGISTER) ? "โหมดลงทะเบียน"
+                                        : (s == UI_MODE_DELETE)   ? "โหมดลบข้อมูล"
+                                        : (s == UI_REGISTER_SCAN) ? "แตะบัตรเพื่อลงทะเบียน"
+                                        : (s == UI_DELETE_SCAN)   ? "แตะบัตรเพื่อลบข้อมูล"
                                                                 : "";
 
   // wipe แถบขาวใต้โล่ (ความยาวสัมพันธ์ popK)
@@ -827,6 +860,94 @@ void paintScreenToSprite(UIState s, const char *subtitle, bool popIcon = false, 
     drawCheck(icx, icy, scale);
   if (s == UI_CARD_FAIL || s == UI_FINGER_FAIL || s == UI_ERROR)
     drawCross(icx, icy, scale);
+  
+  // SD Card icons
+  if (s == UI_SD_CHECK || s == UI_SD_RETRY) {
+    // วาดไอคอน SD Card พร้อม spinner
+    int cx = W / 2, cy = 150;
+    int w = 60, h = 40, r = 8;
+    
+    // SD Card body
+    spr.fillRoundRect(cx - w/2, cy - h/2, w, h, r, TFT_WHITE);
+    spr.fillRoundRect(cx - w/2 + 2, cy - h/2 + 2, w - 4, h - 4, r, TFT_ORANGE);
+    
+    // SD text
+    spr.setTextColor(TFT_WHITE, TFT_ORANGE);
+    spr.drawString("SD", cx - 8, cy - 8, 2);
+    
+    // Spinner dots around the card
+    float animPhase = (millis() % 2000) / 2000.0f;
+    for (int i = 0; i < 8; i++) {
+      float angle = (i / 8.0f + animPhase) * 2.0f * PI;
+      int x = cx + int(cosf(angle) * 50);
+      int y = cy + int(sinf(angle) * 50);
+      spr.fillCircle(x, y, 2, TFT_WHITE);
+    }
+  }
+  
+  if (s == UI_SD_FAIL) {
+    // วาดไอคอน SD Card พร้อม X
+    int cx = W / 2, cy = 150;
+    int w = 60, h = 40, r = 8;
+    
+    // SD Card body
+    spr.fillRoundRect(cx - w/2, cy - h/2, w, h, r, TFT_WHITE);
+    spr.fillRoundRect(cx - w/2 + 2, cy - h/2 + 2, w - 4, h - 4, r, TFT_RED);
+    
+    // SD text
+    spr.setTextColor(TFT_WHITE, TFT_RED);
+    spr.drawString("SD", cx - 8, cy - 8, 2);
+    
+    // X mark
+    spr.drawLine(cx - 15, cy - 15, cx + 15, cy + 15, TFT_WHITE);
+    spr.drawLine(cx - 15, cy + 15, cx + 15, cy - 15, TFT_WHITE);
+  }
+  
+  // Register Mode Icons
+  if (s == UI_MODE_REGISTER || s == UI_REGISTER_SCAN) {
+    int cx = W / 2, cy = 150;
+    
+    // วาดไอคอน + (บวก) ใหญ่
+    int size = 50;
+    spr.drawLine(cx - size/2, cy, cx + size/2, cy, TFT_WHITE);  // แนวนอน
+    spr.drawLine(cx, cy - size/2, cx, cy + size/2, TFT_WHITE);  // แนวตั้ง
+    
+    // วาดวงกลมรอบ
+    spr.drawCircle(cx, cy, size/2 + 10, TFT_WHITE);
+    
+    // วาดการ์ดเล็กๆ ด้านล่าง
+    int cardW = 30, cardH = 20;
+    spr.fillRoundRect(cx - cardW/2, cy + 40, cardW, cardH, 4, TFT_WHITE);
+    spr.fillRoundRect(cx - cardW/2 + 2, cy + 42, cardW - 4, cardH - 4, 4, TFT_DARKGREEN);
+    
+    // วาดนิ้วมือเล็กๆ ด้านบน
+    int fingerR = 15;
+    spr.drawCircle(cx, cy - 40, fingerR, TFT_WHITE);
+    spr.drawCircle(cx, cy - 40, fingerR - 3, TFT_WHITE);
+    spr.drawCircle(cx, cy - 40, fingerR - 6, TFT_WHITE);
+  }
+  
+  // Delete Mode Icons
+  if (s == UI_MODE_DELETE || s == UI_DELETE_SCAN) {
+    int cx = W / 2, cy = 150;
+    
+    // วาดไอคอน - (ลบ) ใหญ่
+    int size = 50;
+    spr.drawLine(cx - size/2, cy, cx + size/2, cy, TFT_WHITE);  // แนวนอน
+    
+    // วาดวงกลมรอบ
+    spr.drawCircle(cx, cy, size/2 + 10, TFT_WHITE);
+    
+    // วาดการ์ดเล็กๆ ด้านล่าง
+    int cardW = 30, cardH = 20;
+    spr.fillRoundRect(cx - cardW/2, cy + 40, cardW, cardH, 4, TFT_WHITE);
+    spr.fillRoundRect(cx - cardW/2 + 2, cy + 42, cardW - 4, cardH - 4, 4, TFT_RED);
+    
+    // วาด X ด้านบน
+    int xSize = 20;
+    spr.drawLine(cx - xSize/2, cy - 40 - xSize/2, cx + xSize/2, cy - 40 + xSize/2, TFT_WHITE);
+    spr.drawLine(cx - xSize/2, cy - 40 + xSize/2, cx + xSize/2, cy - 40 - xSize/2, TFT_WHITE);
+  }
 
   // Big headline + subtitle
   const char *big =
@@ -845,6 +966,13 @@ void paintScreenToSprite(UIState s, const char *subtitle, bool popIcon = false, 
                                     : (s == UI_WAIT_CHOICE) ? "WAIT"
                                     : (s == UI_SELECTED)    ? "SELECTED"
                                     : (s == UI_SENDING)     ? "SENDING"
+                                    : (s == UI_SD_CHECK)    ? "SD CHECK"
+                                    : (s == UI_SD_FAIL)     ? "SD FAIL"
+                                    : (s == UI_SD_RETRY)    ? "SD RETRY"
+                                    : (s == UI_MODE_REGISTER) ? "REGISTER MODE"
+                                    : (s == UI_MODE_DELETE)   ? "DELETE MODE"
+                                    : (s == UI_REGISTER_SCAN) ? "REGISTER CARD"
+                                    : (s == UI_DELETE_SCAN)   ? "DELETE CARD"
                                                             : "";
 
   spr.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -1464,7 +1592,7 @@ void registerCardAndFingerprint() {
   Serial.println("Registration mode... Tap a new card");
 
   // UI: เริ่มโหมดลงทะเบียน → รอแตะบัตร
-  showUIx(UI_SCAN_CARD, "แตะบัตรเพื่อเริ่มลงทะเบียน", TR_NONE);
+  showUIx(UI_REGISTER_SCAN, "แตะบัตรเพื่อเริ่มลงทะเบียน", TR_NONE);
 
   // --- รอการ์ดแบบล็อคบัสทุกครั้ง ---
   while (true) {
@@ -1588,7 +1716,7 @@ void registerCardAndFingerprint() {
 void deleteCardFlow() {
   exitPhotoMode();
   Serial.println("Delete mode... Tap a card to delete");
-  showUIx(UI_SCAN_CARD, "แตะบัตรเพื่อลบข้อมูล", TR_NONE);
+  showUIx(UI_DELETE_SCAN, "แตะบัตรเพื่อลบข้อมูล", TR_NONE);
 
   while (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) {
     delay(50);
@@ -2236,6 +2364,70 @@ bool sd_reinit(uint32_t hz) {
   return false;
 }
 
+// ===== SD Card Check with UI =====
+bool checkSDCardWithUI() {
+  Serial.println("[SD] Starting SD Card check...");
+  showUIx(UI_SD_CHECK, "กำลังตรวจสอบ SD Card", TR_NONE);
+  
+  // ตรวจสอบ SD Card
+  if (SD.cardType() != CARD_NONE) {
+    Serial.println("[SD] SD Card detected and working");
+    return true;
+  }
+  
+  // SD Card ไม่ทำงาน - แสดง UI และลองใหม่
+  Serial.println("[SD] SD Card not working, showing retry UI");
+  showUIx(UI_SD_FAIL, "SD Card ไม่ทำงาน", TR_NONE);
+  delay(2000);
+  
+  // ลองใหม่ 3 ครั้ง
+  for (int retry = 0; retry < 3; retry++) {
+    Serial.printf("[SD] Retry attempt %d/3\n", retry + 1);
+    showUIx(UI_SD_RETRY, "กำลังลอง SD Card ใหม่...", TR_NONE);
+    
+    // ลองเริ่ม SD Card ใหม่
+    if (sd_reinit(4000000)) {
+      Serial.println("[SD] SD Card recovered!");
+      showUIx(UI_SD_CHECK, "SD Card ทำงานได้แล้ว", TR_NONE);
+      delay(1000);
+      return true;
+    }
+    
+    delay(1000);
+  }
+  
+  // ล้มเหลวทั้งหมด
+  Serial.println("[SD] All retry attempts failed");
+  showUIx(UI_SD_FAIL, "SD Card ไม่สามารถใช้งานได้", TR_NONE);
+  return false;
+}
+
+// ===== SD Card Wait Loop =====
+void waitForSDCard() {
+  Serial.println("[SD] Waiting for SD Card to be ready...");
+  
+  while (true) {
+    if (checkSDCardWithUI()) {
+      Serial.println("[SD] SD Card is ready, continuing...");
+      break;
+    }
+    
+    // แสดงข้อความรอ
+    showUIx(UI_SD_FAIL, "กรุณาใส่ SD Card หรือตรวจสอบการเชื่อมต่อ", TR_NONE);
+    delay(3000);
+    
+    // ตรวจสอบว่าผู้ใช้กดปุ่มเพื่อข้าม
+    int keyPressed = getKeyPressed();
+    if (keyPressed == KEY_REGISTER || keyPressed == KEY_DELETE) {
+      Serial.println("[SD] User pressed key to skip SD Card check");
+      waitForKeyRelease();
+      showUIx(UI_SD_FAIL, "ข้ามการตรวจสอบ SD Card", TR_NONE);
+      delay(1000);
+      break;
+    }
+  }
+}
+
 bool sd_retry_wrap(std::function<bool()> io, int retries = 2) {
   for (int i = 0; i <= retries; ++i) {
     if (io()) return true;
@@ -2501,46 +2693,45 @@ void setup() {
   SPI.begin(18, 19, 23, SD_CS);
   spi_idle_all();  // ดันทุก CS = HIGH
 
-  // --- SD Card: ลอง 10 MHz -> 4 MHz ---
-  // --- SD Card: เริ่มแบบปลอดภัย ไม่ดึง CS ลงเอง ---
-  bool sdOK = false;
-  {
-    // ให้แน่ใจว่า CS ทุกตัวเป็น OUTPUT และ HIGH
-    pinMode(SD_CS, OUTPUT);
-    pinMode(TFT_CS, OUTPUT);
-    pinMode(SS_PIN, OUTPUT);
-    digitalWrite(SD_CS, HIGH);  // <-- สำคัญ: ปล่อย HIGH
-    digitalWrite(TFT_CS, HIGH);
-    digitalWrite(SS_PIN, HIGH);
+  // --- SD Card: เริ่มแบบปลอดภัย ---
+  // ให้แน่ใจว่า CS ทุกตัวเป็น OUTPUT และ HIGH
+  pinMode(SD_CS, OUTPUT);
+  pinMode(TFT_CS, OUTPUT);
+  pinMode(SS_PIN, OUTPUT);
+  digitalWrite(SD_CS, HIGH);  // <-- สำคัญ: ปล่อย HIGH
+  digitalWrite(TFT_CS, HIGH);
+  digitalWrite(SS_PIN, HIGH);
 
-    // เริ่มที่ความถี่ต่ำก่อน (เสถียรสุด) แล้วค่อยเพิ่ม
-    if (SD.begin(SD_CS, SPI, 1000000)) {  // 1 MHz
+  // เริ่มที่ความถี่ต่ำก่อน (เสถียรสุด) แล้วค่อยเพิ่ม
+  bool sdOK = false;
+  if (SD.begin(SD_CS, SPI, 1000000)) {  // 1 MHz
+    sdOK = (SD.cardType() != CARD_NONE);
+    if (!sdOK)
+      SD.end();
+  }
+  if (!sdOK) {
+    if (SD.begin(SD_CS, SPI, 4000000)) {  // 4 MHz
       sdOK = (SD.cardType() != CARD_NONE);
       if (!sdOK)
         SD.end();
     }
-    if (!sdOK) {
-      if (SD.begin(SD_CS, SPI, 4000000)) {  // 4 MHz
-        sdOK = (SD.cardType() != CARD_NONE);
-        if (!sdOK)
-          SD.end();
-      }
+  }
+  if (!sdOK) {
+    if (SD.begin(SD_CS, SPI, 10000000)) {  // 10 MHz (ถ้าการ์ดดี)
+      sdOK = (SD.cardType() != CARD_NONE);
+      if (!sdOK)
+        SD.end();
     }
-    if (!sdOK) {
-      if (SD.begin(SD_CS, SPI, 10000000)) {  // 10 MHz (ถ้าการ์ดดี)
-        sdOK = (SD.cardType() != CARD_NONE);
-        if (!sdOK)
-          SD.end();
-      }
-    }
+  }
 
-    if (sdOK) {
-      Serial.printf("SD OK, type=%u, size=%llu MB\n",
-                    (unsigned)SD.cardType(),
-                    (unsigned long long)(SD.cardSize() / (1024ULL * 1024ULL)));
-    } else {
-      Serial.println("SD mount failed (tried 1/4/10 MHz)");
-    }
+  if (sdOK) {
+    Serial.printf("SD OK, type=%u, size=%llu MB\n",
+                  (unsigned)SD.cardType(),
+                  (unsigned long long)(SD.cardSize() / (1024ULL * 1024ULL)));
+  } else {
+    Serial.println("SD mount failed (tried 1/4/10 MHz)");
+    // ใช้ UI เพื่อรอ SD Card
+    waitForSDCard();
   }
 
   // --- TFT + TJpg callback ---
@@ -2752,7 +2943,7 @@ void loop() {
   
   if (keyPressed == KEY_REGISTER) {
     Serial.println("[KEYPAD] Register key pressed");
-    showUIx(UI_CONFIRM, "โหมดลงทะเบียน", TR_NONE);
+    showUIx(UI_MODE_REGISTER, "โหมดลงทะเบียน", TR_NONE);
     waitForKeyRelease();  // รอให้ปล่อยปุ่ม
     registerCardAndFingerprint();
     uiShownScanCard = false;
@@ -2761,7 +2952,7 @@ void loop() {
 
   if (keyPressed == KEY_DELETE) {
     Serial.println("[KEYPAD] Delete key pressed");
-    showUIx(UI_ERROR, "โหมดลบข้อมูล", TR_NONE);
+    showUIx(UI_MODE_DELETE, "โหมดลบข้อมูล", TR_NONE);
     waitForKeyRelease();  // รอให้ปล่อยปุ่ม
     deleteCardFlow();
     uiShownScanCard = false;
@@ -2936,6 +3127,12 @@ void loop() {
       } else {
         Serial.println("No SD Card");
       }
+    } else if (cmd.equalsIgnoreCase("SDCHECK")) {
+      // ตรวจสอบ SD Card พร้อม UI
+      checkSDCardWithUI();
+    } else if (cmd.equalsIgnoreCase("SDWAIT")) {
+      // รอ SD Card พร้อม UI
+      waitForSDCard();
     } else if (cmd.equalsIgnoreCase("JPGTEST")) {
       // ทดสอบการแสดงรูป JPG
       Serial.println("Testing JPG display...");

@@ -1487,28 +1487,15 @@ const int FINGER_TX = 25;  // ESP32 TX1 pin to sensor RX
 #include <EEPROM.h>
 
 // Debug controls
-#define DEBUG_24C32_DETAIL 0
 #define DEBUG_RFID_DETAIL 0
 #define DEBUG_KEYPAD_DETAIL 0
 #define DEBUG_ULTRA 1  // เปิด ultrasonic debug logging
 
-// Use ESP32 EEPROM instead of 24C32
-#define USE_ESP32_EEPROM 1
-
-#if USE_ESP32_EEPROM
+// ESP32 Internal EEPROM Configuration
 const int EEPROM_SIZE = 512;
 const int MAX_RECORDS = (EEPROM_SIZE - 16) / 20;  // ~= 24 records
-#else
-  // 24C32 EEPROM settings (DISABLED)
-#define I2C_SDA_PIN 32
-#define I2C_SCL_PIN 33
-#define EEPROM_24C32_ADDR 0x50
-#define EEPROM_24C32_SIZE 4096
-#define EEPROM_PAGE_SIZE 32
-  // MAX_RECORDS is now defined above based on USE_ESP32_EEPROM
-#endif
 
-// ---------- Durable Storage Layout (24C32 EEPROM) ----------
+// ---------- Durable Storage Layout (ESP32 Internal EEPROM) ----------
 /*
   Header (offset 0..15)
     0..3   : MAGIC 'VOTE' (0x56 0x4F 0x54 0x45)
@@ -1530,7 +1517,7 @@ const int RECORD_SIZE = 20;
 const int BASE = HDR_SIZE;
 const uint8_t VALID_FLAG = 0xA5;
 const uint8_t EMPTY_FLAG = 0xFF;
-// MAX_RECORDS is now defined above based on USE_ESP32_EEPROM
+// Record storage configuration
 
 // ---------- Utils ----------
 struct Rec {
@@ -1542,8 +1529,7 @@ struct Rec {
 };
 
 // ===== EEPROM Functions =====
-#if USE_ESP32_EEPROM
-// ESP32 EEPROM functions
+// ESP32 Internal EEPROM Functions Only
 void eepromWriteBytes(int addr, const uint8_t *data, int len) {
   for (int i = 0; i < len; ++i)
     EEPROM.write(addr + i, data[i]);
@@ -1553,61 +1539,6 @@ void eepromReadBytes(int addr, uint8_t *data, int len) {
   for (int i = 0; i < len; ++i)
     data[i] = EEPROM.read(addr + i);
 }
-#else
-// 24C32 EEPROM functions (DISABLED)
-bool eeprom24C32WriteBytes(int addr, const uint8_t *data, int len) {
-  // Do nothing - 24C32 disabled
-  return true;
-}
-
-bool eeprom24C32ReadBytes(int addr, uint8_t *data, int len) {
-  // Do nothing - 24C32 disabled
-  return true;
-}
-#endif
-
-// Page-aware write function
-#if !USE_ESP32_EEPROM
-bool eeprom24C32WritePageSafe(int addr, const uint8_t *data, int len) {
-  int remaining = len;
-  int currentAddr = addr;
-  const uint8_t *currentData = data;
-
-  while (remaining > 0) {
-    // Calculate how many bytes we can write in this page
-    int pageStart = (currentAddr / EEPROM_PAGE_SIZE) * EEPROM_PAGE_SIZE;
-    int pageEnd = pageStart + EEPROM_PAGE_SIZE;
-    int bytesInPage = pageEnd - currentAddr;
-    int bytesToWrite = min(remaining, bytesInPage);
-
-    if (!eeprom24C32WriteBytes(currentAddr, currentData, bytesToWrite)) {
-      return false;
-    }
-
-    currentAddr += bytesToWrite;
-    currentData += bytesToWrite;
-    remaining -= bytesToWrite;
-
-    // Small delay between pages
-    if (remaining > 0) {
-      delay(2);
-    }
-  }
-
-  return true;
-}
-#endif
-
-// Compatibility functions
-#if !USE_ESP32_EEPROM
-void eepromWriteBytes(int addr, const uint8_t *data, int len) {
-  eeprom24C32WritePageSafe(addr, data, len);
-}
-
-void eepromReadBytes(int addr, uint8_t *data, int len) {
-  eeprom24C32ReadBytes(addr, data, len);
-}
-#endif
 
 void writeHeader() {
   uint8_t hdr[HDR_SIZE] = { 0 };
@@ -1618,9 +1549,7 @@ void writeHeader() {
   hdr[4] = VERSION;
   // rest zero
   eepromWriteBytes(0, hdr, HDR_SIZE);
-#if USE_ESP32_EEPROM
   EEPROM.commit();
-#endif
   Serial.println("Header written");
 }
 
@@ -1654,12 +1583,7 @@ void writeRec(int idx, const Rec &r) {
   buf[18] = r.valid;
   buf[19] = r.reserved;
   eepromWriteBytes(recAddr(idx), buf, RECORD_SIZE);
-#if USE_ESP32_EEPROM
   EEPROM.commit();
-#endif
-  if (DEBUG_24C32_DETAIL) {
-    Serial.printf("[EEPROM] Record[%d] written\n", idx);
-  }
 }
 
 void clearRec(int idx) {
@@ -3177,15 +3101,9 @@ void setup() {
   Serial.setTimeout(200);
   mySerial.setTimeout(200);
 
-  // Initialize EEPROM
-#if USE_ESP32_EEPROM
+  // Initialize ESP32 Internal EEPROM
   EEPROM.begin(EEPROM_SIZE);
-  Serial.printf("[EEPROM] ESP32 EEPROM initialized (%d bytes)\n", EEPROM_SIZE);
-#else
-  // Initialize I2C for 24C32 EEPROM (disabled)
-  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-  Serial.printf("[24C32] I2C initialized on SDA=%d, SCL=%d\n", I2C_SDA_PIN, I2C_SCL_PIN);
-#endif
+  Serial.printf("[EEPROM] ESP32 Internal EEPROM initialized (%d bytes)\n", EEPROM_SIZE);
 
   // --- Make all SPI CS pins OUTPUT & HIGH as early as possible ---
   pinMode(SD_CS, OUTPUT);
@@ -3243,20 +3161,8 @@ void setup() {
   lastNearSeenMs = millis();
 
   // --- EEPROM header/init ---
-#if USE_ESP32_EEPROM
-  Serial.println("[EEPROM] Initializing ESP32 EEPROM...");
-#else
-  Serial.println("[24C32] Initializing EEPROM...");
-
-  // Test 24C32 connection
-  uint8_t testByte;
-  if (eeprom24C32ReadBytes(0, &testByte, 1)) {
-    Serial.println("[24C32] Connection test successful");
-  } else {
-    Serial.println("[24C32] Connection test failed - check wiring!");
-  }
-#endif
-
+  Serial.println("[EEPROM] Checking ESP32 Internal EEPROM...");
+  
   if (!headerOK()) {
     Serial.println("Init header...");
     writeHeader();

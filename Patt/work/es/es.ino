@@ -29,11 +29,11 @@ int mjoy = 35;
 int valmjoy = 0;
 
 // ===== Analog Keypad Configuration =====
-// ค่า analog ที่อ่านได้จาก keypad (2 ปุ่ม จากการทดสอบจริง)
+// ค่า analog ที่อ่านได้จาก keypad (3 ปุ่ม จากการทดสอบจริง)
 const int KEY_NONE = 4095;    // ไม่กดปุ่ม (HIGH)
-const int KEY_REGISTER = 0;   // ปุ่มลงทะเบียน (0V)
+const int KEY_REGISTER = 0;   // ปุ่มลงทะเบียน (0V) - ใช้ซ้ำเป็น "ลบบัตร" ใน delete menu
 const int KEY_DELETE = 1950;  // ปุ่มลบ (~1950)
-const int KEY_SCORE = 350;    // ปุ่มเช็ค score (300-400) - ส่ง T ไป Arduino
+const int KEY_SCORE = 350;    // ปุ่มเช็ค score (300-400) - ใช้ซ้ำเป็น "ลบคะแนน" ใน delete menu
 
 const int KEY_TOLERANCE = 150;  // ความคลาดเคลื่อนที่ยอมรับได้ (เพิ่มเป็น 150)
 
@@ -53,6 +53,9 @@ static bool inDeleteMode = false;
 static bool inScoreMode = false;
 static bool testModeEnabled = false;  // ควบคุมโหมดทดสอบ (เปิด/ปิด)
 static bool waitingForPassword = false;  // รอการยืนยัน password จาก Arduino
+static bool waitingForDeletePassword = false;  // รอการยืนยัน password สำหรับ delete mode
+static bool waitingForScorePassword = false;   // รอการยืนยัน password สำหรับ score mode
+static bool inDeleteMenuMode = false;  // รอเลือกประเภทการลบ (card/score)
 
 #include "driver/rtc_io.h"  // สำหรับ rtc_gpio_get_level()
 #include "esp_system.h"
@@ -2052,7 +2055,7 @@ void registerCardAndFingerprint() {
     Serial.println("This card is already registered.");
     
     // ส่งสัญญาณให้ Arduino เล่นเสียง "ลายนิ้วมือผิด/error"
-    mySerial.println("ZZZZZZZZZZZZZZZZZZZZZZZZZZ");
+    mySerial.println("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
     
     showUIx(UI_CARD_DUPLICATE, "บัตรนี้ลงทะเบียนแล้ว", TR_NONE);
 
@@ -2164,7 +2167,114 @@ void registerCardAndFingerprint() {
   }
 }
 
+
+
+int getKeyPressed();
+void waitForKeyRelease();
+int readKeypadStable();
+
+// ฟังก์ชันตรวจสอบว่ากดปุ่มอะไร พร้อม hold detection
+int getKeyPressed() {
+  uint32_t currentTime = millis();
+
+  // Polling control - อ่านทุก 50ms เท่านั้น
+  if (currentTime - lastKeyPollTime < KEY_POLL_INTERVAL) {
+    return -1;
+  }
+  lastKeyPollTime = currentTime;
+
+  int currentValue = readKeypadStable();
+
+  // ตรวจสอบว่ากำลังกดปุ่มอะไรอยู่
+  int pressedKey = -1;
+  if (abs(currentValue - KEY_REGISTER) <= KEY_TOLERANCE) {
+    pressedKey = KEY_REGISTER;
+  } else if (abs(currentValue - KEY_DELETE) <= KEY_TOLERANCE) {
+    pressedKey = KEY_DELETE;
+  } else if (abs(currentValue - KEY_SCORE) <= KEY_TOLERANCE) {
+    pressedKey = KEY_SCORE;
+  } else if (currentValue >= KEY_NONE - KEY_TOLERANCE) {
+    pressedKey = KEY_NONE;
+  }
+
+  // Hold detection logic
+  if (pressedKey != KEY_NONE && pressedKey != -1) {
+    // มีการกดปุ่ม
+    if (currentPressedKey != pressedKey) {
+      // เริ่มกดปุ่มใหม่
+      currentPressedKey = pressedKey;
+      keyPressStartTime = currentTime;
+
+      if (DEBUG_KEYPAD_DETAIL) {
+        Serial.printf("[KEYPAD] Key press started: %d (value: %d)\n", pressedKey, currentValue);
+      }
+    } else {
+      // กดปุ่มเดิมต่อ - เช็คว่าครบ 3 วินาทีหรือยัง
+      if (currentTime - keyPressStartTime >= KEY_HOLD_TIME_MS) {
+        // กดครบ 3 วินาทีแล้ว
+        Serial.printf("[KEYPAD] Key held for 3 seconds: %d\n", pressedKey);
+
+        // รีเซ็ต hold detection เพื่อป้องกันการเรียกซ้ำ
+        keyPressStartTime = currentTime;  // รีเซ็ตเวลาเริ่มต้น
+        currentPressedKey = -1;           // รีเซ็ตปุ่มที่กด
+
+        return pressedKey;  // คืนค่าปุ่มที่กดค้าง
+      }
+    }
+  } else {
+    // ไม่มีการกดปุ่ม หรือปล่อยปุ่มแล้ว
+    if (currentPressedKey != -1) {
+      uint32_t holdDuration = currentTime - keyPressStartTime;
+
+      Serial.printf("[KEYPAD] Key released: %d (held for %d ms)\n", currentPressedKey, holdDuration);
+
+      // รีเซ็ต
+      currentPressedKey = -1;
+      keyPressStartTime = 0;
+    }
+  }
+
+  // อัปเดตค่าสำหรับการตรวจสอบการเปลี่ยนแปลง
+  if (abs(currentValue - lastKeyValue) >= KEY_TOLERANCE) {
+    lastKeyValue = currentValue;
+    lastKeyTime = currentTime;
+  }
+
+  return -1;  // ไม่มีการกดค้างครบ 3 วินาที
+}
+void showDeleteMenu() {
+  Serial.println("[DELETE] Showing delete menu");
+  showUIx(UI_SENDING, "เลือกประเภทการลบ", TR_NONE);
+  delay(1000);
+  showUIx(UI_SENDING, "REGISTER=ลบบัตร, SCORE=ลบคะแนน", TR_NONE);
+}
+
+void deleteScoreFlow() {
+  Serial.println("[DELETE] Starting delete score flow");
+  showUIx(UI_SENDING, "กำลังลบคะแนนทั้งหมด...", TR_NONE);
+  
+  // ส่ง HTTP request ไปยัง ODROID เพื่อ reset score
+  // ในอนาคตอาจใช้ WiFi/HTTP แต่ตอนนี้ส่งผ่าน Serial ไป Arduino
+  mySerial.println("XXXXXXXXXXXXXXXXXXXXXXXX");  // ส่ง X เพื่อ reset score
+  Serial.println("[UART2] Sent: X (RESET SCORE)");
+  
+  delay(2000);  // รอให้ระบบประมวลผล
+  
+  showUIx(UI_FINGER_OK, "ลบคะแนนสำเร็จ", TR_NONE);
+  delay(2000);
+  
+  // กลับโหมดปกติ
+  inDeleteMode = false;
+  inDeleteMenuMode = false;
+  returnToNormalMode("ยื่นบัตรใกล้เครื่องอ่าน", true);
+}
+
 void deleteCardFlow() {
+  // ฟังก์ชันเก่าที่ไม่ใช้แล้ว - ใช้ deleteCardFlowAfterPassword แทน
+  deleteCardFlowAfterPassword();
+}
+
+void deleteCardFlowAfterPassword() {
   exitPhotoMode();
   Serial.println("Delete mode... Tap a card to delete");
 
@@ -2189,6 +2299,14 @@ void deleteCardFlow() {
   int noCardCount = 0;  // นับจำนวนครั้งที่ไม่พบการ์ด
   
   while (inDeleteMode) {
+    // ตรวจสอบปุ่มเพื่อออกจาก delete mode
+    int keyPressed = getKeyPressed();
+    if (keyPressed == KEY_DELETE) {
+      Serial.println("[DELETE] DELETE key pressed - exiting delete mode");
+      inDeleteMode = false;
+      break;
+    }
+    
     bool cardPresent = false;
     bus_acquire_for_rfid();
     if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
@@ -2233,6 +2351,9 @@ void deleteCardFlow() {
     if (cardPresent) {
       break;
     }
+    
+    // เพิ่ม uiTick() เพื่อให้ UI ทำงานปกติ
+    uiTick();
     delay(50);
   }
 
@@ -2446,6 +2567,7 @@ void normalScanFlow() {
     Serial.println("[DEBUG] Already voted for this card holder.");
     // mySerial.println("W");
     showUIx(UI_CARD_ALREADY_VOTED, "บัตรนี้ใช้งานแล้ว (โหวตไปแล้ว)", TR_NONE);
+    mySerial.println("11111111111111111111111111111111111111111111111111");
 
     delay(700);
     showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
@@ -3122,80 +3244,6 @@ bool checkSDCardWithUI() {
   return false;
 }
 
-int getKeyPressed();
-void waitForKeyRelease();
-int readKeypadStable();
-
-// ฟังก์ชันตรวจสอบว่ากดปุ่มอะไร พร้อม hold detection
-int getKeyPressed() {
-  uint32_t currentTime = millis();
-
-  // Polling control - อ่านทุก 50ms เท่านั้น
-  if (currentTime - lastKeyPollTime < KEY_POLL_INTERVAL) {
-    return -1;
-  }
-  lastKeyPollTime = currentTime;
-
-  int currentValue = readKeypadStable();
-
-  // ตรวจสอบว่ากำลังกดปุ่มอะไรอยู่
-  int pressedKey = -1;
-  if (abs(currentValue - KEY_REGISTER) <= KEY_TOLERANCE) {
-    pressedKey = KEY_REGISTER;
-  } else if (abs(currentValue - KEY_DELETE) <= KEY_TOLERANCE) {
-    pressedKey = KEY_DELETE;
-  } else if (abs(currentValue - KEY_SCORE) <= KEY_TOLERANCE) {
-    pressedKey = KEY_SCORE;
-  } else if (currentValue >= KEY_NONE - KEY_TOLERANCE) {
-    pressedKey = KEY_NONE;
-  }
-
-  // Hold detection logic
-  if (pressedKey != KEY_NONE && pressedKey != -1) {
-    // มีการกดปุ่ม
-    if (currentPressedKey != pressedKey) {
-      // เริ่มกดปุ่มใหม่
-      currentPressedKey = pressedKey;
-      keyPressStartTime = currentTime;
-
-      if (DEBUG_KEYPAD_DETAIL) {
-        Serial.printf("[KEYPAD] Key press started: %d (value: %d)\n", pressedKey, currentValue);
-      }
-    } else {
-      // กดปุ่มเดิมต่อ - เช็คว่าครบ 3 วินาทีหรือยัง
-      if (currentTime - keyPressStartTime >= KEY_HOLD_TIME_MS) {
-        // กดครบ 3 วินาทีแล้ว
-        Serial.printf("[KEYPAD] Key held for 3 seconds: %d\n", pressedKey);
-
-        // รีเซ็ต hold detection เพื่อป้องกันการเรียกซ้ำ
-        keyPressStartTime = currentTime;  // รีเซ็ตเวลาเริ่มต้น
-        currentPressedKey = -1;           // รีเซ็ตปุ่มที่กด
-
-        return pressedKey;  // คืนค่าปุ่มที่กดค้าง
-      }
-    }
-  } else {
-    // ไม่มีการกดปุ่ม หรือปล่อยปุ่มแล้ว
-    if (currentPressedKey != -1) {
-      uint32_t holdDuration = currentTime - keyPressStartTime;
-
-      Serial.printf("[KEYPAD] Key released: %d (held for %d ms)\n", currentPressedKey, holdDuration);
-
-      // รีเซ็ต
-      currentPressedKey = -1;
-      keyPressStartTime = 0;
-    }
-  }
-
-  // อัปเดตค่าสำหรับการตรวจสอบการเปลี่ยนแปลง
-  if (abs(currentValue - lastKeyValue) >= KEY_TOLERANCE) {
-    lastKeyValue = currentValue;
-    lastKeyTime = currentTime;
-  }
-
-  return -1;  // ไม่มีการกดค้างครบ 3 วินาที
-}
-
 // ===== SD Card Wait Loop =====
 void waitForSDCard() {
   Serial.println("[SD] Waiting for SD Card to be ready...");
@@ -3854,8 +3902,8 @@ void handleU2Line(const String &raw) {
     Serial.println("[HANDLE] Received empty string - ignoring");
     return;
   } else if (m.equalsIgnoreCase("R")) {
-    // รับ PS (Password Success) จาก Arduino
-    Serial.println("[HANDLE] Received PS - Password confirmed");
+    // รับ R (Register Password Success) จาก Arduino
+    Serial.println("[HANDLE] Received R - Register Password confirmed");
 
     if (waitingForPassword && inRegisterMode) {
       waitingForPassword = false;
@@ -3868,7 +3916,43 @@ void handleU2Line(const String &raw) {
       showUIx(UI_REGISTER_SCAN, "แตะบัตรเพื่อลงทะเบียน", TR_NONE);
       Serial.println("[HANDLE] Entering actual register mode");
     } else {
-      Serial.println("[HANDLE] PS received but not waiting for password");
+      Serial.println("[HANDLE] R received but not waiting for register password");
+    }
+    return;
+  } else if (m.equalsIgnoreCase("D")) {
+    // รับ D (Delete Password Success) จาก Arduino
+    Serial.println("[HANDLE] Received D - Delete Password confirmed");
+
+    if (waitingForDeletePassword && inDeleteMode) {
+      waitingForDeletePassword = false;
+      inDeleteMenuMode = true;  // เข้าโหมดเลือกเมนู
+
+      // แสดง UI ยืนยันสำเร็จ
+      showUIx(UI_PASSWORD_OK, "ยืนยันสำเร็จ", TR_NONE);
+      delay(1500);
+
+      // แสดงเมนูเลือกประเภทการลบ
+      showDeleteMenu();
+    } else {
+      Serial.println("[HANDLE] D received but not waiting for delete password");
+    }
+    return;
+  } else if (m.equalsIgnoreCase("T")) {
+    // รับ T (Score Password Success) จาก Arduino
+    Serial.println("[HANDLE] Received T - Score Password confirmed");
+
+    if (waitingForScorePassword && inScoreMode) {
+      waitingForScorePassword = false;
+
+      // แสดง UI ยืนยันสำเร็จ
+      showUIx(UI_PASSWORD_OK, "ยืนยันสำเร็จ", TR_NONE);
+      delay(1500);
+
+      // เข้าโหมด score จริง
+      showUIx(UI_SENDING, "โหมดเช็ค Score - กำลังดูคะแนน", TR_NONE);
+      Serial.println("[HANDLE] Entering actual score mode");
+    } else {
+      Serial.println("[HANDLE] T received but not waiting for score password");
     }
     return;
   } else if (m.equalsIgnoreCase("SENDING")) {
@@ -3931,6 +4015,34 @@ void loop() {
   // ===== ปุ่มโหมด (กดค้าง 3 วินาที) =====
   int keyPressed = getKeyPressed();
 
+  // ===== จัดการปุ่มใน Delete Menu Mode =====
+  if (inDeleteMenuMode) {
+    if (keyPressed == KEY_REGISTER) {
+      Serial.println("[DELETE] Selected REGISTER key - Delete Card");
+      inDeleteMenuMode = false;
+      showUIx(UI_DELETE_SCAN, "แตะบัตรเพื่อลบข้อมูล", TR_NONE);
+      Serial.println("[DELETE] Entering card delete mode");
+      deleteCardFlowAfterPassword();
+      return;
+    } else if (keyPressed == KEY_SCORE) {
+      Serial.println("[DELETE] Selected SCORE key - Delete Score");
+      inDeleteMenuMode = false;
+      deleteScoreFlow();
+      return;
+    } else if (keyPressed == KEY_DELETE) {
+      Serial.println("[DELETE] DELETE key pressed - exiting delete mode");
+      inDeleteMode = false;
+      inDeleteMenuMode = false;
+      showUIx(UI_READY, "ยกเลิกโหมดลบ", TR_NONE);
+      delay(1000);
+      returnToNormalMode("ยื่นบัตรใกล้เครื่องอ่าน", true);
+      waitForKeyRelease();
+      return;
+    }
+    // ไม่ทำอะไรหากกดปุ่มอื่น ในโหมดเมนู
+    return;
+  }
+
   if (keyPressed == KEY_REGISTER) {
     Serial.printf("[KEYPAD] KEY_REGISTER detected - inRegisterMode:%s\n",
                   inRegisterMode ? "true" : "false");
@@ -3987,18 +4099,33 @@ void loop() {
 
   if (keyPressed == KEY_DELETE) {  // Delete mode
     if (!inDeleteMode) {
-      // เข้าโหมดลบ
+      // เข้าโหมดลบ - ส่ง PASSWORD และรอ D
       Serial.println("[KEYPAD] DELETE key held for 3 seconds - entering delete mode");
       inDeleteMode = true;
-      showUIx(UI_MODE_DELETE, "โหมดลบข้อมูล", TR_NONE);
+      waitingForDeletePassword = true;
+
+      // แสดง UI รอการยืนยัน
+      showUIx(UI_WAIT_PASSWORD, "รอการยืนยันจากผู้ดูแล", TR_NONE);
+
+      // ส่ง PASSWORD ไป Arduino
+      mySerial.println("DDDDDDDDDDDDDDDDDDDDDDDD");
+      Serial.println("[UART2] Sent: D (DELETE PASSWORD)");
+
       waitForKeyRelease();  // รอให้ปล่อยปุ่ม
-      deleteCardFlow();
-      uiShownScanCard = false;
-      inDeleteMode = false;  // รีเซ็ตหลังจากเสร็จสิ้น
+
+      // รอ D จาก Arduino (จะถูกจัดการใน handleU2Line)
     } else {
       // ออกจากโหมดลบ
       Serial.println("[KEYPAD] DELETE key held for 3 seconds - exiting delete mode");
+      
+      // ส่ง D เพื่อบอก Arduino ว่าออกจากโหมดลบ
+      mySerial.println("DDDDDDDDDDDDDDDDDDDDDDDD");
+      Serial.println("[UART2] Sent: D (exit delete mode)");
+
+      // รีเซ็ตสถานะทั้งหมด
       inDeleteMode = false;
+      waitingForDeletePassword = false;
+
       showUIx(UI_READY, "ยกเลิกโหมดลบข้อมูล", TR_NONE);
       delay(1000);
 
@@ -4012,19 +4139,33 @@ void loop() {
 
   if (keyPressed == KEY_SCORE) {  // Score check mode - ส่ง T ไป Arduino
     if (!inScoreMode) {
-      // เข้าโหมดเช็ค score
+      // เข้าโหมดเช็ค score - ส่ง PASSWORD และรอ T
       Serial.println("[KEYPAD] SCORE key held for 3 seconds - entering score mode");
       inScoreMode = true;
-      showUIx(UI_SENDING, "โหมดเช็ค Score - กำลังดูคะแนน", TR_NONE);
-      // for (int ii = 0; ii < 5; ii++)
+      waitingForScorePassword = true;
+
+      // แสดง UI รอการยืนยัน
+      showUIx(UI_WAIT_PASSWORD, "รอการยืนยันจากผู้ดูแล", TR_NONE);
+
+      // ส่ง PASSWORD ไป Arduino
       mySerial.println("TTTTTTTTTTTTTTTTTTTTTTTT");  // ส่ง T ไปยัง Arduino ผ่าน UART2
-      Serial.println("[UART2] Sent: T");
-      // ยังคงอยู่ในโหมดเช็ค score - ไม่รีเซ็ตทันที
+      Serial.println("[UART2] Sent: T (SCORE PASSWORD)");
+
       waitForKeyRelease();
+
+      // รอ T จาก Arduino (จะถูกจัดการใน handleU2Line)
     } else {
       // ออกจากโหมดเช็ค score
       Serial.println("[KEYPAD] SCORE key held for 3 seconds - exiting score mode");
+      
+      // ส่ง T เพื่อบอก Arduino ว่าออกจากโหมด score
+      mySerial.println("TTTTTTTTTTTTTTTTTTTTTTTT");
+      Serial.println("[UART2] Sent: T (exit score mode)");
+
+      // รีเซ็ตสถานะทั้งหมด
       inScoreMode = false;
+      waitingForScorePassword = false;
+
       showUIx(UI_READY, "ออกจากโหมดเช็ค Score", TR_NONE);
       delay(1000);
 
@@ -4065,14 +4206,15 @@ void loop() {
   // ===== แตะการ์ด (ล็อคบัส RC522 เสมอ) =====
 
   // NEW: แสดง "สแกนบัตร" 1 ครั้ง เมื่อเข้าลูปว่างครั้งแรก (ยกเว้นในโหมดพิเศษ)
-  if (!uiShownScanCard && !inRegisterMode && !inDeleteMode && !inScoreMode) {
+  if (!uiShownScanCard && !inRegisterMode && !inDeleteMode && !inScoreMode && 
+      !waitingForPassword && !waitingForDeletePassword && !waitingForScorePassword && !inDeleteMenuMode) {
     showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_NONE);
     uiShownScanCard = true;
     uiScanCardShownAt = millis();
   }
 
-  // แสดง UI สำหรับ score mode
-  if (inScoreMode) {
+  // แสดง UI สำหรับ score mode (เฉพาะตอนไม่รอ password)
+  if (inScoreMode && !waitingForScorePassword) {
     static unsigned long lastScoreUIUpdate = 0;
     if (millis() - lastScoreUIUpdate > 2000) {  // อัพเดททุก 2 วินาที
       showUIx(UI_SENDING, "โหมดดูคะแนน - กดปุ่มค้างเพื่อออก", TR_NONE);
@@ -4083,9 +4225,10 @@ void loop() {
   // เรียก uiTick() เพื่อให้ animation ทำงานตลอดเวลา
   uiTick();
 
-  // ตรวจสอบการ์ด (ยกเว้นใน score mode)
+  // ตรวจสอบการ์ด (ยกเว้นใน score mode และขณะรอ password และใน delete menu)
   bool cardReady = false;
-  if (!inScoreMode) {
+  if (!inScoreMode && !waitingForPassword && !waitingForDeletePassword && 
+      !waitingForScorePassword && !inDeleteMenuMode) {
     rfid_bus_begin();
     if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
       cardReady = true;

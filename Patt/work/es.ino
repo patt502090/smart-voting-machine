@@ -2339,11 +2339,13 @@ void normalScanFlow() {
     showUIx(UI_FINGER_FAIL, "ลายนิ้วมือต้องตรงกับผู้ถือบัตร", TR_NONE);
 
     delay(700);
+
+    mySerial.println("OOOOOOOOOOOOOOOOOOOOOO");
     showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
 
-  mySerial.println("OOOOOOOOOOOOOOOOOOOOOO");
+  
 
   // --- ผ่านเงื่อนไข: บัตร+นิ้ว ตรงกัน → สำเร็จ ---
   // (ใส่จังหวะยืนยันสั้น ๆ แต่ไม่สลับลอจิกเดิม)

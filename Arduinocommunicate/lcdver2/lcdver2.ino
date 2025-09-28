@@ -957,12 +957,7 @@ void loop() {
   }
 
   if (msg != -1) {
-    if (!tmrpcm.isPlaying()) {
-      lcd.setCursor(0, 0);
-      lcd.print((char)msg);
-      lcd.print(' ');
-    }
-    //while (tmrpcm.isPlaying());
+
 
     if (msg == 'S') { tmrpcm.play("re.wav"); }  // กำลังอ่านบัตร
     else if (msg == 'W') {                      // ยังไม่ลงทะเบียน/เพิกถอนสิทธิ์

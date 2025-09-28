@@ -1444,6 +1444,13 @@ void printBootAndWakeInfo() {
   }
 }
 
+
+// ---------- Serial / UART ----------
+HardwareSerial mySerial(2);      // UART2 : ใช้คุยกับบอร์ด/จออีกตัว ตามที่คุณใช้อยู่ (TX=17, RX=16 ด้านล่าง)
+HardwareSerial FingerSerial(1);  // UART1 : ใช้คุยกับโมดูลลายนิ้วมือ
+Adafruit_Fingerprint finger = Adafruit_Fingerprint(&FingerSerial);
+
+
 // เข้าหลับทันที แล้วปลุกเมื่อ WAKE_PIN=HIGH จาก ODROID
 void goDeepSleepNow() {
   detachInterrupt(digitalPinToInterrupt(WAKE_PIN));
@@ -1489,14 +1496,12 @@ void goDeepSleepNow() {
   spi_deselect_all();
 
   Serial.println("[SLEEP] Display turned off, entering deep sleep...");
+  Serial.println("[UART2] Sending Y burst (sleep notify)");
+  mySerial.println("YYYYYYYYYYYYYYYYYYYYYYYYYYYYYY");
+  mySerial.flush();
   delay(100);
   esp_deep_sleep_start();
 }
-
-// ---------- Serial / UART ----------
-HardwareSerial mySerial(2);      // UART2 : ใช้คุยกับบอร์ด/จออีกตัว ตามที่คุณใช้อยู่ (TX=17, RX=16 ด้านล่าง)
-HardwareSerial FingerSerial(1);  // UART1 : ใช้คุยกับโมดูลลายนิ้วมือ
-Adafruit_Fingerprint finger = Adafruit_Fingerprint(&FingerSerial);
 
 // ---------- Thermal Printer ----------
 static constexpr int PRINTER_RX_PIN = 32;
@@ -2097,6 +2102,8 @@ void registerCardAndFingerprint() {
   // --- รอการ์ดแบบล็อคบัสทุกครั้ง ---
   Serial.println("[REGISTER] Starting card detection loop");
   int noCardCount = 0;  // นับจำนวนครั้งที่ไม่พบการ์ด
+  uint32_t lastBusLogMs = 0;
+  uint32_t lastNoCardLogMs = 0;
   
   while (true) {
     // ตรวจสอบว่ายังอยู่ในโหมดลงทะเบียนหรือไม่
@@ -2106,14 +2113,22 @@ void registerCardAndFingerprint() {
     }
 
     bool ok = false;
+    uint32_t nowMs = millis();
     bus_acquire_for_rfid();
-    Serial.println("[REGISTER] Bus acquired, checking for card...");
+    if (lastBusLogMs == 0 || nowMs - lastBusLogMs >= 1000) {
+      Serial.println("[REGISTER] Bus acquired, checking for card...");
+      lastBusLogMs = nowMs;
+    }
     if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
       Serial.println("[REGISTER] Card detected!");
       ok = true;
       noCardCount = 0;  // รีเซ็ตตัวนับ
+      lastNoCardLogMs = 0;
     } else {
-      Serial.println("[REGISTER] No card detected");
+      if (lastNoCardLogMs == 0 || nowMs - lastNoCardLogMs >= 1000) {
+        Serial.println("[REGISTER] No card detected");
+        lastNoCardLogMs = nowMs;
+      }
       noCardCount++;
       
       // ถ้าไม่พบการ์ด 40 ครั้งติดต่อกัน (2 วินาที) ให้ลอง reset RFID

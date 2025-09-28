@@ -2158,6 +2158,22 @@ void deleteCardFlow() {
   //showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
 }
 
+// ฟังก์ชันรวมสำหรับเข้าโหมดรอเลือก (ใช้ร่วมกันระหว่าง real vote และ test mode)
+void startVotingMode(int idx = -1, bool isTestMode = false) {
+  exitPhotoMode();
+  g_waitingChoice = true;
+  g_selectedCandidate = -1;
+  g_votePosted = false;
+  g_idxPending = idx;
+  
+  barStart(1500, "รอการเลือก");
+  if (isTestMode) {
+    showUIx(UI_WAIT_CHOICE, "โหมดทดสอบ: รอ CF:x ทาง USB", TR_NONE);
+    Serial.println("[TEST] Test voting mode started");
+  } else {
+    showUIx(UI_WAIT_CHOICE, "โปรดเลือกผู้สมัครที่หน้าจอใหญ่", TR_NONE);
+  }
+}
 
 void normalScanFlow() {
   exitPhotoMode();
@@ -2284,17 +2300,8 @@ void normalScanFlow() {
   // (ใส่จังหวะยืนยันสั้น ๆ แต่ไม่สลับลอจิกเดิม)
   // --- ผ่านเงื่อนไข: บัตร+นิ้ว ตรงกัน → สำเร็จ ---
   // --- ผ่านเงื่อนไข: บัตร+นิ้ว ตรงกัน → "รอเลือกผู้สมัคร" ---
-  // --- ผ่านเงื่อนไข: บัตร+นิ้ว ตรงกัน → "รอเลือกผู้สมัคร" ---
-  exitPhotoMode();  // <-- ปลดล็อก UI ไม่ให้ค้างจากโหมดแสดงรูป
-  g_waitingChoice = true;
-  g_selectedCandidate = -1;
-  // for (int ii = 0; ii < 5; ii++
-  // (ออปชัน) ถ้าต้องการบังคับโชว์หน้าเลือกทันทีอยู่ดี:
-  //mySerial.println("V");        // UNO ก็รองรับคำสั่งนี้เหมือนกัน
-  barStart(1500, "รอการเลือก");  // เติมเต็มทุก 1 วิ แล้ววน
-  showUIx(UI_WAIT_CHOICE, "โปรดเลือกผู้สมัครที่หน้าจอใหญ่", TR_NONE);
-  g_votePosted = false;
-  g_idxPending = idx;
+  // เข้าโหมดรอเลือก (real voting)
+  startVotingMode(idx, false);
 
   // วนรออีเวนต์: CF:xx / SEL:xx / SENDING / VOTE:OK / VOTE:ERR (สูงสุด 20 วินาที)
   uint32_t tStart = millis();
@@ -3446,14 +3453,9 @@ void handleU2Line(const String &raw) {
   Serial.println();
 
   if (m.equalsIgnoreCase("AUTHOK")) {
-    // รับ AUTHOK จาก Arduino → เข้าโหมดรอเลือก
+    // รับ AUTHOK จาก Arduino → เข้าโหมดรอเลือก (test mode)
     Serial.println("[HANDLE] Received AUTHOK from Arduino");
-    exitPhotoMode();
-    g_waitingChoice = true;
-    g_votePosted = false;
-    g_idxPending = -1;  // โหมดเทส: ไม่ mark EEPROM
-    barStart(1500, "รอการเลือก");
-    showUIx(UI_WAIT_CHOICE, "โปรดเลือกผู้สมัครที่หน้าจอใหญ่", TR_NONE);
+    startVotingMode(-1, true);  // idx=-1 = test mode, isTestMode=true
     return;
   } else if (m.startsWith("SEL:")) {
     Serial.printf("[HANDLE] SEL command detected: '%s'\n", m.c_str());
@@ -3878,14 +3880,8 @@ void loop() {
         delay(300);
       }
     } else if (cmd.equalsIgnoreCase("AUTHOK")) {
-      // จำลองว่า auth ผ่านแล้ว → เข้าโหมดรอเลือก
-      exitPhotoMode();
-      g_waitingChoice = true;
-      g_votePosted = false;
-      g_idxPending = -1;  // โหมดเทส: ไม่ mark EEPROM
-      barStart(1500, "รอการเลือก");
-      showUIx(UI_WAIT_CHOICE, "โหมดทดสอบ: รอ CF:x ทาง USB", TR_NONE);
-      Serial.println("[TEST] AUTHOK -> waiting choice");
+      // จำลองว่า auth ผ่านแล้ว → เข้าโหมดรอเลือก (test mode)
+      startVotingMode(-1, true);  // idx=-1 = test mode, isTestMode=true
     } else if (cmd.equalsIgnoreCase("TFTDEBUG") || cmd.equalsIgnoreCase("TFT")) {
       debugTFT();
     } else if (cmd.equalsIgnoreCase("TFTBASIC") || cmd.equalsIgnoreCase("TFTB")) {

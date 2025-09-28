@@ -20,6 +20,7 @@
         "vector": "cpp",
         "print": "cpp",
         "typeinfo": "cpp",
-        "typeindex": "cpp"
+        "typeindex": "cpp",
+        "locale": "cpp"
     }
 }

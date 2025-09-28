@@ -2518,12 +2518,28 @@ void normalScanFlow() {
     while (mySerial.available()) {
       String line = mySerial.readStringUntil('\n');
       line.trim();
-
+      
       // ล้าง hidden characters เพิ่มเติม (carriage return, etc.)
       line.replace("\r", "");
       line.replace("\0", "");
-
-      // ข้าม ข้อความขยะ/ไม่สมบูรณ์
+      
+      // ทำความสะอาดข้อมูลที่อาจมี non-printable characters
+      String cleanLine = "";
+      for (int i = 0; i < line.length(); i++) {
+        char c = line.charAt(i);
+        if (c >= 32 && c <= 126) {  // printable ASCII characters only
+          cleanLine += c;
+        } else if (c == '\n' || c == '\r') {
+          // skip line endings
+          continue;
+        } else {
+          // แสดง non-printable character ใน debug
+          Serial.printf("[UART2] Filtered non-printable char: 0x%02X at position %d\n", (unsigned char)c, i);
+        }
+      }
+      
+      // ใช้ cleaned line แทน original line
+      line = cleanLine;      // ข้าม ข้อความขยะ/ไม่สมบูรณ์
       if (line.length() < 3 || line.startsWith("ESP")) {
         Serial.printf("[UART2] Ignoring: '%s'\n", line.c_str());
         continue;
@@ -2542,12 +2558,21 @@ void normalScanFlow() {
       if (line.startsWith("SEL:")) {
         Serial.printf("[URGENT] Processing SEL immediately: '%s'\n", line.c_str());
 
+        // ทำความสะอาด SEL command - ลบ non-printable characters ที่อาจแถมมา
+        String cleanSEL = line;
+        int selPos = cleanSEL.indexOf("SEL:");
+        if (selPos > 0) {
+          // มี garbage data ข้างหน้า "SEL:" - ตัดทิ้ง
+          cleanSEL = cleanSEL.substring(selPos);
+          Serial.printf("[URGENT] Cleaned SEL command: '%s' (removed %d bytes of garbage)\n", cleanSEL.c_str(), selPos);
+        }
+
         // ยุติ voting loop ทันที
         g_waitingChoice = false;
         barStop();
 
         // แสดงรูปโดยตรง
-        int n = line.substring(4).toInt();
+        int n = cleanSEL.substring(4).toInt();
         if (n >= 0 && n <= 99) {
           Serial.printf("[URGENT] Switching to candidate %d immediately\n", n);
           isShowingPhoto = true;
@@ -3696,6 +3721,16 @@ void handleU2Line(const String &raw) {
   } else if (m.startsWith("SEL:")) {
     Serial.printf("[HANDLE] SEL command detected: '%s'\n", m.c_str());
 
+    // ทำความสะอาด SEL command - ลบ non-printable characters ที่อาจแถมมา
+    String cleanSEL = m;
+    // หาตำแหน่ง "SEL:" แล้วตัดเอาเฉพาะส่วนที่ถูกต้อง
+    int selPos = cleanSEL.indexOf("SEL:");
+    if (selPos > 0) {
+      // มี garbage data ข้างหน้า "SEL:" - ตัดทิ้ง
+      cleanSEL = cleanSEL.substring(selPos);
+      Serial.printf("[HANDLE] Cleaned SEL command: '%s' (removed %d bytes of garbage)\n", cleanSEL.c_str(), selPos);
+    }
+
     // ยกเลิกโหมดรอเลือกทันที (ถ้ามี)
     barStop();
 
@@ -3705,14 +3740,14 @@ void handleU2Line(const String &raw) {
       Serial.println("[SEL] Terminating voting loop");
     }
 
-    if (m.equalsIgnoreCase("SEL:CLEAR")) {
+    if (cleanSEL.equalsIgnoreCase("SEL:CLEAR")) {
       Serial.println("[SEL] Clearing photo mode");
       isShowingPhoto = false;
       uiSetScanning(true);
       showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_NONE);
     } else {
-      int n = m.substring(4).toInt();  // หลัง "SEL:"
-      Serial.printf("[SEL] Extracted number: %d from '%s'\n", n, m.c_str());
+      int n = cleanSEL.substring(4).toInt();  // หลัง "SEL:"
+      Serial.printf("[SEL] Extracted number: %d from '%s'\n", n, cleanSEL.c_str());
       if (n >= 0 && n <= 99) {
         Serial.printf("[SEL] Setting photo mode, showing candidate %d\n", n);
 

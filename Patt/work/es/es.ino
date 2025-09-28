@@ -2107,10 +2107,10 @@ void deleteCardFlow() {
     showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
-  
+
   // ส่งสัญญาณให้ Arduino เล่นเสียง "ยืนยันตัวตนสำเร็จ"
   mySerial.println("OOOOOOOOOOOOOOOOOOOOOOOOO");
-  
+
   /*
   // ลบ fingerprint template ในเซ็นเซอร์
   if (r.fp_id > 0) {
@@ -2301,15 +2301,24 @@ void normalScanFlow() {
   bool finished = false;
 
   while (!finished && millis() - tStart < 20000) {
-    // จัดการ UART2 messages ระหว่างรอ
-    if (mySerial.available()) {
+    // จัดการ UART2 messages ระหว่างรอ (ล้างทุกข้อความที่มี)
+    while (mySerial.available()) {
       String line = mySerial.readStringUntil('\n');
       line.trim();
       Serial.printf("[UART2] Received during wait: '%s'\n", line.c_str());
 
-      // จัดการ SEL: commands ระหว่างรอ
+      // จัดการ SEL: commands ระหว่างรอ (แบบง่าย - ไม่เรียก handleU2Line)
       if (line.startsWith("SEL:")) {
-        handleU2Line(line);  // ใช้ handler ที่มีอยู่แล้ว
+        // ยกเลิกโหมดรอเลือกทันที 
+        barStop();
+        
+        // แสดงรูปโดยตรง
+        int n = line.substring(4).toInt();
+        if (n >= 0 && n <= 99) {
+          isShowingPhoto = true;
+          uiSetScanning(false);
+          showCandidateJpg(n);
+        }
         continue;
       }
 
@@ -3448,6 +3457,16 @@ void handleU2Line(const String &raw) {
     return;
   } else if (m.startsWith("SEL:")) {
     Serial.printf("[HANDLE] SEL command detected: '%s'\n", m.c_str());
+    
+    // ยกเลิกโหมดรอเลือกทันที (ถ้ามี)
+    barStop();
+    
+    // ยุติ voting loop ถ้ากำลังรอ
+    if (g_waitingChoice) {
+      g_waitingChoice = false;
+      Serial.println("[SEL] Terminating voting loop");
+    }
+    
     if (m.equalsIgnoreCase("SEL:CLEAR")) {
       Serial.println("[SEL] Clearing photo mode");
       isShowingPhoto = false;

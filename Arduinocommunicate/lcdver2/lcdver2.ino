@@ -64,6 +64,7 @@ volatile bool showingTally = false;
 bool waitRToExit = false;
 bool waitTToExit = false;
 bool waitDToExit = false;  // โหมดลบ ต้องกด D ซ้ำเพื่อออก
+bool waitXToExit = false;  // โหมดลบคะแนน ต้องกด X ซ้ำเพื่อออก
 
 
 // =======================
@@ -745,13 +746,7 @@ void regispage(char k) {
           fregis = true;
           break;
 
-        case ACT_CLEAR:
-          eeprom_vote_clear_all();
-          lcd.clear();
-          lcd.setCursor(2, 0);
-          lcd.print(F("Tally cleared"));
-          delay(800);
-          break;
+
 
         case ACT_DELETE:
           lcd.clear();
@@ -762,12 +757,20 @@ void regispage(char k) {
           fregis = true;
           break;
 
+        case ACT_CLEAR:
+          eeprom_vote_clear_all();
+          lcd.clear();
+          lcd.setCursor(2, 0);
+          lcd.print(F("Delete score OK"));
+          delay(800);
+          break;
+
 
         default: break;
       }
 
       // ออกจากโหมดใส่รหัส กลับหน้า READY (ยกเว้นกรณีค้างรอ R/T รอบถัดไป)
-      if (!waitRToExit && !waitTToExit && !waitDToExit) {
+      if (!waitRToExit && !waitTToExit && !waitDToExit && !waitXToExit) {
 
         pendingAction = ACT_NONE;
         fregis = false;
@@ -801,8 +804,9 @@ void startPass(AdminAction a) {
   switch (a) {
     case ACT_REG: lcd.print(F("Registration (PIN)")); break;
     case ACT_TALLY: lcd.print(F("Show Tally (PIN)")); break;
-    case ACT_CLEAR: lcd.print(F("Clear Tally (PIN)")); break;
+
     case ACT_DELETE: lcd.print(F("Delete (PIN)")); break;
+    case ACT_CLEAR: lcd.print(F("Delete score (PIN)")); break;
     default: lcd.print(F("Admin (PIN)")); break;
   }
 
@@ -1078,9 +1082,12 @@ void loop() {
       tmrpcm.play("b.wav");
     } else if (msg == 'Z') {
       tmrpcm.play("z.wav");
-    } /*else if (msg == 'M') {
-      tmrpcm.play("m.wav");
-    } */else if (msg == 'O') {  // ยืนยันตัวตนสำเร็จ
+    } else if (msg == 'A') {
+      tmrpcm.play("a.wav");
+    }                       /*else if (msg == 'Y') {
+      tmrpcm.play("y.wav");
+    }*/
+    else if (msg == 'O') {  // ยืนยันตัวตนสำเร็จ
       canVote = true;
       page = PAGE_VOTE;
       drawVoteUI_base();
@@ -1116,8 +1123,22 @@ void loop() {
         startPass(ACT_TALLY);
         waitTToExit = true;
       }
-    } else if (msg == 'X') {
-      startPass(ACT_CLEAR);
+    } else if (msg == 'X') {  // Toggle โหมดลบคะแนน (Delete score)
+      if (waitXToExit) {
+        // ออกจากโหมดลบคะแนน
+        waitXToExit = false;
+        pendingAction = ACT_NONE;
+        fregis = false;
+        canVote = false;
+        page = PAGE_WAIT;
+        tmrpcm.play("m.wav");  // เสียงออกจากโหมด (ใช้ไฟล์เดิมกับ D/T)
+        drawReadyUI_base();
+      } else {
+        // เข้าโหมดลบคะแนน -> ขอ PIN
+        //tmrpcm.play("x.wav");  // ถ้ามีไฟล์ X; ไม่มีใช้ "h.wav" แทนได้
+        startPass(ACT_CLEAR);  // ใช้ ACT_CLEAR แต่ข้อความเป็น Delete score
+        waitXToExit = true;
+      }
     } else if (msg == 'D') {  // Toggle โหมดลบ
       if (waitDToExit) {
         // ออกจากโหมดลบ
@@ -1130,6 +1151,7 @@ void loop() {
         drawReadyUI_base();
       } else {
         // เข้าโหมดลบ -> ขอ PIN
+        tmrpcm.play("d.wav");
         startPass(ACT_DELETE);
         waitDToExit = true;
       }

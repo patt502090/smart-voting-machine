@@ -34,7 +34,7 @@
 // 2) Hardware Config
 // =======================
 
-#define WAKE_PCINT_PIN 8   // ใช้ D8 เป็นสัญญาณปลุกแบบ PCINT
+#define WAKE_PCINT_PIN 8    // ใช้ D8 เป็นสัญญาณปลุกแบบ PCINT
 #define SD_ChipSelectPin 4  // SD CS
 #define BUZZER_PIN 5        // D5
 #define BUZZER_PASSIVE 1    // 1=Passive piezo (tone/noTone), 0=Active buzzer (on/off)
@@ -63,6 +63,8 @@ volatile bool showingTally = false;
 
 bool waitRToExit = false;
 bool waitTToExit = false;
+bool waitDToExit = false;  // โหมดลบ ต้องกด D ซ้ำเพื่อออก
+
 
 // =======================
 // 5) Keypad Mapping
@@ -84,7 +86,9 @@ Keypad_I2C kpd(makeKeymap(keys), rowPins, colPins, ROWS, COLS, KEYPAD_ADDR);
 enum AdminAction { ACT_NONE,
                    ACT_REG,
                    ACT_TALLY,
-                   ACT_CLEAR };
+                   ACT_CLEAR,
+                   ACT_DELETE };
+
 enum Page { PAGE_WAIT,
             PAGE_VOTE,
             PAGE_CONFIRM,
@@ -749,11 +753,22 @@ void regispage(char k) {
           delay(800);
           break;
 
+        case ACT_DELETE:
+          lcd.clear();
+          lcd.setCursor(4, 0);
+          lcd.print(F("Delete OK"));  // ขึ้นข้อความยืนยัน
+          Serial.print(F("D"));
+          page = PAGE_REG_PASS;
+          fregis = true;
+          break;
+
+
         default: break;
       }
 
       // ออกจากโหมดใส่รหัส กลับหน้า READY (ยกเว้นกรณีค้างรอ R/T รอบถัดไป)
-      if (!waitRToExit && !waitTToExit) {
+      if (!waitRToExit && !waitTToExit && !waitDToExit) {
+
         pendingAction = ACT_NONE;
         fregis = false;
         canVote = false;
@@ -787,8 +802,10 @@ void startPass(AdminAction a) {
     case ACT_REG: lcd.print(F("Registration (PIN)")); break;
     case ACT_TALLY: lcd.print(F("Show Tally (PIN)")); break;
     case ACT_CLEAR: lcd.print(F("Clear Tally (PIN)")); break;
+    case ACT_DELETE: lcd.print(F("Delete (PIN)")); break;
     default: lcd.print(F("Admin (PIN)")); break;
   }
+
   lcd.setCursor(2, 1);
   lcd.print(F("Enter Password :"));
   printMaskedAt(4, 2, passLen);
@@ -806,22 +823,22 @@ ISR(PCINT0_vect) {
   // D8 อยู่ในกลุ่ม PCINT0 (PB0..PB5 = D8..D13)
   // ปลุกเฉพาะถ้าอ่านแล้วเป็น HIGH (rising edge)
   if (digitalRead(WAKE_PCINT_PIN) == HIGH) {
-    wokeFromEsp = true;   // ใช้แฟลกเดิมเพื่อไม่ต้องแก้ส่วนอื่น
+    wokeFromEsp = true;  // ใช้แฟลกเดิมเพื่อไม่ต้องแก้ส่วนอื่น
   }
 }
 
 // คืนค่า true = พร้อมปลุก (สายเป็น LOW แล้ว), false = ไม่พร้อม
 bool enablePcintWake() {
-  pinMode(WAKE_PCINT_PIN, INPUT);   // มี R pulldown ภายนอกจะดีที่สุด
+  pinMode(WAKE_PCINT_PIN, INPUT);  // มี R pulldown ภายนอกจะดีที่สุด
 
   // ถ้ายัง HIGH อยู่ แปลว่าไม่พร้อมหลับด้วย edge → ไม่เปิด PCINT และแจ้งกลับ
   if (digitalRead(WAKE_PCINT_PIN) == HIGH) {
     return false;
   }
 
-  PCIFR  |= _BV(PCIF0);    // เคลียร์ธงกลุ่ม PCINT0
-  PCICR  |= _BV(PCIE0);    // เปิดกลุ่ม PCINT0 (D8..D13)
-  PCMSK0 |= _BV(PCINT0);   // เปิดบิตของ D8
+  PCIFR |= _BV(PCIF0);    // เคลียร์ธงกลุ่ม PCINT0
+  PCICR |= _BV(PCIE0);    // เปิดกลุ่ม PCINT0 (D8..D13)
+  PCMSK0 |= _BV(PCINT0);  // เปิดบิตของ D8
   return true;
 }
 
@@ -851,10 +868,10 @@ void goSleepPowerDown() {
 #endif
   interrupts();
 
-  sleep_cpu();       // หลับจริง
-  sleep_disable();   // ตื่นแล้ว
+  sleep_cpu();      // หลับจริง
+  sleep_disable();  // ตื่นแล้ว
 
-  disablePcintWake(); // กันยิงซ้ำถ้าสายยัง HIGH
+  disablePcintWake();  // กันยิงซ้ำถ้าสายยัง HIGH
 }
 
 
@@ -873,7 +890,7 @@ void afterWake() {
 
   delay(20);
   while (Serial.available()) { String s = Serial.readStringUntil('\n'); }
-  wokeFromEsp = false;   // เคลียร์แฟลกปลุก
+  wokeFromEsp = false;  // เคลียร์แฟลกปลุก
   noteActivity();
 }
 
@@ -893,23 +910,28 @@ void wdt_sanity_boot() {
 const uint8_t SD_RETRIES = 3;
 void initSD_orReset() {
   lcd.clear();
-  lcd.setCursor(2, 0);  lcd.print(F("Storage Setup"));
-  lcd.setCursor(2, 1);  lcd.print(F("Initializing SD"));
-  lcd.setCursor(0, 2);  lcd.print(F("Status: "));
-  lcd.setCursor(0, 3);  lcd.print(F("Try 1/")); lcd.print(SD_RETRIES);
+  lcd.setCursor(2, 0);
+  lcd.print(F("Storage Setup"));
+  lcd.setCursor(2, 1);
+  lcd.print(F("Initializing SD"));
+  lcd.setCursor(0, 2);
+  lcd.print(F("Status: "));
+  lcd.setCursor(0, 3);
+  lcd.print(F("Try 1/"));
+  lcd.print(SD_RETRIES);
 
   for (uint8_t i = 0; i < SD_RETRIES; ++i) {
     // อัปเดตเลขครั้งลองบน LCD
-    lcd.setCursor(4, 3);         // ตำแหน่งหลังคำว่า "Try "
+    lcd.setCursor(4, 3);  // ตำแหน่งหลังคำว่า "Try "
     lcd.print(i + 1);
     lcd.print('/');
     lcd.print(SD_RETRIES);
-    lcd.print(F("   "));         // เคลียร์ต่อท้าย
+    lcd.print(F("   "));  // เคลียร์ต่อท้าย
 
     if (SD.begin(SD_ChipSelectPin)) {
       Serial.println(F("SD init OK"));
       lcd.setCursor(8, 2);
-      lcd.print(F("OK       ")); // เคลียร์ท้ายด้วยช่องว่าง
+      lcd.print(F("OK       "));  // เคลียร์ท้ายด้วยช่องว่าง
       delay(450);
       return;
     }
@@ -925,8 +947,10 @@ void initSD_orReset() {
   // ล้มเหลวครบทุกครั้ง → แจ้งเตือนและรีเซ็ต
   Serial.println(F("SD init failed -> resetting via WDT"));
   lcd.clear();
-  lcd.setCursor(1, 1); lcd.print(F("SD init failed"));
-  lcd.setCursor(2, 2); lcd.print(F("Resetting..."));
+  lcd.setCursor(1, 1);
+  lcd.print(F("SD init failed"));
+  lcd.setCursor(2, 2);
+  lcd.print(F("Resetting..."));
   delay(700);
   reset_via_wdt();
 }
@@ -961,7 +985,7 @@ void setup() {
   tmrpcm.speakerPin = 9;  // UNO/Nano → D9
   tmrpcm.setVolume(5);    // 0..7
   tmrpcm.quality(1);
-  
+
 
   Wire.begin();  // UNO: SDA=A4, SCL=A5
   lcd.init();
@@ -990,7 +1014,7 @@ void setup() {
   // สายปลุกจาก ESP32
   // สายปลุกจาก Odroid -> D8 (PCINT rising)
   // แนะนำให้ Odroid idle = LOW, ปลุก = HIGH (pulse 10–100ms)
-  pinMode(WAKE_PCINT_PIN, INPUT);   // ถ้ามี R pulldown ภายนอก 100k ไป GND ยิ่งดี
+  pinMode(WAKE_PCINT_PIN, INPUT);  // ถ้ามี R pulldown ภายนอก 100k ไป GND ยิ่งดี
 
 
 
@@ -1054,11 +1078,9 @@ void loop() {
       tmrpcm.play("b.wav");
     } else if (msg == 'Z') {
       tmrpcm.play("z.wav");
-    } else if (msg == 'H') {
-      tmrpcm.play("h.wav");
-    } else if (msg == 'M') {
+    } /*else if (msg == 'M') {
       tmrpcm.play("m.wav");
-    } else if (msg == 'O') {  // ยืนยันตัวตนสำเร็จ
+    } */else if (msg == 'O') {  // ยืนยันตัวตนสำเร็จ
       canVote = true;
       page = PAGE_VOTE;
       drawVoteUI_base();
@@ -1073,6 +1095,7 @@ void loop() {
         fregis = false;
         canVote = false;
         page = PAGE_WAIT;
+        tmrpcm.play("m.wav");
         drawReadyUI_base();
       } else {
         startPass(ACT_REG);
@@ -1086,13 +1109,30 @@ void loop() {
         fregis = false;
         canVote = false;
         page = PAGE_WAIT;
+        tmrpcm.play("m.wav");
         drawReadyUI_base();
       } else {
+        tmrpcm.play("h.wav");
         startPass(ACT_TALLY);
         waitTToExit = true;
       }
     } else if (msg == 'X') {
       startPass(ACT_CLEAR);
+    } else if (msg == 'D') {  // Toggle โหมดลบ
+      if (waitDToExit) {
+        // ออกจากโหมดลบ
+        waitDToExit = false;
+        pendingAction = ACT_NONE;
+        fregis = false;
+        canVote = false;
+        page = PAGE_WAIT;
+        tmrpcm.play("m.wav");
+        drawReadyUI_base();
+      } else {
+        // เข้าโหมดลบ -> ขอ PIN
+        startPass(ACT_DELETE);
+        waitDToExit = true;
+      }
     }
   }
 

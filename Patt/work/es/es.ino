@@ -176,6 +176,13 @@ static bool isShowingPhoto = false;
 
 #include <functional>
 
+// ฟังก์ชันรวมสำหรับกลับโหมดปกติ (ส่งเสียงและแสดง UI)
+void returnToNormalMode(const char* message = "พร้อมให้บริการ") {
+  // ส่งสัญญาณให้ Arduino เล่นเสียง "โหมดเลือกตั้ง"
+  mySerial.println("MMMMMMMMMMMMMMMMMMMMMMMM");
+  showUIx(UI_READY, message, TR_NONE);
+}
+
 
 // RFID_CS = SS_PIN (=5) มีอยู่แล้วจากโค้ดคุณ
 
@@ -2040,20 +2047,24 @@ void registerCardAndFingerprint() {
     delay(200);
 
     delay(700);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
+    returnToNormalMode();  // กลับโหมดปกติ + เสียง M
   } else {
     Serial.println("EEPROM full. Cannot store new record.");
     showUIx(UI_ERROR, "หน่วยความจำเต็ม", TR_NONE);
 
     finger.deleteModel(chosen_fp_id);  // roll back
     delay(1000);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
+    returnToNormalMode();  // กลับโหมดปกติ + เสียง M
   }
 }
 
 void deleteCardFlow() {
   exitPhotoMode();
   Serial.println("Delete mode... Tap a card to delete");
+  
+  // ส่งสัญญาณให้ Arduino เล่นเสียง "เข้าโหมดลบ"
+  mySerial.println("DDDDDDDDDDDDDDDDDDDDDDDD");
+  
   showUIx(UI_DELETE_SCAN, "แตะบัตรเพื่อลบข้อมูล", TR_NONE);
 
   while (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) {
@@ -2069,7 +2080,7 @@ void deleteCardFlow() {
     showUIx(UI_CARD_NOT_FOUND, "ไม่พบข้อมูลบัตรในระบบ", TR_NONE);
 
     delay(900);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
+    returnToNormalMode();  // กลับโหมดปกติ + เสียง M
     return;
   }
 
@@ -2146,10 +2157,10 @@ void deleteCardFlow() {
     Serial.println("Card + Fingerprint deleted");
     showUIx(UI_FINGER_OK, "ลบข้อมูลสำเร็จ", TR_NONE);
     delay(150);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
+    returnToNormalMode();  // กลับโหมดปกติ + เสียง M
   } else {
     // ถ้าอยากให้ย้อนกลับหน้าพร้อมใช้งาน
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
+    returnToNormalMode();  // กลับโหมดปกติ + เสียง M
   }
 
   //showUIx(UI_FINGER_OK, "ลบข้อมูลสำเร็จ", TR_NONE);
@@ -2284,10 +2295,16 @@ void normalScanFlow() {
   Serial.printf("Matched fingerID=%d\n", matched);
   if (matched != r.fp_id) {
     Serial.println("Fingerprint does not belong to this card.");
+    
+    // ส่งสัญญาณให้ Arduino เล่นเสียง "ลายนิ้วมือผิด"
+    mySerial.println("ZZZZZZZZZZZZZZZZZZZZZZZZZZ");
+    
     showUIx(UI_FINGER_FAIL, "ลายนิ้วมือต้องตรงกับผู้ถือบัตร", TR_NONE);
 
     delay(700);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
+    
+    // กลับโหมดปกติ → ส่งเสียงโหมดเลือกตั้ง
+    returnToNormalMode();
     return;
   }
 
@@ -2303,30 +2320,58 @@ void normalScanFlow() {
   // เข้าโหมดรอเลือก (real voting)
   startVotingMode(idx, false);
 
+  // ล้างข้อความขยะใน UART buffer ก่อนเริ่มรอ
+  while (mySerial.available()) {
+    String trash = mySerial.readStringUntil('\n');
+    Serial.printf("[CLEANUP] Flushed: '%s'\n", trash.c_str());
+  }
+
   // วนรออีเวนต์: CF:xx / SEL:xx / SENDING / VOTE:OK / VOTE:ERR (สูงสุด 20 วินาที)
   uint32_t tStart = millis();
   bool finished = false;
 
-  while (!finished && millis() - tStart < 20000) {
+  while (!finished && millis() - tStart < 20000 && g_waitingChoice) {
     // จัดการ UART2 messages ระหว่างรอ (ล้างทุกข้อความที่มี)
     while (mySerial.available()) {
       String line = mySerial.readStringUntil('\n');
       line.trim();
-      Serial.printf("[UART2] Received during wait: '%s'\n", line.c_str());
+      
+      // ล้าง hidden characters เพิ่มเติม (carriage return, etc.)
+      line.replace("\r", "");
+      line.replace("\0", "");
+      
+      // ข้าม ข้อความขยะ/ไม่สมบูรณ์
+      if (line.length() < 3 || line.startsWith("ESP")) {
+        Serial.printf("[UART2] Ignoring: '%s'\n", line.c_str());
+        continue;
+      }
+      
+      Serial.printf("[UART2] Received during wait: '%s' (len=%d)\n", line.c_str(), line.length());
+      
+      // Debug: แสดง hex characters
+      Serial.print("[DEBUG] Hex: ");
+      for (int i = 0; i < line.length(); i++) {
+        Serial.printf("%02X ", line[i]);
+      }
+      Serial.println();
 
-      // จัดการ SEL: commands ระหว่างรอ (แบบง่าย - ไม่เรียก handleU2Line)
+      // จัดการ SEL: commands ระหว่างรอ (ทันที - ไม่ต้องรอ)
       if (line.startsWith("SEL:")) {
-        // ยกเลิกโหมดรอเลือกทันที 
+        Serial.printf("[URGENT] Processing SEL immediately: '%s'\n", line.c_str());
+        
+        // ยุติ voting loop ทันที
+        g_waitingChoice = false;
         barStop();
         
         // แสดงรูปโดยตรง
         int n = line.substring(4).toInt();
         if (n >= 0 && n <= 99) {
+          Serial.printf("[URGENT] Switching to candidate %d immediately\n", n);
           isShowingPhoto = true;
           uiSetScanning(false);
           showCandidateJpg(n);
         }
-        continue;
+        break;  // ออกจาก voting loop ทันที
       }
 
       if (line.startsWith("CF:")) {
@@ -3668,6 +3713,9 @@ void loop() {
       waitingForPassword = true;
       Serial.printf("[KEYPAD] After - inRegisterMode:%s, waitingForPassword:%s\n",
                     inRegisterMode ? "true" : "false", waitingForPassword ? "true" : "false");
+
+      // ส่งสัญญาณให้ Arduino เล่นเสียง "เข้าโหมดลงทะเบียน"
+      mySerial.println("BBBBBBBBBBBBBBBBBBBBBBBB");
 
       // แสดง UI รอการยืนยัน
       showUIx(UI_WAIT_PASSWORD, "รอการยืนยันจากผู้ดูแล", TR_NONE);

@@ -2253,20 +2253,95 @@ void deleteScoreFlow() {
   Serial.println("[DELETE] Starting delete score flow");
   showUIx(UI_SENDING, "กำลังลบคะแนนทั้งหมด...", TR_NONE);
   
-  // ส่ง HTTP request ไปยัง ODROID เพื่อ reset score
-  // ในอนาคตอาจใช้ WiFi/HTTP แต่ตอนนี้ส่งผ่าน Serial ไป Arduino
-  mySerial.println("XXXXXXXXXXXXXXXXXXXXXXXX");  // ส่ง X เพื่อ reset score
-  Serial.println("[UART2] Sent: X (RESET SCORE)");
+  bool success = false;
   
-  delay(2000);  // รอให้ระบบประมวลผล
+  // 1. ส่ง HTTP POST ไปยัง ODROID เพื่อรีเซ็ตคะแนนในฐานข้อมูล
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    String url = String(API_SCHEME) + "://" + API_HOST + ":" + String(API_PORT) + "/admin/reset";
+    http.begin(url);
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("X-API-KEY", API_TOKEN);
+    http.setTimeout(5000);  // 5 วินาที
+    
+    Serial.printf("[HTTP] Sending reset request to %s\n", url.c_str());
+    int httpCode = http.POST("{}");  // ส่ง empty JSON body
+    
+    if (httpCode == 200) {
+      String response = http.getString();
+      Serial.printf("[HTTP] Reset response: %s\n", response.c_str());
+      
+      // 2. ส่งคำสั่ง X ไปยัง Arduino เพื่อลบคะแนนในหน่วยความจำ
+      Serial.println("[UART2] Sending X (RESET SCORE) to Arduino");
+      mySerial.println("XXXXXXXXXXXXXXXXXXXXXXXX");
+      
+      // 3. รอ response จาก Arduino (รอสูงสุด 5 วินาที)
+      uint32_t waitStart = millis();
+      bool arduinoConfirmed = false;
+      String arduinoResponse = "";
+      
+      while (millis() - waitStart < 5000) {
+        if (mySerial.available()) {
+          String line = mySerial.readStringUntil('\n');
+          line.trim();
+          arduinoResponse = line;
+          Serial.printf("[UART2] Arduino response: %s\n", line.c_str());
+          
+          // ตรวจสอบ response ที่บ่งบอกว่าลบสำเร็จ
+          if (line.indexOf("RESET_OK") >= 0 || line.indexOf("CLEARED") >= 0 || 
+              line.indexOf("SUCCESS") >= 0 || line.indexOf("OK") >= 0) {
+            arduinoConfirmed = true;
+            break;
+          }
+        }
+        delay(50);
+      }
+      
+      if (arduinoConfirmed) {
+        success = true;
+        Serial.println("[DELETE] Score reset confirmed by both ODROID and Arduino");
+      } else {
+        Serial.printf("[DELETE] Arduino did not confirm reset. Last response: '%s'\n", arduinoResponse.c_str());
+      }
+      
+    } else {
+      Serial.printf("[HTTP] Reset failed with code: %d\n", httpCode);
+      if (httpCode > 0) {
+        String error = http.getString();
+        Serial.printf("[HTTP] Error response: %s\n", error.c_str());
+      }
+    }
+    
+    http.end();
+  } else {
+    Serial.println("[ERROR] WiFi not connected - cannot reset scores on ODROID");
+  }
   
-  showUIx(UI_FINGER_OK, "ลบคะแนนสำเร็จ", TR_NONE);
-  delay(2000);
-  
-  // กลับโหมดปกติ
-  inDeleteMode = false;
-  inDeleteMenuMode = false;
-  returnToNormalMode("ยื่นบัตรใกล้เครื่องอ่าน", true);
+  // แสดงผลตามความสำเร็จ
+  if (success) {
+    // ส่งเสียงยืนยันความสำเร็จ
+    mySerial.println("PLAY_SUCCESS");
+    
+    showUIx(UI_FINGER_OK, "ลบคะแนนสำเร็จ", TR_NONE);
+    delay(2000);
+    
+    // กลับสู่โหมดปกติ
+    inDeleteMode = false;
+    inDeleteMenuMode = false;
+    returnToNormalMode("ยื่นบัตรใกล้เครื่องอ่าน", true);
+  } else {
+    // ส่งเสียงแจ้งข้อผิดพลาด
+    mySerial.println("PLAY_ERROR");
+    
+    showUIx(UI_ERROR, "ลบคะแนนไม่สำเร็จ", TR_NONE);
+    delay(3000);
+    
+    showUIx(UI_ERROR, "กรุณาลองใหม่อีกครั้ง", TR_NONE);
+    delay(2000);
+    
+    // กลับไปที่เมนูลบ
+    showDeleteMenu();
+  }
 }
 
 void deleteCardFlow() {

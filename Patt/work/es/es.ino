@@ -85,6 +85,7 @@ struct Rec {
 #include <MFRC522.h>
 #include <EEPROM.h>
 #include <Adafruit_Fingerprint.h>
+#include <SoftwareSerial.h>
 
 #include <HTTPClient.h>
 
@@ -1497,6 +1498,84 @@ HardwareSerial mySerial(2);      // UART2 : ใช้คุยกับบอร
 HardwareSerial FingerSerial(1);  // UART1 : ใช้คุยกับโมดูลลายนิ้วมือ
 Adafruit_Fingerprint finger = Adafruit_Fingerprint(&FingerSerial);
 
+// ---------- Thermal Printer ----------
+static constexpr int PRINTER_RX_PIN = 32;
+static constexpr int PRINTER_TX_PIN = 33;
+static constexpr unsigned long PRINTER_BAUD = 9600;
+
+SoftwareSerial printerSerial(PRINTER_RX_PIN, PRINTER_TX_PIN);
+static bool printerReady = false;
+
+static void printerEscInit() {
+  static const uint8_t cmd[] = {0x1B, 0x40};  // ESC @
+  printerSerial.write(cmd, sizeof(cmd));
+}
+
+static void printerEscAlignCenter() {
+  static const uint8_t cmd[] = {0x1B, 0x61, 0x01};  // ESC a 1
+  printerSerial.write(cmd, sizeof(cmd));
+}
+
+static void printerEscAlignLeft() {
+  static const uint8_t cmd[] = {0x1B, 0x61, 0x00};  // ESC a 0
+  printerSerial.write(cmd, sizeof(cmd));
+}
+
+static void printerFeedLines(uint8_t n) {
+  while (n--) {
+    printerSerial.write('\n');
+  }
+}
+
+void initThermalPrinter() {
+  Serial.printf("[PRINTER] Initializing on RX=%d, TX=%d...\n", PRINTER_RX_PIN, PRINTER_TX_PIN);
+  printerSerial.begin(PRINTER_BAUD);
+  printerSerial.setTimeout(50);
+  delay(50);
+  printerEscInit();
+  printerEscAlignLeft();
+  printerSerial.println(F("THERMAL PRINTER READY"));
+  printerFeedLines(1);
+  printerSerial.flush();
+  printerReady = true;
+  Serial.println("[PRINTER] Thermal printer ready");
+}
+
+void printVoteReceipt(int candidateNumber) {
+  if (!printerReady) {
+    Serial.println("[PRINTER] Skipping receipt (printer not initialized)");
+    return;
+  }
+
+  if (candidateNumber < 0) {
+    Serial.println("[PRINTER] Skipping receipt (invalid candidate)");
+    return;
+  }
+
+  printerEscInit();
+  printerEscAlignCenter();
+  printerSerial.println(F("SMART VOTING MACHINE"));
+  printerSerial.println(F("--------------------"));
+  printerSerial.println();
+
+  printerEscAlignLeft();
+  printerSerial.println(F("Thank you for voting."));
+  printerSerial.print(F("Selected Candidate: "));
+  printerSerial.println(candidateNumber);
+
+  uint32_t nowMs = millis();
+  printerSerial.print(F("Session ms: "));
+  printerSerial.println(nowMs);
+
+  printerSerial.println();
+  printerEscAlignCenter();
+  printerSerial.println(F("โปรดเก็บสลิปเป็นหลักฐาน"));
+
+  printerFeedLines(4);
+  printerSerial.flush();
+  Serial.printf("[PRINTER] Receipt printed for candidate %d\n", candidateNumber);
+}
+
 // ฟังก์ชันรวมสำหรับกลับโหมดปกติ (ส่งเสียงและแสดง UI)
 void returnToNormalMode(const char *message = "พร้อมให้บริการ", bool playSound = false) {
   showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_NONE);
@@ -2298,7 +2377,7 @@ int getKeyPressed() {
 }
 void showDeleteMenu() {
   Serial.println("[DELETE] Showing delete menu");
-  showUIx(UI_DELETE_MENU, "กด REGISTER=ลบบัตร, SCORE=ลบคะแนน, DELETE=ออก", TR_NONE);
+  showUIx(UI_DELETE_MENU, "DELETE Menu", TR_NONE);
 }
 
 void deleteScoreFlow() {
@@ -2855,6 +2934,8 @@ void normalScanFlow() {
             g_votePosted = true;
             g_waitingChoice = false;
             isShowingPhoto = false;  // รีเซ็ตโหมดแสดงภาพเมื่อโหวตสำเร็จ
+
+            printVoteReceipt(g_selectedCandidate);
 
             showUIx(UI_THANKS, "โหวตเสร็จสิ้น", TR_NONE);
             delay(5000);  // แสดง 5 วินาที
@@ -3606,6 +3687,8 @@ void setup() {
   Serial.setTimeout(200);
   mySerial.setTimeout(200);
 
+  initThermalPrinter();
+
   // Initialize ESP32 Internal EEPROM
   EEPROM.begin(EEPROM_SIZE);
   Serial.printf("[EEPROM] ESP32 Internal EEPROM initialized (%d bytes)\n", EEPROM_SIZE);
@@ -4210,6 +4293,9 @@ void loop() {
       inDeleteMenuMode = false;
       showUIx(UI_DELETE_SCAN, "แตะบัตรเพื่อลบข้อมูล", TR_NONE);
       Serial.println("[DELETE] Entering card delete mode");
+      Serial.println("[UART2] Sending C burst (DELETE CARD)");
+      mySerial.println("CCCCCCCCCCCCCCCCCCCCCCCCCCCCCC");
+      mySerial.flush();
       deleteCardFlowAfterPassword();
       return;
     } else if (keyPressed == KEY_SCORE) {
@@ -4341,9 +4427,18 @@ void loop() {
       // แสดง UI รอการยืนยัน
       showUIx(UI_WAIT_PASSWORD, "รอการยืนยันจากผู้ดูแล", TR_NONE);
 
-      // ส่ง PASSWORD ไป Arduino
-      mySerial.println("TTTTTTTTTTTTTTTTTTTTTTTTTTTTTT");  // เพิ่มความยาวให้เท่า Register Mode
-      Serial.println("[UART2] Sent: T (SCORE PASSWORD)");
+  // ส่ง PASSWORD ไป Arduino
+  Serial.println("[SCORE] About to send password command to Arduino...");
+  Serial.printf("[SCORE] Current mySerial state - available for write: %s\n",
+        mySerial.availableForWrite() > 0 ? "YES" : "NO");
+
+  mySerial.println("TTTTTTTTTTTTTTTTTTTTTTTTTTTTTT");  // เพิ่มความยาวให้เท่า Register Mode
+  mySerial.flush();
+
+  Serial.println("[UART2] Sent: T (SCORE PASSWORD)");
+  Serial.printf("[SCORE] Password sent successfully. Now waiting for T response...\n");
+  Serial.printf("[SCORE] Current waiting states - ScorePW:%s, InScoreMode:%s\n",
+        waitingForScorePassword ? "YES" : "NO", inScoreMode ? "YES" : "NO");
 
       waitForKeyRelease();
 

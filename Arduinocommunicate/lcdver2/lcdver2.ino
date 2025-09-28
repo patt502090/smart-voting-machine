@@ -44,7 +44,7 @@
 // =======================
 // 3) System & App Timers
 // =======================
-#define IDLE_SLEEP_MS 600000000UL    // ว่าง 60s -> หลับลึก (คงค่าเดิมตามไฟล์ต้นฉบับ)
+#define IDLE_SLEEP_MS 60000000000UL    // ว่าง 60s -> หลับลึก (คงค่าเดิมตามไฟล์ต้นฉบับ)
 const unsigned long interval = 100;  // กันสั่งเล่นถี่เกิน (มิลลิวินาที)
 
 // =======================
@@ -1025,7 +1025,14 @@ void setup() {
   noteActivity();
 }
 
-
+void showDeleteCardUI() {
+  lcd.noBlink();
+  lcd.clear();
+  lcd.setCursor(4, 1);
+  lcd.print(F("Delete card"));
+  lcd.setCursor(1, 3);
+  lcd.print(F("Tap/scan to proceed"));
+}
 
 void loop() {
   // ===== 1) Keypad =====
@@ -1078,15 +1085,13 @@ void loop() {
       tmrpcm.play("p.wav");
     } else if (msg == 'L') {
       tmrpcm.play("l.wav");
-    } else if (msg == 'B') {
-      tmrpcm.play("b.wav");
     } else if (msg == 'Z') {
       tmrpcm.play("z.wav");
     } else if (msg == 'A') {
       tmrpcm.play("a.wav");
-    }                       /*else if (msg == 'Y') {
-      tmrpcm.play("y.wav");
-    }*/
+    } else if (msg == 'Y') {
+      Serial.print(F("Sleep"));
+    }
     else if (msg == 'O') {  // ยืนยันตัวตนสำเร็จ
       canVote = true;
       page = PAGE_VOTE;
@@ -1105,6 +1110,7 @@ void loop() {
         tmrpcm.play("m.wav");
         drawReadyUI_base();
       } else {
+        tmrpcm.play("b.wav");
         startPass(ACT_REG);
         waitRToExit = true;
       }
@@ -1155,6 +1161,14 @@ void loop() {
         startPass(ACT_DELETE);
         waitDToExit = true;
       }
+    } else if (msg == 'C') {
+      // เดิมมีเสียงอยู่แล้ว
+      //tmrpcm.play("q.wav");
+
+      // ถ้าอยู่ในโหมด D (ลบ) ให้แสดง "Delete card" บน LCD
+      if (waitDToExit) {
+        showDeleteCardUI();
+      }
     }
   }
 
@@ -1174,7 +1188,7 @@ void loop() {
 
   // ===== 6) Auto-sleep =====
   if (!tmrpcm.isPlaying()) {
-    if ((millis() - lastActivityMs) >= IDLE_SLEEP_MS) {
+    if ((millis() - lastActivityMs) >= IDLE_SLEEP_MS || msg == 'Y') {
       prepareBeforeSleep();
       wokeFromEsp = false;
       goSleepPowerDown();

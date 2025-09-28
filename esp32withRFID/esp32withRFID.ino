@@ -3333,8 +3333,26 @@ void setup() {
 void handleU2Line(const String &raw) {
   String m = raw;
   m.trim();
+  
+  // ทำความสะอาดข้อความเพิ่มเติม - เอาเฉพาะตัวอักษรที่พิมพ์ได้
+  String cleaned = "";
+  for (int i = 0; i < m.length(); i++) {
+    char c = m.charAt(i);
+    if (c >= 32 && c <= 126) {  // ASCII printable characters
+      cleaned += c;
+    }
+  }
+  m = cleaned;
+  m.trim();  // trim อีกครั้งหลังทำความสะอาด
 
-  Serial.printf("[HANDLE] Processing: '%s'\n", m.c_str());
+  Serial.printf("[HANDLE] Processing: '%s' (length=%d)\n", m.c_str(), m.length());
+  
+  // Debug: แสดง hex ของข้อความ
+  Serial.print("[HANDLE] Hex: ");
+  for (int i = 0; i < m.length(); i++) {
+    Serial.printf("%02X ", (unsigned char)m.charAt(i));
+  }
+  Serial.println();
 
   if (m.startsWith("SEL:")) {
     Serial.printf("[HANDLE] SEL command detected\n");

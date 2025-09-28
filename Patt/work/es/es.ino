@@ -51,6 +51,7 @@ static const uint32_t KEY_POLL_INTERVAL = 50;  // polling ทุก 50ms
 static bool inRegisterMode = false;
 static bool inDeleteMode = false;
 static bool inScoreMode = false;
+static bool testModeEnabled = false;  // ควบคุมโหมดทดสอบ (เปิด/ปิด)
 static bool waitingForPassword = false;  // รอการยืนยัน password จาก Arduino
 
 #include "driver/rtc_io.h"  // สำหรับ rtc_gpio_get_level()
@@ -1907,6 +1908,20 @@ bool checkRFIDHealth() {
   return (version == 0x91 || version == 0x92);
 }
 
+// ฟังก์ชันส่งเสียงยืนยันตัวตนสำเร็จ - สำคัญมาก!
+void sendAuthenticationSuccessSound() {
+  Serial.println("[AUDIO] Sending CRITICAL authentication success sound (O)...");
+  
+  // ส่งซ้ำ 2 ครั้งเพื่อให้แน่ใจ
+  for (int i = 0; i < 2; i++) {
+    mySerial.println("OOOOOOOOOOOOOOOOOOOOOO");
+    mySerial.flush();  // บังคับส่งข้อมูลออกไปทันที
+    delay(30);  // หน่วงสั้นๆ ระหว่างการส่ง
+  }
+  
+  Serial.println("[AUDIO] Authentication success sound sent 3 times - CRITICAL");
+}
+
 // วางเหนือ registerCardAndFingerprint() / deleteCardFlow()
 inline void exitPhotoMode() {
   isShowingPhoto = false;
@@ -2289,8 +2304,8 @@ void deleteCardFlow() {
     return;
   }
 
-  // ส่งสัญญาณให้ Arduino เล่นเสียง "ยืนยันตัวตนสำเร็จ"
-  mySerial.println("OOOOOOOOOOOOOOOOOOOOOOOOO");
+  // ส่งเสียงยืนยันตัวตนสำเร็จ - ใช้ฟังก์ชันเฉพาะ
+  sendAuthenticationSuccessSound();
 
   /*
   // ลบ fingerprint template ในเซ็นเซอร์
@@ -2478,8 +2493,8 @@ void normalScanFlow() {
     return;
   }
 
-  // ส่งสัญญาณให้ Arduino เล่นเสียง "ยืนยันตัวตนสำเร็จ" (เมื่อ match กัน)
-  mySerial.println("OOOOOOOOOOOOOOOOOOOOOO");
+  // ส่งเสียงยืนยันตัวตนสำเร็จ - ใช้ฟังก์ชันเฉพาะ
+  sendAuthenticationSuccessSound();
 
   // --- ผ่านเงื่อนไข: บัตร+นิ้ว ตรงกัน → สำเร็จ ---
   // (ใส่จังหวะยืนยันสั้น ๆ แต่ไม่สลับลอจิกเดิม)
@@ -3638,6 +3653,13 @@ void setup() {
   isShowingPhoto = false;
   uiSetScanning(true);
 
+  // แสดงสถานะโหมดต่างๆ
+  Serial.printf("=== SYSTEM STATUS ===\n");
+  Serial.printf("Test Mode: %s (Use 'TESTMODE' command to toggle)\n", testModeEnabled ? "ENABLED" : "DISABLED");
+  Serial.printf("Register Mode: %s\n", inRegisterMode ? "ON" : "OFF");
+  Serial.printf("Delete Mode: %s\n", inDeleteMode ? "ON" : "OFF");
+  Serial.printf("====================\n");
+
   Serial.println("setup() done.");
 }
 
@@ -3696,8 +3718,13 @@ void handleU2Line(const String &raw) {
 
         // เข้าสู่ voting mode หากยังไม่ได้อยู่ในโหมดใดๆ
         if (!g_waitingChoice && !inRegisterMode && !inDeleteMode) {
-          Serial.println("[SEL] Starting new voting mode for photo display");
-          startVotingMode(-1, true);  // test mode สำหรับแสดงภาพ
+          if (testModeEnabled) {
+            Serial.println("[SEL] Starting new voting mode for photo display - TEST MODE");
+            startVotingMode(-1, true);  // test mode สำหรับแสดงภาพ
+          } else {
+            Serial.println("[SEL] Test mode disabled - only showing photo, no voting mode");
+            // แค่แสดงภาพโดยไม่เข้า voting mode
+          }
         }
 
         isShowingPhoto = true;
@@ -4167,6 +4194,11 @@ void loop() {
       // ทดสอบการแสดงรูป JPG
       Serial.println("Testing JPG display...");
       showCandidateJpg(2);
+    } else if (cmd.equalsIgnoreCase("TESTMODE")) {
+      // สลับโหมดทดสอบ
+      testModeEnabled = !testModeEnabled;
+      Serial.printf("Test mode is now: %s\n", testModeEnabled ? "ENABLED" : "DISABLED");
+      Serial.println("Test mode controls whether SEL commands after timeout can enter voting mode");
     } else if (cmd.equalsIgnoreCase("SDFILES") || cmd.equalsIgnoreCase("LIST")) {
       // แสดงรายการไฟล์ใน SD card
       Serial.println("=== SD Card Files ===");
@@ -4259,10 +4291,11 @@ void loop() {
         }
 
         // แสดงสถานะโหมด
-        Serial.printf("Mode Status - Register:%s Delete:%s Score:%s Password:%s\n",
+        Serial.printf("Mode Status - Register:%s Delete:%s Score:%s Test:%s Password:%s\n",
                       inRegisterMode ? "ON" : "OFF",
                       inDeleteMode ? "ON" : "OFF",
                       inScoreMode ? "ON" : "OFF",
+                      testModeEnabled ? "ON" : "OFF",
                       waitingForPassword ? "WAITING" : "OK");
 
         delay(200);

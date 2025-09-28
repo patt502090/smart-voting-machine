@@ -2271,11 +2271,12 @@ void normalScanFlow() {
     showUIx(UI_FINGER_FAIL, "ลายนิ้วมือต้องตรงกับผู้ถือบัตร", TR_NONE);
 
     delay(700);
-
-    mySerial.println("OOOOOOOOOOOOOOOOOOOOOO");
     showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
+
+  // ส่งสัญญาณให้ Arduino เล่นเสียง "ยืนยันตัวตนสำเร็จ" (เมื่อ match กัน)
+  mySerial.println("OOOOOOOOOOOOOOOOOOOOOO");
 
 
 

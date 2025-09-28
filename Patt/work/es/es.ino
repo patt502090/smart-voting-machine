@@ -1918,11 +1918,15 @@ void registerCardAndFingerprint() {
 
     bool ok = false;
     bus_acquire_for_rfid();
-    if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial())
+    if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
       ok = true;
+    }
     bus_release_after_rfid();
-    if (ok)
+    if (ok) {
+      // ส่งสัญญาณให้ Arduino เล่นเสียง "กำลังอ่านบัตร"
+      mySerial.println("SSSSSSSSSSSSSSSSSSSSSSSSSSSS");
       break;
+    }
     uiTick();
     delay(50);
   }
@@ -2103,6 +2107,10 @@ void deleteCardFlow() {
     showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
+  
+  // ส่งสัญญาณให้ Arduino เล่นเสียง "ยืนยันตัวตนสำเร็จ"
+  mySerial.println("OOOOOOOOOOOOOOOOOOOOOOOOO");
+  
   /*
   // ลบ fingerprint template ในเซ็นเซอร์
   if (r.fp_id > 0) {

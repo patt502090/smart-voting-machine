@@ -176,7 +176,6 @@ static bool isShowingPhoto = false;
 
 #include <functional>
 
-
 // RFID_CS = SS_PIN (=5) มีอยู่แล้วจากโค้ดคุณ
 
 // [ADD] สร้างอ็อบเจ็กต์จอ
@@ -271,10 +270,13 @@ static void drawTimedBarOverlay() {
     int seg = bw / 4;           // ความยาวก้อน
     int ofs = int(bw * phase);  // ตำแหน่งวิ่ง 0..bw
     int x1 = x + ofs - seg / 2;
-    if (x1 < x) x1 = x;
+    if (x1 < x)
+      x1 = x;
     int x2 = x + ofs + seg / 2;
-    if (x2 > x + bw) x2 = x + bw;
-    if (x2 > x1) tft.fillRoundRect(x1, y, x2 - x1, bh, 3, TFT_CYAN);
+    if (x2 > x + bw)
+      x2 = x + bw;
+    if (x2 > x1)
+      tft.fillRoundRect(x1, y, x2 - x1, bh, 3, TFT_CYAN);
   }
   // ป้ายเล็กๆ (ออปชัน)
   if (g_barLabel.length()) {
@@ -1438,8 +1440,8 @@ HardwareSerial FingerSerial(1);  // UART1 : ใช้คุยกับโมด
 Adafruit_Fingerprint finger = Adafruit_Fingerprint(&FingerSerial);
 
 // ฟังก์ชันรวมสำหรับกลับโหมดปกติ (ส่งเสียงและแสดง UI)
-void returnToNormalMode(const char* message = "พร้อมให้บริการ", bool playSound = false) {
-  showUIx(UI_READY, message, TR_NONE);
+void returnToNormalMode(const char *message = "พร้อมให้บริการ", bool playSound = false) {
+  showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_NONE);
 }
 
 // ---------- RFID ----------
@@ -1485,8 +1487,6 @@ inline void rfid_bus_end() {
 // ---------- Finger UART Pins (ปรับให้ตรงบอร์ดคุณ) ----------
 const int FINGER_RX = 26;  // ESP32 RX1 pin to sensor TX
 const int FINGER_TX = 25;  // ESP32 TX1 pin to sensor RX
-
-
 
 // ===== EEPROM Configuration =====
 #include <EEPROM.h>
@@ -1685,7 +1685,7 @@ int quickSearchFingerprint(uint32_t timeout_ms = 10000) {
       Serial.println("[QUICK_SEARCH] Exiting register mode - stopping fingerprint search");
       return -1;  // exit early
     }
-    
+
     uint8_t p = finger.getImage();
     if (p == FINGERPRINT_NOFINGER) {
       delay(50);
@@ -1895,6 +1895,18 @@ inline void rc522_hard_reset() {
   delay(5);
 }
 
+// ตรวจสอบสถานะ RFID โดยอ่าน version register
+bool checkRFIDHealth() {
+  bus_acquire_for_rfid();
+  byte version = rfid.PCD_ReadRegister(rfid.VersionReg);
+  bus_release_after_rfid();
+  
+  Serial.printf("[RFID] Version register: 0x%02X\n", version);
+  
+  // RC522 มี version register เป็น 0x91 หรือ 0x92
+  return (version == 0x91 || version == 0x92);
+}
+
 // วางเหนือ registerCardAndFingerprint() / deleteCardFlow()
 inline void exitPhotoMode() {
   isShowingPhoto = false;
@@ -1916,10 +1928,25 @@ void registerCardAndFingerprint() {
   exitPhotoMode();
   Serial.println("Registration mode... Tap a new card");
 
+  // เพิ่ม: Reset และ re-init RFID เพื่อให้แน่ใจว่าทำงาน
+  Serial.println("[REGISTER] Resetting RFID...");
+  rc522_hard_reset();
+  delay(100);
+
+  Serial.println("[REGISTER] Reinitializing RFID...");
+  bus_acquire_for_rfid();
+  rfid.PCD_Init();
+  bus_release_after_rfid();
+  delay(50);
+  Serial.println("[REGISTER] RFID reinitialized");
+
   // UI: เริ่มโหมดลงทะเบียน → รอแตะบัตร
   showUIx(UI_REGISTER_SCAN, "แตะบัตรเพื่อเริ่มลงทะเบียน", TR_NONE);
 
   // --- รอการ์ดแบบล็อคบัสทุกครั้ง ---
+  Serial.println("[REGISTER] Starting card detection loop");
+  int noCardCount = 0;  // นับจำนวนครั้งที่ไม่พบการ์ด
+  
   while (true) {
     // ตรวจสอบว่ายังอยู่ในโหมดลงทะเบียนหรือไม่
     if (!inRegisterMode) {
@@ -1929,10 +1956,50 @@ void registerCardAndFingerprint() {
 
     bool ok = false;
     bus_acquire_for_rfid();
+    Serial.println("[REGISTER] Bus acquired, checking for card...");
     if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
+      Serial.println("[REGISTER] Card detected!");
       ok = true;
+      noCardCount = 0;  // รีเซ็ตตัวนับ
+    } else {
+      Serial.println("[REGISTER] No card detected");
+      noCardCount++;
+      
+      // ถ้าไม่พบการ์ด 40 ครั้งติดต่อกัน (2 วินาที) ให้ลอง reset RFID
+      if (noCardCount >= 40) {
+        Serial.println("[REGISTER] Too many failed attempts - checking RFID health...");
+        bus_release_after_rfid();  // ปล่อย bus ก่อน reset
+        
+        // ตรวจสอบสถานะ RFID
+        if (!checkRFIDHealth()) {
+          Serial.println("[REGISTER] RFID health check failed - performing hard reset...");
+          
+          // Hard reset RFID
+          rc522_hard_reset();
+          delay(100);
+          
+          // Re-init RFID
+          bus_acquire_for_rfid();
+          rfid.PCD_Init();
+          bus_release_after_rfid();
+          delay(50);
+          
+          // ตรวจสอบอีกครั้งหลัง reset
+          if (checkRFIDHealth()) {
+            Serial.println("[REGISTER] RFID recovery successful");
+          } else {
+            Serial.println("[REGISTER] RFID recovery failed - may need hardware check");
+          }
+        } else {
+          Serial.println("[REGISTER] RFID health OK - continuing...");
+        }
+        
+        noCardCount = 0;  // รีเซ็ตตัวนับ
+        continue;  // ข้ามการ release bus เพราะเราทำไปแล้ว
+      }
     }
     bus_release_after_rfid();
+    
     if (ok) {
       // ส่งสัญญาณให้ Arduino เล่นเสียง "กำลังอ่านบัตร"
       mySerial.println("SSSSSSSSSSSSSSSSSSSSSSSSSSSS");
@@ -1959,7 +2026,6 @@ void registerCardAndFingerprint() {
   uiSetLoading(false);
   showUIx(UI_SCAN_FINGER, "วางนิ้ว 2 ครั้งเพื่อลงทะเบียน", TR_NONE);
 
-
   // ตรวจสอบว่ายังอยู่ในโหมดลงทะเบียนหรือไม่
   if (!inRegisterMode) {
     Serial.println("[REGISTER] Exiting register mode - stopping after card read");
@@ -1969,6 +2035,10 @@ void registerCardAndFingerprint() {
   // --- การ์ดซ้ำ? ---
   if (findByUID(uidHex) >= 0) {
     Serial.println("This card is already registered.");
+    
+    // ส่งสัญญาณให้ Arduino เล่นเสียง "ลายนิ้วมือผิด/error"
+    mySerial.println("ZZZZZZZZZZZZZZZZZZZZZZZZZZ");
+    
     showUIx(UI_CARD_DUPLICATE, "บัตรนี้ลงทะเบียนแล้ว", TR_NONE);
 
     delay(900);
@@ -1988,6 +2058,10 @@ void registerCardAndFingerprint() {
       Rec rExist;
       readRec(idxExisting, rExist);
       Serial.printf("Duplicate finger detected! Already linked to another card (FP_ID=%d). Abort.\n", existing_fp);
+      
+      // ส่งสัญญาณให้ Arduino เล่นเสียง "ลายนิ้วมือผิด"
+      mySerial.println("ZZZZZZZZZZZZZZZZZZZZZZZZZZ");
+      
       showUIx(UI_FINGER_FAIL, "ลายนิ้วมือนี้เชื่อมบัตรอื่นอยู่", TR_NONE);
 
       delay(1000);
@@ -2016,6 +2090,11 @@ void registerCardAndFingerprint() {
     chosen_fp_id++;
   if (chosen_fp_id >= 200) {
     Serial.println("No free FP ID slot.");
+    
+    // ส่งสัญญาณให้ Arduino เล่นเสียง "error"
+    mySerial.println("ZZZZZZZZZZZZZZZZZZZZZZZZZZ");
+    
+    showUIx(UI_ERROR, "ที่เก็บลายนิ้วมือเต็ม", TR_NONE);
 
     delay(1000);
     showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
@@ -2034,6 +2113,10 @@ void registerCardAndFingerprint() {
   int p = enrollFingerprint(chosen_fp_id);
   if (p != FINGERPRINT_OK) {
     Serial.printf("Enroll failed (code=%d). Abort.\n", p);
+    
+    // ส่งสัญญาณให้ Arduino เล่นเสียง "ลายนิ้วมือผิด"
+    mySerial.println("ZZZZZZZZZZZZZZZZZZZZZZZZZZ");
+    
     showUIx(UI_FINGER_FAIL, "บันทึกลายนิ้วมือไม่สำเร็จ", TR_NONE);
 
     delay(1000);
@@ -2054,6 +2137,10 @@ void registerCardAndFingerprint() {
     returnToNormalMode("พร้อมให้บริการ", true);  // กลับโหมดปกติ + เสียง M (เฉพาะตอนออกจากโหมด)
   } else {
     Serial.println("EEPROM full. Cannot store new record.");
+    
+    // ส่งสัญญาณให้ Arduino เล่นเสียง "error"
+    mySerial.println("ZZZZZZZZZZZZZZZZZZZZZZZZZZ");
+    
     showUIx(UI_ERROR, "หน่วยความจำเต็ม", TR_NONE);
 
     finger.deleteModel(chosen_fp_id);  // roll back
@@ -2065,26 +2152,89 @@ void registerCardAndFingerprint() {
 void deleteCardFlow() {
   exitPhotoMode();
   Serial.println("Delete mode... Tap a card to delete");
-  
+
   // ส่งสัญญาณให้ Arduino เล่นเสียง "เข้าโหมดลบ"
   mySerial.println("DDDDDDDDDDDDDDDDDDDDDDDD");
-  
+
+  // เพิ่ม: Reset และ re-init RFID เพื่อให้แน่ใจว่าทำงาน
+  Serial.println("[DELETE] Resetting RFID...");
+  rc522_hard_reset();
+  delay(100);
+
+  Serial.println("[DELETE] Reinitializing RFID...");
+  bus_acquire_for_rfid();
+  rfid.PCD_Init();
+  bus_release_after_rfid();
+  delay(50);
+  Serial.println("[DELETE] RFID reinitialized");
+
   showUIx(UI_DELETE_SCAN, "แตะบัตรเพื่อลบข้อมูล", TR_NONE);
 
-  while ((!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) && inDeleteMode) {
+  // แก้ไขการใช้ bus management
+  int noCardCount = 0;  // นับจำนวนครั้งที่ไม่พบการ์ด
+  
+  while (inDeleteMode) {
+    bool cardPresent = false;
+    bus_acquire_for_rfid();
+    if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
+      cardPresent = true;
+      noCardCount = 0;  // รีเซ็ตตัวนับ
+    } else {
+      noCardCount++;
+      
+      // ถ้าไม่พบการ์ด 40 ครั้งติดต่อกัน (2 วินาที) ให้ลอง reset RFID
+      if (noCardCount >= 40) {
+        Serial.println("[DELETE] Too many failed attempts - checking RFID health...");
+        bus_release_after_rfid();  // ปล่อย bus ก่อน reset
+        
+        // ตรวจสอบสถานะ RFID
+        if (!checkRFIDHealth()) {
+          Serial.println("[DELETE] RFID health check failed - performing hard reset...");
+          
+          // Hard reset RFID
+          rc522_hard_reset();
+          delay(100);
+          
+          // Re-init RFID
+          bus_acquire_for_rfid();
+          rfid.PCD_Init();
+          bus_release_after_rfid();
+          delay(50);
+          
+          // ตรวจสอบอีกครั้งหลัง reset
+          if (checkRFIDHealth()) {
+            Serial.println("[DELETE] RFID recovery successful");
+          } else {
+            Serial.println("[DELETE] RFID recovery failed - may need hardware check");
+          }
+        }
+        
+        noCardCount = 0;  // รีเซ็ตตัวนับ
+        continue;  // ข้ามการ release bus เพราะเราทำไปแล้ว
+      }
+    }
+    bus_release_after_rfid();
+
+    if (cardPresent) {
+      break;
+    }
     delay(50);
   }
-  
+
   // ถ้าออกจากโหมดลบแล้ว ให้ return ทันที
   if (!inDeleteMode) {
     Serial.println("[DELETE] Exiting delete mode - stopping card wait");
     returnToNormalMode();
     return;
   }
-  
-  String uidHex = readRFIDasHex();
+
+  // อ่าน UID แบบปลอดภัยบนบัส
+  String uidHex;
+  bus_acquire_for_rfid();
+  uidHex = readRFIDasHex();
   rfid.PICC_HaltA();
   rfid.PCD_StopCrypto1();
+  bus_release_after_rfid();
 
   int idx = findByUID(uidHex);
   if (idx < 0) {
@@ -2122,14 +2272,14 @@ void deleteCardFlow() {
     uiTick();
     delay(50);
   }
-  
+
   // ถ้าออกจากโหมดลบแล้ว ให้ return ทันที
   if (!inDeleteMode) {
     Serial.println("[DELETE] Exiting delete mode - stopping fingerprint verification");
     returnToNormalMode();
     return;
   }
-  
+
   if (matched < 0 || matched != r.fp_id) {
     Serial.println("Fingerprint verify failed / timeout. Abort delete.");
     showUIx(UI_FINGER_FAIL, (matched < 0) ? "ไม่ตรวจพบลายนิ้ว" : "ลายนิ้วไม่ตรงเจ้าของบัตร", TR_NONE);
@@ -2183,10 +2333,10 @@ void deleteCardFlow() {
     returnToNormalMode();  // กลับโหมดปกติ + เสียง M
   }
 
-  //showUIx(UI_FINGER_OK, "ลบข้อมูลสำเร็จ", TR_NONE);
-  //delay(150);
-  //delay(700);
-  //showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
+  // showUIx(UI_FINGER_OK, "ลบข้อมูลสำเร็จ", TR_NONE);
+  // delay(150);
+  // delay(700);
+  // showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
 }
 
 // ฟังก์ชันรวมสำหรับเข้าโหมดรอเลือก (ใช้ร่วมกันระหว่าง real vote และ test mode)
@@ -2196,7 +2346,7 @@ void startVotingMode(int idx = -1, bool isTestMode = false) {
   g_selectedCandidate = -1;
   g_votePosted = false;
   g_idxPending = idx;
-  
+
   barStart(1500, "รอการเลือก");
   if (isTestMode) {
     showUIx(UI_WAIT_CHOICE, "โหมดทดสอบ: รอ CF:x ทาง USB", TR_NONE);
@@ -2279,7 +2429,7 @@ void normalScanFlow() {
   // ถ้าโหมดโหวต: เคยทำรายการแล้วหรือยัง?
   if (r.voted == 1) {
     Serial.println("[DEBUG] Already voted for this card holder.");
-    //mySerial.println("W");
+    // mySerial.println("W");
     showUIx(UI_CARD_ALREADY_VOTED, "บัตรนี้ใช้งานแล้ว (โหวตไปแล้ว)", TR_NONE);
 
     delay(700);
@@ -2304,7 +2454,7 @@ void normalScanFlow() {
 
   if (matched < 0) {
     Serial.println("Fingerprint not matched / timeout.");
-    //mySerial.println("W");
+    // mySerial.println("W");
     showUIx(UI_FINGER_FAIL, "ไม่ตรวจพบลายนิ้วมือ", TR_NONE);
 
     delay(700);
@@ -2315,14 +2465,14 @@ void normalScanFlow() {
   Serial.printf("Matched fingerID=%d\n", matched);
   if (matched != r.fp_id) {
     Serial.println("Fingerprint does not belong to this card.");
-    
+
     // ส่งสัญญาณให้ Arduino เล่นเสียง "ลายนิ้วมือผิด"
     mySerial.println("ZZZZZZZZZZZZZZZZZZZZZZZZZZ");
-    
+
     showUIx(UI_FINGER_FAIL, "ลายนิ้วมือต้องตรงกับผู้ถือบัตร", TR_NONE);
 
     delay(700);
-    
+
     // กลับโหมดปกติ → ส่งเสียงโหมดเลือกตั้ง
     returnToNormalMode();
     return;
@@ -2330,8 +2480,6 @@ void normalScanFlow() {
 
   // ส่งสัญญาณให้ Arduino เล่นเสียง "ยืนยันตัวตนสำเร็จ" (เมื่อ match กัน)
   mySerial.println("OOOOOOOOOOOOOOOOOOOOOO");
-
-
 
   // --- ผ่านเงื่อนไข: บัตร+นิ้ว ตรงกัน → สำเร็จ ---
   // (ใส่จังหวะยืนยันสั้น ๆ แต่ไม่สลับลอจิกเดิม)
@@ -2355,19 +2503,19 @@ void normalScanFlow() {
     while (mySerial.available()) {
       String line = mySerial.readStringUntil('\n');
       line.trim();
-      
+
       // ล้าง hidden characters เพิ่มเติม (carriage return, etc.)
       line.replace("\r", "");
       line.replace("\0", "");
-      
+
       // ข้าม ข้อความขยะ/ไม่สมบูรณ์
       if (line.length() < 3 || line.startsWith("ESP")) {
         Serial.printf("[UART2] Ignoring: '%s'\n", line.c_str());
         continue;
       }
-      
+
       Serial.printf("[UART2] Received during wait: '%s' (len=%d)\n", line.c_str(), line.length());
-      
+
       // Debug: แสดง hex characters
       Serial.print("[DEBUG] Hex: ");
       for (int i = 0; i < line.length(); i++) {
@@ -2378,11 +2526,11 @@ void normalScanFlow() {
       // จัดการ SEL: commands ระหว่างรอ (ทันที - ไม่ต้องรอ)
       if (line.startsWith("SEL:")) {
         Serial.printf("[URGENT] Processing SEL immediately: '%s'\n", line.c_str());
-        
+
         // ยุติ voting loop ทันที
         g_waitingChoice = false;
         barStop();
-        
+
         // แสดงรูปโดยตรง
         int n = line.substring(4).toInt();
         if (n >= 0 && n <= 99) {
@@ -2394,7 +2542,7 @@ void normalScanFlow() {
         break;  // ออกจาก voting loop ทันที
       }
 
-      if (line.startsWith("CF:")) {
+      if (line.startsWith("CF:") || line.startsWith(" CF:")) {
         // ได้เบอร์ผู้สมัคร → ถือว่ายืนยันแล้ว
         g_selectedCandidate = line.substring(3).toInt();
         barStop();
@@ -2418,6 +2566,7 @@ void normalScanFlow() {
               setVotedByIndex(g_idxPending, 1);
             g_votePosted = true;
             g_waitingChoice = false;
+            isShowingPhoto = false;  // รีเซ็ตโหมดแสดงภาพเมื่อโหวตสำเร็จ
 
             showUIx(UI_THANKS, "โหวตเสร็จสิ้น", TR_NONE);
             delay(5000);  // แสดง 5 วินาที
@@ -2438,12 +2587,14 @@ void normalScanFlow() {
         showUIx(UI_THANKS, "ทำรายการสำเร็จ", TR_NONE);
         if (g_idxPending >= 0)
           setVotedByIndex(g_idxPending, 1);
+        isShowingPhoto = false;  // รีเซ็ตโหมดแสดงภาพ
         finished = true;
       } else if (line.equalsIgnoreCase("VOTE:ERR")) {
         showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_NONE);
         // ให้ผู้ใช้เลือกใหม่
       } else if (line.equalsIgnoreCase("ABORT")) {
         showUIx(UI_ERROR, "ยกเลิกรายการ", TR_NONE);
+        isShowingPhoto = false;  // รีเซ็ตโหมดแสดงภาพ
         finished = true;
       }
     }
@@ -2458,6 +2609,7 @@ void normalScanFlow() {
   }
 
   g_waitingChoice = false;
+  isShowingPhoto = false;  // รีเซ็ตโหมดแสดงภาพเมื่อ timeout หรือเสร็จสิ้น
   barStop();
   delay(800);
   showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
@@ -2834,7 +2986,6 @@ bool drawJpgCoverFromSD(const String &path) {
   return res;
 }
 
-
 // ===== SD re-init + retry helpers =====
 bool sd_reinit(uint32_t hz) {
   Serial.println("[SD] Ending previous SD session...");
@@ -2936,7 +3087,6 @@ bool checkSDCardWithUI() {
   return false;
 }
 
-
 int getKeyPressed();
 void waitForKeyRelease();
 int readKeypadStable();
@@ -3011,7 +3161,6 @@ int getKeyPressed() {
   return -1;  // ไม่มีการกดค้างครบ 3 วินาที
 }
 
-
 // ===== SD Card Wait Loop =====
 void waitForSDCard() {
   Serial.println("[SD] Waiting for SD Card to be ready...");
@@ -3040,7 +3189,8 @@ void waitForSDCard() {
 
 bool sd_retry_wrap(std::function<bool()> io, int retries = 2) {
   for (int i = 0; i <= retries; ++i) {
-    if (io()) return true;
+    if (io())
+      return true;
     // ถ้า fail: re-init แล้วลองใหม่
     // if (!sd_reinit()) delay(10);
   }
@@ -3233,7 +3383,6 @@ void testTFTBasic() {
 }
 
 // ===== Forward Declarations =====
-
 
 void setup() {
   // --- Wake pin / IRQ ---
@@ -3524,16 +3673,16 @@ void handleU2Line(const String &raw) {
     return;
   } else if (m.startsWith("SEL:")) {
     Serial.printf("[HANDLE] SEL command detected: '%s'\n", m.c_str());
-    
+
     // ยกเลิกโหมดรอเลือกทันที (ถ้ามี)
     barStop();
-    
+
     // ยุติ voting loop ถ้ากำลังรอ
     if (g_waitingChoice) {
       g_waitingChoice = false;
       Serial.println("[SEL] Terminating voting loop");
     }
-    
+
     if (m.equalsIgnoreCase("SEL:CLEAR")) {
       Serial.println("[SEL] Clearing photo mode");
       isShowingPhoto = false;
@@ -3544,6 +3693,13 @@ void handleU2Line(const String &raw) {
       Serial.printf("[SEL] Extracted number: %d from '%s'\n", n, m.c_str());
       if (n >= 0 && n <= 99) {
         Serial.printf("[SEL] Setting photo mode, showing candidate %d\n", n);
+
+        // เข้าสู่ voting mode หากยังไม่ได้อยู่ในโหมดใดๆ
+        if (!g_waitingChoice && !inRegisterMode && !inDeleteMode) {
+          Serial.println("[SEL] Starting new voting mode for photo display");
+          startVotingMode(-1, true);  // test mode สำหรับแสดงภาพ
+        }
+
         isShowingPhoto = true;
         uiSetScanning(false);
 
@@ -3763,10 +3919,10 @@ void loop() {
 
       showUIx(UI_READY, "ยกเลิกโหมดลงทะเบียน", TR_NONE);
       delay(1000);
-      
+
       // กลับโหมดปกติ → ส่งเสียงโหมดเลือกตั้ง (เฉพาะตอนออกจากโหมด)
       returnToNormalMode("ยื่นบัตรใกล้เครื่องอ่าน", true);
-      
+
       waitForKeyRelease();
     }
     return;
@@ -3788,10 +3944,10 @@ void loop() {
       inDeleteMode = false;
       showUIx(UI_READY, "ยกเลิกโหมดลบข้อมูล", TR_NONE);
       delay(1000);
-      
+
       // กลับโหมดปกติ → ส่งเสียงโหมดเลือกตั้ง (เฉพาะตอนออกจากโหมด)
       returnToNormalMode("ยื่นบัตรใกล้เครื่องอ่าน", true);
-      
+
       waitForKeyRelease();
     }
     return;
@@ -3816,10 +3972,10 @@ void loop() {
       inScoreMode = false;
       showUIx(UI_READY, "ยกเลิกโหมดเช็ค Score", TR_NONE);
       delay(1000);
-      
+
       // กลับโหมดปกติ → ส่งเสียงโหมดเลือกตั้ง
       returnToNormalMode("ยื่นบัตรใกล้เครื่องอ่าน");
-      
+
       waitForKeyRelease();
     }
     return;
@@ -3991,7 +4147,8 @@ void loop() {
           Serial.println("SD Card files:");
           while (true) {
             File entry = root.openNextFile();
-            if (!entry) break;
+            if (!entry)
+              break;
             Serial.println(entry.name());
             entry.close();
           }

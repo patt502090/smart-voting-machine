@@ -2368,10 +2368,75 @@ void normalScanFlow() {
   bool finished = false;
 
   while (!finished && millis() - tStart < 20000) {
-    // รอให้ main loop จัดการ UART2 commands
-    // ไม่ต้องรับ UART2 ซ้ำที่นี่
-    // รอให้ main loop จัดการ UART2 commands
-    // ไม่ต้องรับ UART2 ซ้ำที่นี่
+    // จัดการ UART2 messages ระหว่างรอ
+    if (mySerial.available()) {
+      String line = mySerial.readStringUntil('\n');
+      line.trim();
+      Serial.printf("[UART2] Received during wait: '%s'\n", line.c_str());
+
+      // จัดการ SEL: commands ระหว่างรอ
+      if (line.startsWith("SEL:")) {
+        handleU2Line(line);  // ใช้ handler ที่มีอยู่แล้ว
+        continue;
+      }
+
+      if (line.startsWith("CF:")) {
+        // ได้เบอร์ผู้สมัคร → ถือว่ายืนยันแล้ว
+        g_selectedCandidate = line.substring(3).toInt();
+        barStop();
+
+        // UI: โชว์หมายเลขที่เลือก แล้วเข้าส่งทันที
+        {
+          String sub = "เลือกหมายเลข " + String(g_selectedCandidate);
+          showUIx(UI_SELECTED, sub.c_str(), TR_NONE);
+          delay(400);
+        }
+
+        if (!g_votePosted && g_selectedCandidate >= 0 && g_selectedCandidate <= 9) {
+          showUIx(UI_SENDING, "กำลังส่งข้อมูล...", TR_NONE);
+
+          bool sent = postVoteToServer(g_selectedCandidate);
+          Serial.printf("[API] CF post option=%d -> %s\n",
+                        g_selectedCandidate, sent ? "OK" : "FAIL");
+
+          if (sent) {
+            if (g_idxPending >= 0)
+              setVotedByIndex(g_idxPending, 1);
+            g_votePosted = true;
+            g_waitingChoice = false;
+
+            showUIx(UI_THANKS, "โหวตเสร็จสิ้น", TR_NONE);
+            delay(5000); // แสดง 5 วินาที
+            showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
+            finished = true;
+          } else {
+            showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_NONE);
+            delay(700);
+            showUIx(UI_WAIT_CHOICE, "โปรดเลือกใหม่หรือลองอีกครั้ง", TR_NONE);
+            // finished คงไว้เป็น false เพื่อรอ CF ใหม่ได้
+          }
+        }
+      }
+      else if (line.equalsIgnoreCase("SENDING")) {
+        barStart(1200, "กำลังส่ง");
+        showUIx(UI_SENDING, "กำลังส่งข้อมูล...", TR_NONE);
+      }
+      else if (line.equalsIgnoreCase("VOTE:OK")) {
+        // กรณีอนาคตถ้ามีส่ง VOTE:OK ก็เคลียร์ให้จบเหมือนกัน
+        showUIx(UI_THANKS, "ทำรายการสำเร็จ", TR_NONE);
+        if (g_idxPending >= 0)
+          setVotedByIndex(g_idxPending, 1);
+        finished = true;
+      }
+      else if (line.equalsIgnoreCase("VOTE:ERR")) {
+        showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_NONE);
+        // ให้ผู้ใช้เลือกใหม่
+      }
+      else if (line.equalsIgnoreCase("ABORT")) {
+        showUIx(UI_ERROR, "ยกเลิกรายการ", TR_NONE);
+        finished = true;
+      }
+    }
 
     uiTick();
     delay(30);

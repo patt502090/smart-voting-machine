@@ -3160,6 +3160,11 @@ void testTFTBasic() {
   Serial.println("TFT basic test completed");
 }
 
+// ===== Forward Declarations =====
+int getKeyPressed();
+void waitForKeyRelease();
+int readKeypadStable();
+
 void setup() {
   // --- Wake pin / IRQ ---
   pinMode(mjoy, INPUT);
@@ -3439,8 +3444,26 @@ void setup() {
 void handleU2Line(const String &raw) {
   String m = raw;
   m.trim();
+  
+  // ทำความสะอาดข้อความเพิ่มเติม - เอาเฉพาะตัวอักษรที่พิมพ์ได้
+  String cleaned = "";
+  for (int i = 0; i < m.length(); i++) {
+    char c = m.charAt(i);
+    if (c >= 32 && c <= 126) {  // ASCII printable characters
+      cleaned += c;
+    }
+  }
+  m = cleaned;
+  m.trim();  // trim อีกครั้งหลังทำความสะอาด
 
-  Serial.printf("[HANDLE] Processing: '%s'\n", m.c_str());
+  Serial.printf("[HANDLE] Processing: '%s' (length=%d)\n", m.c_str(), m.length());
+  
+  // Debug: แสดง hex ของข้อความ
+  Serial.print("[HANDLE] Hex: ");
+  for (int i = 0; i < m.length(); i++) {
+    Serial.printf("%02X ", (unsigned char)m.charAt(i));
+  }
+  Serial.println();
 
   if (m.equalsIgnoreCase("AUTHOK")) {
     // รับ AUTHOK จาก Arduino → เข้าโหมดรอเลือก
@@ -3474,11 +3497,11 @@ void handleU2Line(const String &raw) {
           return;
         }
 
-        Serial.printf("[SEL] Calling showCandidateJpg(%d)\n", n);
+        Serial.printf("[SEL] About to call showCandidateJpg(%d)\n", n);
         showCandidateJpg((uint8_t)n);
         Serial.printf("[SEL] showCandidateJpg(%d) completed\n", n);
       } else {
-        Serial.printf("[SEL] Invalid candidate number: %d\n", n);
+        Serial.printf("[SEL] Invalid number: %d (must be 0-99)\n", n);
         isShowingPhoto = true;
         uiSetScanning(false);
         showIdleScreen("Bad SEL");

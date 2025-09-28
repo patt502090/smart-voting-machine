@@ -1918,11 +1918,15 @@ void registerCardAndFingerprint() {
 
     bool ok = false;
     bus_acquire_for_rfid();
-    if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial())
+    if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
       ok = true;
+    }
     bus_release_after_rfid();
-    if (ok)
+    if (ok) {
+      // ส่งสัญญาณให้ Arduino เล่นเสียง "กำลังอ่านบัตร"
+      mySerial.println("SSSSSSSSSSSSSSSSSSSSSSSSSSSS");
       break;
+    }
     uiTick();
     delay(50);
   }
@@ -2103,6 +2107,10 @@ void deleteCardFlow() {
     showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
+
+  // ส่งสัญญาณให้ Arduino เล่นเสียง "ยืนยันตัวตนสำเร็จ"
+  mySerial.println("OOOOOOOOOOOOOOOOOOOOOOOOO");
+
   /*
   // ลบ fingerprint template ในเซ็นเซอร์
   if (r.fp_id > 0) {
@@ -2263,13 +2271,14 @@ void normalScanFlow() {
     showUIx(UI_FINGER_FAIL, "ลายนิ้วมือต้องตรงกับผู้ถือบัตร", TR_NONE);
 
     delay(700);
-
-    mySerial.println("OOOOOOOOOOOOOOOOOOOOOO");
     showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   }
 
-  
+  // ส่งสัญญาณให้ Arduino เล่นเสียง "ยืนยันตัวตนสำเร็จ" (เมื่อ match กัน)
+  mySerial.println("OOOOOOOOOOOOOOOOOOOOOO");
+
+
 
   // --- ผ่านเงื่อนไข: บัตร+นิ้ว ตรงกัน → สำเร็จ ---
   // (ใส่จังหวะยืนยันสั้น ๆ แต่ไม่สลับลอจิกเดิม)
@@ -2292,15 +2301,24 @@ void normalScanFlow() {
   bool finished = false;
 
   while (!finished && millis() - tStart < 20000) {
-    // จัดการ UART2 messages ระหว่างรอ
-    if (mySerial.available()) {
+    // จัดการ UART2 messages ระหว่างรอ (ล้างทุกข้อความที่มี)
+    while (mySerial.available()) {
       String line = mySerial.readStringUntil('\n');
       line.trim();
       Serial.printf("[UART2] Received during wait: '%s'\n", line.c_str());
 
-      // จัดการ SEL: commands ระหว่างรอ
+      // จัดการ SEL: commands ระหว่างรอ (แบบง่าย - ไม่เรียก handleU2Line)
       if (line.startsWith("SEL:")) {
-        handleU2Line(line);  // ใช้ handler ที่มีอยู่แล้ว
+        // ยกเลิกโหมดรอเลือกทันที 
+        barStop();
+        
+        // แสดงรูปโดยตรง
+        int n = line.substring(4).toInt();
+        if (n >= 0 && n <= 99) {
+          isShowingPhoto = true;
+          uiSetScanning(false);
+          showCandidateJpg(n);
+        }
         continue;
       }
 
@@ -2330,7 +2348,7 @@ void normalScanFlow() {
             g_waitingChoice = false;
 
             showUIx(UI_THANKS, "โหวตเสร็จสิ้น", TR_NONE);
-            delay(5000); // แสดง 5 วินาที
+            delay(5000);  // แสดง 5 วินาที
             showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
             finished = true;
           } else {
@@ -2340,23 +2358,19 @@ void normalScanFlow() {
             // finished คงไว้เป็น false เพื่อรอ CF ใหม่ได้
           }
         }
-      }
-      else if (line.equalsIgnoreCase("SENDING")) {
+      } else if (line.equalsIgnoreCase("SENDING")) {
         barStart(1200, "กำลังส่ง");
         showUIx(UI_SENDING, "กำลังส่งข้อมูล...", TR_NONE);
-      }
-      else if (line.equalsIgnoreCase("VOTE:OK")) {
+      } else if (line.equalsIgnoreCase("VOTE:OK")) {
         // กรณีอนาคตถ้ามีส่ง VOTE:OK ก็เคลียร์ให้จบเหมือนกัน
         showUIx(UI_THANKS, "ทำรายการสำเร็จ", TR_NONE);
         if (g_idxPending >= 0)
           setVotedByIndex(g_idxPending, 1);
         finished = true;
-      }
-      else if (line.equalsIgnoreCase("VOTE:ERR")) {
+      } else if (line.equalsIgnoreCase("VOTE:ERR")) {
         showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_NONE);
         // ให้ผู้ใช้เลือกใหม่
-      }
-      else if (line.equalsIgnoreCase("ABORT")) {
+      } else if (line.equalsIgnoreCase("ABORT")) {
         showUIx(UI_ERROR, "ยกเลิกรายการ", TR_NONE);
         finished = true;
       }
@@ -2622,7 +2636,6 @@ bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap) 
 
 // วาด JPEG พอดีจอ เริ่มที่ (0,0) โดยไม่จัดกึ่งกลาง/ไม่ครอบ
 bool drawJpgExactFromSD(const String &path) {
-  Serial.printf("[JPG] Starting drawJpgExactFromSD: %s\n", path.c_str());
 
   // ปล่อยบัสอื่นก่อน
   spi_deselect_all();
@@ -2630,7 +2643,6 @@ bool drawJpgExactFromSD(const String &path) {
 
   // ตรวจสอบว่าไฟล์มีอยู่จริง
   if (!SD.exists(path)) {
-    Serial.printf("[JPG] File does not exist: %s\n", path.c_str());
     spi_select_tft();
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_YELLOW, TFT_BLACK);
@@ -2643,7 +2655,6 @@ bool drawJpgExactFromSD(const String &path) {
   // ตรวจสอบขนาดไฟล์
   uint16_t jw, jh;
   if (!TJpgDec.getJpgSize(&jw, &jh, path.c_str())) {
-    Serial.printf("[JPG] Cannot get size for: %s\n", path.c_str());
     spi_select_tft();
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_YELLOW, TFT_BLACK);
@@ -2671,11 +2682,9 @@ bool drawJpgExactFromSD(const String &path) {
   delay(20);
 
   // วาดรูป (รีเซ็ตแฟล็ก และ retry 1 ครั้งถ้าล้มเหลวและยังไม่มี scanline วาด)
-  Serial.printf("[JPG] Drawing image...\n");
   g_jpgAnyScanline = false;
   bool ok = TJpgDec.drawSdJpg(0, 0, path.c_str());
   if (!ok && !g_jpgAnyScanline) {
-    Serial.println("[JPG] First draw failed, retrying once after SD reinit...");
     // sd_reinit();
     g_jpgAnyScanline = false;
     ok = TJpgDec.drawSdJpg(0, 0, path.c_str());
@@ -2855,6 +2864,82 @@ bool checkSDCardWithUI() {
   return false;
 }
 
+
+int getKeyPressed();
+void waitForKeyRelease();
+int readKeypadStable();
+
+// ฟังก์ชันตรวจสอบว่ากดปุ่มอะไร พร้อม hold detection
+int getKeyPressed() {
+  uint32_t currentTime = millis();
+
+  // Polling control - อ่านทุก 50ms เท่านั้น
+  if (currentTime - lastKeyPollTime < KEY_POLL_INTERVAL) {
+    return -1;
+  }
+  lastKeyPollTime = currentTime;
+
+  int currentValue = readKeypadStable();
+
+  // ตรวจสอบว่ากำลังกดปุ่มอะไรอยู่
+  int pressedKey = -1;
+  if (abs(currentValue - KEY_REGISTER) <= KEY_TOLERANCE) {
+    pressedKey = KEY_REGISTER;
+  } else if (abs(currentValue - KEY_DELETE) <= KEY_TOLERANCE) {
+    pressedKey = KEY_DELETE;
+  } else if (abs(currentValue - KEY_SCORE) <= KEY_TOLERANCE) {
+    pressedKey = KEY_SCORE;
+  } else if (currentValue >= KEY_NONE - KEY_TOLERANCE) {
+    pressedKey = KEY_NONE;
+  }
+
+  // Hold detection logic
+  if (pressedKey != KEY_NONE && pressedKey != -1) {
+    // มีการกดปุ่ม
+    if (currentPressedKey != pressedKey) {
+      // เริ่มกดปุ่มใหม่
+      currentPressedKey = pressedKey;
+      keyPressStartTime = currentTime;
+
+      if (DEBUG_KEYPAD_DETAIL) {
+        Serial.printf("[KEYPAD] Key press started: %d (value: %d)\n", pressedKey, currentValue);
+      }
+    } else {
+      // กดปุ่มเดิมต่อ - เช็คว่าครบ 3 วินาทีหรือยัง
+      if (currentTime - keyPressStartTime >= KEY_HOLD_TIME_MS) {
+        // กดครบ 3 วินาทีแล้ว
+        Serial.printf("[KEYPAD] Key held for 3 seconds: %d\n", pressedKey);
+
+        // รีเซ็ต hold detection เพื่อป้องกันการเรียกซ้ำ
+        keyPressStartTime = currentTime;  // รีเซ็ตเวลาเริ่มต้น
+        currentPressedKey = -1;           // รีเซ็ตปุ่มที่กด
+
+        return pressedKey;  // คืนค่าปุ่มที่กดค้าง
+      }
+    }
+  } else {
+    // ไม่มีการกดปุ่ม หรือปล่อยปุ่มแล้ว
+    if (currentPressedKey != -1) {
+      uint32_t holdDuration = currentTime - keyPressStartTime;
+
+      Serial.printf("[KEYPAD] Key released: %d (held for %d ms)\n", currentPressedKey, holdDuration);
+
+      // รีเซ็ต
+      currentPressedKey = -1;
+      keyPressStartTime = 0;
+    }
+  }
+
+  // อัปเดตค่าสำหรับการตรวจสอบการเปลี่ยนแปลง
+  if (abs(currentValue - lastKeyValue) >= KEY_TOLERANCE) {
+    lastKeyValue = currentValue;
+    lastKeyTime = currentTime;
+  }
+
+  return -1;  // ไม่มีการกดค้างครบ 3 วินาที
+}
+
+
 // ===== SD Card Wait Loop =====
 void waitForSDCard() {
   Serial.println("[SD] Waiting for SD Card to be ready...");
@@ -2903,24 +2988,15 @@ void showCandidateJpg(uint8_t n) {
   String p_padU = String(buf);
 
   String path;
-  Serial.printf("[JPG] Checking files for candidate %d:\n", n);
-  Serial.printf("[JPG] - %s: %s\n", p_plain.c_str(), SD.exists(p_plain) ? "EXISTS" : "NOT FOUND");
-  Serial.printf("[JPG] - %s: %s\n", p_plainU.c_str(), SD.exists(p_plainU) ? "EXISTS" : "NOT FOUND");
-  Serial.printf("[JPG] - %s: %s\n", p_pad.c_str(), SD.exists(p_pad) ? "EXISTS" : "NOT FOUND");
-  Serial.printf("[JPG] - %s: %s\n", p_padU.c_str(), SD.exists(p_padU) ? "EXISTS" : "NOT FOUND");
 
   if (SD.exists(p_plain)) {
     path = p_plain;
-    Serial.printf("[JPG] Using: %s\n", path.c_str());
   } else if (SD.exists(p_plainU)) {
     path = p_plainU;
-    Serial.printf("[JPG] Using: %s\n", path.c_str());
   } else if (SD.exists(p_pad)) {
     path = p_pad;
-    Serial.printf("[JPG] Using: %s\n", path.c_str());
   } else if (SD.exists(p_padU)) {
     path = p_padU;
-    Serial.printf("[JPG] Using: %s\n", path.c_str());
   }
 
   if (path.length() == 0) {
@@ -3085,9 +3161,7 @@ void testTFTBasic() {
 }
 
 // ===== Forward Declarations =====
-int getKeyPressed();
-void waitForKeyRelease();
-int readKeypadStable();
+
 
 void setup() {
   // --- Wake pin / IRQ ---
@@ -3162,7 +3236,7 @@ void setup() {
 
   // --- EEPROM header/init ---
   Serial.println("[EEPROM] Checking ESP32 Internal EEPROM...");
-  
+
   if (!headerOK()) {
     Serial.println("Init header...");
     writeHeader();
@@ -3350,7 +3424,7 @@ void setup() {
 void handleU2Line(const String &raw) {
   String m = raw;
   m.trim();
-  
+
   // ทำความสะอาดข้อความเพิ่มเติม - เอาเฉพาะตัวอักษรที่พิมพ์ได้
   String cleaned = "";
   for (int i = 0; i < m.length(); i++) {
@@ -3363,7 +3437,7 @@ void handleU2Line(const String &raw) {
   m.trim();  // trim อีกครั้งหลังทำความสะอาด
 
   Serial.printf("[HANDLE] Processing: '%s' (length=%d)\n", m.c_str(), m.length());
-  
+
   // Debug: แสดง hex ของข้อความ
   Serial.print("[HANDLE] Hex: ");
   for (int i = 0; i < m.length(); i++) {
@@ -3383,6 +3457,16 @@ void handleU2Line(const String &raw) {
     return;
   } else if (m.startsWith("SEL:")) {
     Serial.printf("[HANDLE] SEL command detected: '%s'\n", m.c_str());
+    
+    // ยกเลิกโหมดรอเลือกทันที (ถ้ามี)
+    barStop();
+    
+    // ยุติ voting loop ถ้ากำลังรอ
+    if (g_waitingChoice) {
+      g_waitingChoice = false;
+      Serial.println("[SEL] Terminating voting loop");
+    }
+    
     if (m.equalsIgnoreCase("SEL:CLEAR")) {
       Serial.println("[SEL] Clearing photo mode");
       isShowingPhoto = false;
@@ -4076,76 +4160,6 @@ int readKeypadStable() {
   return average;
 }
 
-// ฟังก์ชันตรวจสอบว่ากดปุ่มอะไร พร้อม hold detection
-int getKeyPressed() {
-  uint32_t currentTime = millis();
-
-  // Polling control - อ่านทุก 50ms เท่านั้น
-  if (currentTime - lastKeyPollTime < KEY_POLL_INTERVAL) {
-    return -1;
-  }
-  lastKeyPollTime = currentTime;
-
-  int currentValue = readKeypadStable();
-
-  // ตรวจสอบว่ากำลังกดปุ่มอะไรอยู่
-  int pressedKey = -1;
-  if (abs(currentValue - KEY_REGISTER) <= KEY_TOLERANCE) {
-    pressedKey = KEY_REGISTER;
-  } else if (abs(currentValue - KEY_DELETE) <= KEY_TOLERANCE) {
-    pressedKey = KEY_DELETE;
-  } else if (abs(currentValue - KEY_SCORE) <= KEY_TOLERANCE) {
-    pressedKey = KEY_SCORE;
-  } else if (currentValue >= KEY_NONE - KEY_TOLERANCE) {
-    pressedKey = KEY_NONE;
-  }
-
-  // Hold detection logic
-  if (pressedKey != KEY_NONE && pressedKey != -1) {
-    // มีการกดปุ่ม
-    if (currentPressedKey != pressedKey) {
-      // เริ่มกดปุ่มใหม่
-      currentPressedKey = pressedKey;
-      keyPressStartTime = currentTime;
-
-      if (DEBUG_KEYPAD_DETAIL) {
-        Serial.printf("[KEYPAD] Key press started: %d (value: %d)\n", pressedKey, currentValue);
-      }
-    } else {
-      // กดปุ่มเดิมต่อ - เช็คว่าครบ 3 วินาทีหรือยัง
-      if (currentTime - keyPressStartTime >= KEY_HOLD_TIME_MS) {
-        // กดครบ 3 วินาทีแล้ว
-        Serial.printf("[KEYPAD] Key held for 3 seconds: %d\n", pressedKey);
-
-        // รีเซ็ต hold detection เพื่อป้องกันการเรียกซ้ำ
-        keyPressStartTime = currentTime;  // รีเซ็ตเวลาเริ่มต้น
-        currentPressedKey = -1;           // รีเซ็ตปุ่มที่กด
-
-        return pressedKey;  // คืนค่าปุ่มที่กดค้าง
-      }
-    }
-  } else {
-    // ไม่มีการกดปุ่ม หรือปล่อยปุ่มแล้ว
-    if (currentPressedKey != -1) {
-      uint32_t holdDuration = currentTime - keyPressStartTime;
-
-      Serial.printf("[KEYPAD] Key released: %d (held for %d ms)\n", currentPressedKey, holdDuration);
-
-      // รีเซ็ต
-      currentPressedKey = -1;
-      keyPressStartTime = 0;
-    }
-  }
-
-  // อัปเดตค่าสำหรับการตรวจสอบการเปลี่ยนแปลง
-  if (abs(currentValue - lastKeyValue) >= KEY_TOLERANCE) {
-    lastKeyValue = currentValue;
-    lastKeyTime = currentTime;
-  }
-
-  return -1;  // ไม่มีการกดค้างครบ 3 วินาที
-}
-
 // ฟังก์ชันรอให้ปล่อยปุ่ม
 void waitForKeyRelease() {
   uint32_t startTime = millis();
@@ -4178,9 +4192,4 @@ void waitForKeyRelease() {
   }
 
   Serial.printf("[KEYPAD] Key released after %d ms\n", millis() - startTime);
-}
-
-// ✅ ฟังก์ชัน debounce: รอจนกว่าค่า analog จะกลับไป > 4000 อย่างนิ่ง (เก่า - เก็บไว้)
-void waitForAnalogRelease() {
-  waitForKeyRelease();  // ใช้ฟังก์ชันใหม่แท
 }

@@ -1439,10 +1439,6 @@ Adafruit_Fingerprint finger = Adafruit_Fingerprint(&FingerSerial);
 
 // ฟังก์ชันรวมสำหรับกลับโหมดปกติ (ส่งเสียงและแสดง UI)
 void returnToNormalMode(const char* message = "พร้อมให้บริการ", bool playSound = false) {
-  if (playSound) {
-    // ส่งสัญญาณให้ Arduino เล่นเสียง "โหมดเลือกตั้ง" (เฉพาะตอนออกจากโหมดอื่น)
-    mySerial.println("MMMMMMMMMMMMMMMMMMMMMMMM");
-  }
   showUIx(UI_READY, message, TR_NONE);
 }
 

@@ -96,16 +96,27 @@ function updateCandidates(counts, maxVotes) {
   let leadingCandidateId = null;
   let maxVotesCount = 0;
   
+  // หา maxVotes จริงๆ จากข้อมูลที่มี
+  let actualMaxVotes = 0;
   for(let i = 0; i < 10; i++) {
     const votes = counts[i] || 0;
-    const percentage = maxVotes > 0 ? Math.round((votes * 100) / maxVotes) : 0;
+    if(votes > actualMaxVotes) {
+      actualMaxVotes = votes;
+    }
+  }
+  
+  for(let i = 0; i < 10; i++) {
+    const votes = counts[i] || 0;
+    const percentage = actualMaxVotes > 0 ? Math.round((votes * 100) / actualMaxVotes) : 0;
     
     const votesEl = document.getElementById(`votes-${i}`);
     const progressEl = document.getElementById(`progress-${i}`);
     const cardEl = document.querySelector(`#candidates-grid .candidate-card:nth-child(${i + 1})`);
+    const percentageEl = cardEl ? cardEl.querySelector('.candidate-percentage') : null;
     
     if(votesEl) votesEl.textContent = fmt(votes);
     if(progressEl) progressEl.style.width = `${percentage}%`;
+    if(percentageEl) percentageEl.textContent = `${percentage}% ของคะแนนสูงสุด`;
     
     // Remove leading class from all cards
     if(cardEl) cardEl.classList.remove('leading');

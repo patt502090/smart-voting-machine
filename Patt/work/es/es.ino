@@ -176,13 +176,6 @@ static bool isShowingPhoto = false;
 
 #include <functional>
 
-// ฟังก์ชันรวมสำหรับกลับโหมดปกติ (ส่งเสียงและแสดง UI)
-void returnToNormalMode(const char* message = "พร้อมให้บริการ") {
-  // ส่งสัญญาณให้ Arduino เล่นเสียง "โหมดเลือกตั้ง"
-  mySerial.println("MMMMMMMMMMMMMMMMMMMMMMMM");
-  showUIx(UI_READY, message, TR_NONE);
-}
-
 
 // RFID_CS = SS_PIN (=5) มีอยู่แล้วจากโค้ดคุณ
 
@@ -1444,6 +1437,15 @@ HardwareSerial mySerial(2);      // UART2 : ใช้คุยกับบอร
 HardwareSerial FingerSerial(1);  // UART1 : ใช้คุยกับโมดูลลายนิ้วมือ
 Adafruit_Fingerprint finger = Adafruit_Fingerprint(&FingerSerial);
 
+// ฟังก์ชันรวมสำหรับกลับโหมดปกติ (ส่งเสียงและแสดง UI)
+void returnToNormalMode(const char* message = "พร้อมให้บริการ", bool playSound = false) {
+  if (playSound) {
+    // ส่งสัญญาณให้ Arduino เล่นเสียง "โหมดเลือกตั้ง" (เฉพาะตอนออกจากโหมดอื่น)
+    mySerial.println("MMMMMMMMMMMMMMMMMMMMMMMM");
+  }
+  showUIx(UI_READY, message, TR_NONE);
+}
+
 // ---------- RFID ----------
 #define RST_PIN 27
 MFRC522 rfid(SS_PIN, RST_PIN);
@@ -1682,6 +1684,12 @@ int findByFPID(uint8_t fp) {
 int quickSearchFingerprint(uint32_t timeout_ms = 10000) {
   unsigned long t0 = millis();
   while (millis() - t0 < timeout_ms) {
+    // ตรวจสอบว่ายังอยู่ในโหมดลงทะเบียนหรือไม่
+    if (!inRegisterMode) {
+      Serial.println("[QUICK_SEARCH] Exiting register mode - stopping fingerprint search");
+      return -1;  // exit early
+    }
+    
     uint8_t p = finger.getImage();
     if (p == FINGERPRINT_NOFINGER) {
       delay(50);
@@ -2047,14 +2055,14 @@ void registerCardAndFingerprint() {
     delay(200);
 
     delay(700);
-    returnToNormalMode();  // กลับโหมดปกติ + เสียง M
+    returnToNormalMode("พร้อมให้บริการ", true);  // กลับโหมดปกติ + เสียง M (เฉพาะตอนออกจากโหมด)
   } else {
     Serial.println("EEPROM full. Cannot store new record.");
     showUIx(UI_ERROR, "หน่วยความจำเต็ม", TR_NONE);
 
     finger.deleteModel(chosen_fp_id);  // roll back
     delay(1000);
-    returnToNormalMode();  // กลับโหมดปกติ + เสียง M
+    returnToNormalMode("พร้อมให้บริการ", true);  // กลับโหมดปกติ + เสียง M (เฉพาะตอนออกจากโหมดลงทะเบียน)
   }
 }
 
@@ -2067,9 +2075,17 @@ void deleteCardFlow() {
   
   showUIx(UI_DELETE_SCAN, "แตะบัตรเพื่อลบข้อมูล", TR_NONE);
 
-  while (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) {
+  while ((!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) && inDeleteMode) {
     delay(50);
   }
+  
+  // ถ้าออกจากโหมดลบแล้ว ให้ return ทันที
+  if (!inDeleteMode) {
+    Serial.println("[DELETE] Exiting delete mode - stopping card wait");
+    returnToNormalMode();
+    return;
+  }
+  
   String uidHex = readRFIDasHex();
   rfid.PICC_HaltA();
   rfid.PCD_StopCrypto1();
@@ -2103,13 +2119,21 @@ void deleteCardFlow() {
   showUIx(UI_SCAN_FINGER, "วางนิ้วเพื่อยืนยันการลบ", TR_NONE);
   unsigned long t0 = millis();
   int matched = -1;
-  while (millis() - t0 < 15000) {  // รอสูงสุด 15 วินาที
+  while (millis() - t0 < 15000 && inDeleteMode) {  // รอสูงสุด 15 วินาที + เช็คโหมดลบ
     matched = matchFingerprint();
     if (matched >= 0)
       break;
     uiTick();
     delay(50);
   }
+  
+  // ถ้าออกจากโหมดลบแล้ว ให้ return ทันที
+  if (!inDeleteMode) {
+    Serial.println("[DELETE] Exiting delete mode - stopping fingerprint verification");
+    returnToNormalMode();
+    return;
+  }
+  
   if (matched < 0 || matched != r.fp_id) {
     Serial.println("Fingerprint verify failed / timeout. Abort delete.");
     showUIx(UI_FINGER_FAIL, (matched < 0) ? "ไม่ตรวจพบลายนิ้ว" : "ลายนิ้วไม่ตรงเจ้าของบัตร", TR_NONE);
@@ -3743,7 +3767,10 @@ void loop() {
 
       showUIx(UI_READY, "ยกเลิกโหมดลงทะเบียน", TR_NONE);
       delay(1000);
-      showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_NONE);
+      
+      // กลับโหมดปกติ → ส่งเสียงโหมดเลือกตั้ง (เฉพาะตอนออกจากโหมด)
+      returnToNormalMode("ยื่นบัตรใกล้เครื่องอ่าน", true);
+      
       waitForKeyRelease();
     }
     return;
@@ -3765,7 +3792,10 @@ void loop() {
       inDeleteMode = false;
       showUIx(UI_READY, "ยกเลิกโหมดลบข้อมูล", TR_NONE);
       delay(1000);
-      showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_NONE);
+      
+      // กลับโหมดปกติ → ส่งเสียงโหมดเลือกตั้ง (เฉพาะตอนออกจากโหมด)
+      returnToNormalMode("ยื่นบัตรใกล้เครื่องอ่าน", true);
+      
       waitForKeyRelease();
     }
     return;
@@ -3790,7 +3820,10 @@ void loop() {
       inScoreMode = false;
       showUIx(UI_READY, "ยกเลิกโหมดเช็ค Score", TR_NONE);
       delay(1000);
-      showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_NONE);
+      
+      // กลับโหมดปกติ → ส่งเสียงโหมดเลือกตั้ง
+      returnToNormalMode("ยื่นบัตรใกล้เครื่องอ่าน");
+      
       waitForKeyRelease();
     }
     return;

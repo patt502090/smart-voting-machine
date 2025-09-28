@@ -33,7 +33,8 @@
 // =======================
 // 2) Hardware Config
 // =======================
-#define ESP_INT_PIN 3       // INT1 (D3) จาก ESP32
+
+#define WAKE_PCINT_PIN 8   // ใช้ D8 เป็นสัญญาณปลุกแบบ PCINT
 #define SD_ChipSelectPin 4  // SD CS
 #define BUZZER_PIN 5        // D5
 #define BUZZER_PASSIVE 1    // 1=Passive piezo (tone/noTone), 0=Active buzzer (on/off)
@@ -800,21 +801,63 @@ void isrEsp() {
   wokeFromEsp = true;
 }
 
+// ===== PCINT (D8) สำหรับปลุกด้วยขอบขึ้น LOW->HIGH =====
+ISR(PCINT0_vect) {
+  // D8 อยู่ในกลุ่ม PCINT0 (PB0..PB5 = D8..D13)
+  // ปลุกเฉพาะถ้าอ่านแล้วเป็น HIGH (rising edge)
+  if (digitalRead(WAKE_PCINT_PIN) == HIGH) {
+    wokeFromEsp = true;   // ใช้แฟลกเดิมเพื่อไม่ต้องแก้ส่วนอื่น
+  }
+}
+
+// คืนค่า true = พร้อมปลุก (สายเป็น LOW แล้ว), false = ไม่พร้อม
+bool enablePcintWake() {
+  pinMode(WAKE_PCINT_PIN, INPUT);   // มี R pulldown ภายนอกจะดีที่สุด
+
+  // ถ้ายัง HIGH อยู่ แปลว่าไม่พร้อมหลับด้วย edge → ไม่เปิด PCINT และแจ้งกลับ
+  if (digitalRead(WAKE_PCINT_PIN) == HIGH) {
+    return false;
+  }
+
+  PCIFR  |= _BV(PCIF0);    // เคลียร์ธงกลุ่ม PCINT0
+  PCICR  |= _BV(PCIE0);    // เปิดกลุ่ม PCINT0 (D8..D13)
+  PCMSK0 |= _BV(PCINT0);   // เปิดบิตของ D8
+  return true;
+}
+
+void disablePcintWake() {
+  PCMSK0 &= ~_BV(PCINT0);
+  if (PCMSK0 == 0) PCICR &= ~_BV(PCIE0);
+}
+
+
+
+
 void goSleepPowerDown() {
+  // ถ้าสายปลุกยัง HIGH อยู่ → ไม่หลับในรอบนี้ (กันหลับแล้วตื่นทันที)
+  if (!enablePcintWake()) {
+    // เลือกอย่างใดอย่างหนึ่ง: (1) ข้ามการหลับ, (2) หน่วงรอให้ Odroid ปล่อย LOW แล้วค่อยหลับ
+    // ที่ง่ายสุด: ข้ามการหลับรอบนี้ไปก่อน
+    return;
+  }
+
   set_sleep_mode(SLEEP_MODE_PWR_DOWN);
   sleep_enable();
 
   noInterrupts();
-  EIFR = bit(INTF1);  // เคลียร์ธง INT1
 #if defined(BODS) && defined(BODSE)
   MCUCR |= _BV(BODS) | _BV(BODSE);
   MCUCR = (MCUCR & ~_BV(BODSE)) | _BV(BODS);
 #endif
   interrupts();
 
-  sleep_cpu();  // หลับจริง
-  sleep_disable();
+  sleep_cpu();       // หลับจริง
+  sleep_disable();   // ตื่นแล้ว
+
+  disablePcintWake(); // กันยิงซ้ำถ้าสายยัง HIGH
 }
+
+
 
 void prepareBeforeSleep() {
   lcd.noBacklight();
@@ -830,8 +873,10 @@ void afterWake() {
 
   delay(20);
   while (Serial.available()) { String s = Serial.readStringUntil('\n'); }
+  wokeFromEsp = false;   // เคลียร์แฟลกปลุก
   noteActivity();
 }
+
 
 void wdt_sanity_boot() {
   MCUSR = 0;
@@ -922,10 +967,12 @@ void setup() {
   lcd.init();
   lcd.backlight();
   initSD_orReset();
+
   // เสียงเปิดเครื่อง (ซ้ำสองครั้งตามเดิม ถ้าเล่นไม่ทัน)
   tmrpcm.play("sa.wav");
   if (!tmrpcm.isPlaying()) { tmrpcm.play("sa.wav"); }
-  delay(1000);
+
+  delay(500);
 
   buzzer.init();
 
@@ -941,8 +988,11 @@ void setup() {
   kpd.setHoldTime(500);
 
   // สายปลุกจาก ESP32
-  pinMode(ESP_INT_PIN, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(ESP_INT_PIN), isrEsp, FALLING);
+  // สายปลุกจาก Odroid -> D8 (PCINT rising)
+  // แนะนำให้ Odroid idle = LOW, ปลุก = HIGH (pulse 10–100ms)
+  pinMode(WAKE_PCINT_PIN, INPUT);   // ถ้ามี R pulldown ภายนอก 100k ไป GND ยิ่งดี
+
+
 
   noteActivity();
 }

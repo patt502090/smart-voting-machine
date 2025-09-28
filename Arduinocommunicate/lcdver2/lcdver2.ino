@@ -847,15 +847,42 @@ void wdt_sanity_boot() {
 // =======================
 const uint8_t SD_RETRIES = 3;
 void initSD_orReset() {
+  lcd.clear();
+  lcd.setCursor(2, 0);  lcd.print(F("Storage Setup"));
+  lcd.setCursor(2, 1);  lcd.print(F("Initializing SD"));
+  lcd.setCursor(0, 2);  lcd.print(F("Status: "));
+  lcd.setCursor(0, 3);  lcd.print(F("Try 1/")); lcd.print(SD_RETRIES);
+
   for (uint8_t i = 0; i < SD_RETRIES; ++i) {
+    // อัปเดตเลขครั้งลองบน LCD
+    lcd.setCursor(4, 3);         // ตำแหน่งหลังคำว่า "Try "
+    lcd.print(i + 1);
+    lcd.print('/');
+    lcd.print(SD_RETRIES);
+    lcd.print(F("   "));         // เคลียร์ต่อท้าย
+
     if (SD.begin(SD_ChipSelectPin)) {
       Serial.println(F("SD init OK"));
+      lcd.setCursor(8, 2);
+      lcd.print(F("OK       ")); // เคลียร์ท้ายด้วยช่องว่าง
+      delay(450);
       return;
     }
+
     Serial.println(F("SD init failed, retrying..."));
-    delay(200);
+    lcd.setCursor(8, 2);
+    lcd.print(F("Failed   "));
+
+    // เล็ก ๆ น้อย ๆ ให้เห็นว่ากำลังพักก่อนลองใหม่
+    delay(100);
   }
+
+  // ล้มเหลวครบทุกครั้ง → แจ้งเตือนและรีเซ็ต
   Serial.println(F("SD init failed -> resetting via WDT"));
+  lcd.clear();
+  lcd.setCursor(1, 1); lcd.print(F("SD init failed"));
+  lcd.setCursor(2, 2); lcd.print(F("Resetting..."));
+  delay(700);
   reset_via_wdt();
 }
 
@@ -889,12 +916,12 @@ void setup() {
   tmrpcm.speakerPin = 9;  // UNO/Nano → D9
   tmrpcm.setVolume(5);    // 0..7
   tmrpcm.quality(1);
-  initSD_orReset();
+  
 
   Wire.begin();  // UNO: SDA=A4, SCL=A5
   lcd.init();
   lcd.backlight();
-
+  initSD_orReset();
   // เสียงเปิดเครื่อง (ซ้ำสองครั้งตามเดิม ถ้าเล่นไม่ทัน)
   tmrpcm.play("sa.wav");
   if (!tmrpcm.isPlaying()) { tmrpcm.play("sa.wav"); }

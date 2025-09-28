@@ -4174,8 +4174,3 @@ void waitForKeyRelease() {
 
   Serial.printf("[KEYPAD] Key released after %d ms\n", millis() - startTime);
 }
-
-// ✅ ฟังก์ชัน debounce: รอจนกว่าค่า analog จะกลับไป > 4000 อย่างนิ่ง (เก่า - เก็บไว้)
-void waitForAnalogRelease() {
-  waitForKeyRelease();  // ใช้ฟังก์ชันใหม่แทน
-}

@@ -1068,7 +1068,10 @@ void loop() {
       tmrpcm.play("l.wav");
     } else if (msg == 'Z') {
       tmrpcm.play("z.wav");
-    } else if (msg == 'A') {
+    } else if (msg == 'Y') {
+      tmrpcm.play("y.wav");
+    } 
+    else if (msg == 'A') {
       tmrpcm.play("a.wav");
     } else if (msg == 'O') {  // ยืนยันตัวตนสำเร็จ
       canVote = true;

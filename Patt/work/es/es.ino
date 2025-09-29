@@ -87,6 +87,8 @@ struct Rec {
 #include <Adafruit_Fingerprint.h>
 #include <SoftwareSerial.h>
 
+#include "university_logo.h"
+
 #include <HTTPClient.h>
 
 // ===== Web API (FastAPI) =====
@@ -1532,11 +1534,68 @@ static void printerFeedLines(uint8_t n) {
   }
 }
 
+static void printerSetHeatingAndDensity(uint8_t heatDots, uint8_t heatTime, uint8_t heatInterval,
+                                        uint8_t density, uint8_t breakTime) {
+  const uint8_t heatCmd[] = { 0x1B, 0x37, heatDots, heatTime, heatInterval };
+  printerSerial.write(heatCmd, sizeof(heatCmd));
+
+  const uint8_t densityCmd[] = { 0x12, 0x23, (uint8_t)((density << 4) | (breakTime & 0x0F)) };
+  printerSerial.write(densityCmd, sizeof(densityCmd));
+}
+
+static void printerPrintBitmap(const uint8_t *bitmap, uint16_t width, uint16_t height, bool fromProgmem) {
+  if (!bitmap || width == 0 || height == 0)
+    return;
+
+  const uint16_t rowBytes = (width + 7) / 8;
+  const uint16_t rowBytesClipped = std::min<uint16_t>(rowBytes, static_cast<uint16_t>(48));  // 384px limit
+  const uint32_t totalBytes = (uint32_t)rowBytes * height;
+
+  for (uint16_t row = 0; row < height; row += 24) {
+  const uint8_t chunkHeight = static_cast<uint8_t>(
+    std::min<uint16_t>(static_cast<uint16_t>(24), static_cast<uint16_t>(height - row)));
+
+    printerSerial.write(0x12);  // DC2
+    printerSerial.write(0x2A);  // '*' (print bit-image)
+    printerSerial.write(chunkHeight);
+    printerSerial.write(rowBytesClipped);
+
+    for (uint8_t y = 0; y < chunkHeight; ++y) {
+      const uint32_t rowOffset = (uint32_t)(row + y) * rowBytes;
+      for (uint16_t x = 0; x < rowBytesClipped; ++x) {
+        const uint32_t index = rowOffset + x;
+        uint8_t value = 0;
+        if (index < totalBytes) {
+          value = fromProgmem ? pgm_read_byte(bitmap + index) : bitmap[index];
+        }
+        printerSerial.write(value);
+      }
+    }
+
+    printerSerial.write('\n');
+  }
+
+  printerSerial.flush();
+}
+
+static void printerPrintUniversityLogo() {
+#if defined(UNIVERSITY_LOGO_WIDTH) && defined(UNIVERSITY_LOGO_HEIGHT)
+  if (UNIVERSITY_LOGO_WIDTH > 0 && UNIVERSITY_LOGO_HEIGHT > 0) {
+    printerEscAlignCenter();
+    printerPrintBitmap(UNIVERSITY_LOGO_BITMAP, UNIVERSITY_LOGO_WIDTH, UNIVERSITY_LOGO_HEIGHT, true);
+    printerFeedLines(1);
+  }
+#endif
+}
+
 void initThermalPrinter() {
   Serial.printf("[PRINTER] Initializing on RX=%d, TX=%d...\n", PRINTER_RX_PIN, PRINTER_TX_PIN);
   printerSerial.begin(PRINTER_BAUD);
   printerSerial.setTimeout(50);
   delay(50);
+  // เพิ่มความเข้มของการพิมพ์ด้วยการตั้งค่า heater/density
+  // ค่าอ้างอิง: heatDots 11 (สูง), heatTime 120, heatInterval 40, density 14, breakTime 2
+  printerSetHeatingAndDensity(11, 120, 40, 14, 2);
   printerEscInit();
   printerEscAlignLeft();
   printerSerial.println(F("THERMAL PRINTER READY"));
@@ -1558,23 +1617,19 @@ void printVoteReceipt(int candidateNumber) {
   }
 
   printerEscInit();
+  printerPrintUniversityLogo();
   printerEscAlignCenter();
-  printerSerial.println(F("SMART VOTING MACHINE"));
+  printerSerial.println(F("ระบบลงคะแนนอัจฉริยะ"));
   printerSerial.println(F("--------------------"));
   printerSerial.println();
 
   printerEscAlignLeft();
-  printerSerial.println(F("Thank you for voting."));
-  printerSerial.print(F("Selected Candidate: "));
+  printerSerial.println(F("ขอบคุณสำหรับการลงคะแนน"));
+  printerSerial.print(F("คุณเลือกผู้สมัครหมายเลข "));
   printerSerial.println(candidateNumber);
-
-  uint32_t nowMs = millis();
-  printerSerial.print(F("Session ms: "));
-  printerSerial.println(nowMs);
-
   printerSerial.println();
   printerEscAlignCenter();
-  printerSerial.println(F("โปรดเก็บสลิปเป็นหลักฐาน"));
+  printerSerial.println(F("โปรดเก็บสลิปฉบับนี้ไว้เป็นหลักฐาน"));
 
   printerFeedLines(4);
   printerSerial.flush();

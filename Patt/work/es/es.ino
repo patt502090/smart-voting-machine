@@ -51,11 +51,11 @@ static const uint32_t KEY_POLL_INTERVAL = 50;  // polling ทุก 50ms
 static bool inRegisterMode = false;
 static bool inDeleteMode = false;
 static bool inScoreMode = false;
-static bool testModeEnabled = false;  // ควบคุมโหมดทดสอบ (เปิด/ปิด)
-static bool waitingForPassword = false;  // รอการยืนยัน password จาก Arduino
+static bool testModeEnabled = false;           // ควบคุมโหมดทดสอบ (เปิด/ปิด)
+static bool waitingForPassword = false;        // รอการยืนยัน password จาก Arduino
 static bool waitingForDeletePassword = false;  // รอการยืนยัน password สำหรับ delete mode
 static bool waitingForScorePassword = false;   // รอการยืนยัน password สำหรับ score mode
-static bool inDeleteMenuMode = false;  // รอเลือกประเภทการลบ (card/score)
+static bool inDeleteMenuMode = false;          // รอเลือกประเภทการลบ (card/score)
 
 #include "driver/rtc_io.h"  // สำหรับ rtc_gpio_get_level()
 #include "esp_system.h"
@@ -1054,45 +1054,45 @@ void paintScreenToSprite(UIState s, const char *subtitle, bool popIcon = false, 
 
     // วาดกรอบ 3 ปุ่มแนวนอน พร้อมไอคอน
     int btnW = 70, btnH = 50, spacing = 80;
-    
+
     // ปุ่ม 1: REGISTER = ลบบัตร (ไอคอนบัตร + X)
     int x1 = cx - spacing;
-    spr.fillRoundRect(x1 - btnW/2, cy - btnH/2, btnW, btnH, 8, TFT_MAROON);
-    spr.drawRoundRect(x1 - btnW/2, cy - btnH/2, btnW, btnH, 8, TFT_WHITE);
+    spr.fillRoundRect(x1 - btnW / 2, cy - btnH / 2, btnW, btnH, 8, TFT_MAROON);
+    spr.drawRoundRect(x1 - btnW / 2, cy - btnH / 2, btnW, btnH, 8, TFT_WHITE);
     // ไอคอนบัตร
     spr.fillRoundRect(x1 - 12, cy - 8, 24, 16, 3, TFT_WHITE);
     // X บนบัตร
     spr.drawLine(x1 - 8, cy - 4, x1 + 8, cy + 4, TFT_RED);
     spr.drawLine(x1 - 8, cy + 4, x1 + 8, cy - 4, TFT_RED);
-    
+
     // ปุ่ม 2: SCORE = ลบคะแนน (ไอคอนตัวเลข + X)
     int x2 = cx;
-    spr.fillRoundRect(x2 - btnW/2, cy - btnH/2, btnW, btnH, 8, TFT_MAROON);
-    spr.drawRoundRect(x2 - btnW/2, cy - btnH/2, btnW, btnH, 8, TFT_WHITE);
+    spr.fillRoundRect(x2 - btnW / 2, cy - btnH / 2, btnW, btnH, 8, TFT_MAROON);
+    spr.drawRoundRect(x2 - btnW / 2, cy - btnH / 2, btnW, btnH, 8, TFT_WHITE);
     // ตัวเลข 123
     spr.setTextColor(TFT_WHITE, TFT_MAROON);
     spr.drawString("123", x2 - 12, cy - 6, 2);
     // X เล็ก
     spr.drawLine(x2 - 20, cy - 15, x2 - 15, cy - 10, TFT_RED);
     spr.drawLine(x2 - 20, cy - 10, x2 - 15, cy - 15, TFT_RED);
-    
+
     // ปุ่ม 3: DELETE = ออก (ไอคอนประตู)
     int x3 = cx + spacing;
-    spr.fillRoundRect(x3 - btnW/2, cy - btnH/2, btnW, btnH, 8, TFT_DARKGREY);
-    spr.drawRoundRect(x3 - btnW/2, cy - btnH/2, btnW, btnH, 8, TFT_WHITE);
+    spr.fillRoundRect(x3 - btnW / 2, cy - btnH / 2, btnW, btnH, 8, TFT_DARKGREY);
+    spr.drawRoundRect(x3 - btnW / 2, cy - btnH / 2, btnW, btnH, 8, TFT_WHITE);
     // ไอคอนประตู
     spr.drawRoundRect(x3 - 15, cy - 12, 30, 24, 4, TFT_WHITE);
-    spr.fillCircle(x3 + 8, cy, 2, TFT_WHITE); // ลูกบิดประตู
+    spr.fillCircle(x3 + 8, cy, 2, TFT_WHITE);  // ลูกบิดประตู
     // ลูกศร
     spr.drawLine(x3 - 25, cy, x3 - 15, cy, TFT_WHITE);
     spr.drawLine(x3 - 20, cy - 3, x3 - 15, cy, TFT_WHITE);
     spr.drawLine(x3 - 20, cy + 3, x3 - 15, cy, TFT_WHITE);
-    
+
     // ป้ายข้อความใต้ปุ่ม
     spr.setTextColor(TFT_WHITE, TFT_BLACK);
-    spr.drawString("ลบบัตร", x1 - spr.textWidth("ลบบัตร", 1)/2, cy + 35, 1);
-    spr.drawString("ลบคะแนน", x2 - spr.textWidth("ลบคะแนน", 1)/2, cy + 35, 1);
-    spr.drawString("ออก", x3 - spr.textWidth("ออก", 1)/2, cy + 35, 1);
+    spr.drawString("ลบบัตร", x1 - spr.textWidth("ลบบัตร", 1) / 2, cy + 35, 1);
+    spr.drawString("ลบคะแนน", x2 - spr.textWidth("ลบคะแนน", 1) / 2, cy + 35, 1);
+    spr.drawString("ออก", x3 - spr.textWidth("ออก", 1) / 2, cy + 35, 1);
   }
 
   // Big headline + subtitle
@@ -1845,7 +1845,7 @@ bool checkRFIDHealth() {
   bus_acquire_for_rfid();
   byte version = rfid.PCD_ReadRegister(rfid.VersionReg);
   bus_release_after_rfid();
-  
+
   // RC522 มี version register เป็น 0x91 หรือ 0x92
   return (version == 0x91 || version == 0x92);
 }
@@ -1856,7 +1856,7 @@ void sendAuthenticationSuccessSound() {
   for (int i = 0; i < 2; i++) {
     mySerial.println("OOOOOOOOOOOOOOOOOOOOOO");
     mySerial.flush();  // บังคับส่งข้อมูลออกไปทันที
-    delay(30);  // หน่วงสั้นๆ ระหว่างการส่ง
+    delay(30);         // หน่วงสั้นๆ ระหว่างการส่ง
   }
 }
 
@@ -1893,7 +1893,7 @@ void registerCardAndFingerprint() {
   int noCardCount = 0;  // นับจำนวนครั้งที่ไม่พบการ์ด
   uint32_t lastBusLogMs = 0;
   uint32_t lastNoCardLogMs = 0;
-  
+
   while (true) {
     // ตรวจสอบว่ายังอยู่ในโหมดลงทะเบียนหรือไม่
     if (!inRegisterMode) {
@@ -1915,33 +1915,33 @@ void registerCardAndFingerprint() {
         lastNoCardLogMs = nowMs;
       }
       noCardCount++;
-      
+
       // ถ้าไม่พบการ์ด 40 ครั้งติดต่อกัน (2 วินาที) ให้ลอง reset RFID
       if (noCardCount >= 40) {
         bus_release_after_rfid();  // ปล่อย bus ก่อน reset
-        
+
         // ตรวจสอบสถานะ RFID
         if (!checkRFIDHealth()) {
           // Hard reset RFID
           rc522_hard_reset();
           delay(100);
-          
+
           // Re-init RFID
           bus_acquire_for_rfid();
           rfid.PCD_Init();
           bus_release_after_rfid();
           delay(50);
-          
+
           // ตรวจสอบอีกครั้งหลัง reset
           (void)checkRFIDHealth();
         }
-        
+
         noCardCount = 0;  // รีเซ็ตตัวนับ
-        continue;  // ข้ามการ release bus เพราะเราทำไปแล้ว
+        continue;         // ข้ามการ release bus เพราะเราทำไปแล้ว
       }
     }
     bus_release_after_rfid();
-    
+
     if (ok) {
       // ส่งสัญญาณให้ Arduino เล่นเสียง "กำลังอ่านบัตร"
       mySerial.println("SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS");
@@ -1977,10 +1977,10 @@ void registerCardAndFingerprint() {
   // --- การ์ดซ้ำ? ---
   if (findByUID(uidHex) >= 0) {
     Serial.println("This card is already registered.");
-    
+
     // ส่งสัญญาณให้ Arduino เล่นเสียง "ลายนิ้วมือผิด/error"
     mySerial.println("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
-    
+
     showUIx(UI_CARD_DUPLICATE, "บัตรนี้ลงทะเบียนแล้ว", TR_NONE);
 
     delay(900);
@@ -2000,10 +2000,10 @@ void registerCardAndFingerprint() {
       Rec rExist;
       readRec(idxExisting, rExist);
       Serial.printf("Duplicate finger detected! Already linked to another card (FP_ID=%d). Abort.\n", existing_fp);
-      
+
       // ส่งสัญญาณให้ Arduino เล่นเสียง "ลายนิ้วมือผิด"
       mySerial.println("ZZZZZZZZZZZZZZZZZZZZZZZZZZ");
-      
+
       showUIx(UI_FINGER_FAIL, "ลายนิ้วมือนี้เชื่อมบัตรอื่นอยู่", TR_NONE);
 
       delay(1000);
@@ -2032,10 +2032,10 @@ void registerCardAndFingerprint() {
     chosen_fp_id++;
   if (chosen_fp_id >= 200) {
     Serial.println("No free FP ID slot.");
-    
+
     // ส่งสัญญาณให้ Arduino เล่นเสียง "error"
     mySerial.println("ZZZZZZZZZZZZZZZZZZZZZZZZZZ");
-    
+
     showUIx(UI_ERROR, "ที่เก็บลายนิ้วมือเต็ม", TR_NONE);
 
     delay(1000);
@@ -2055,10 +2055,10 @@ void registerCardAndFingerprint() {
   int p = enrollFingerprint(chosen_fp_id);
   if (p != FINGERPRINT_OK) {
     Serial.printf("Enroll failed (code=%d). Abort.\n", p);
-    
+
     // ส่งสัญญาณให้ Arduino เล่นเสียง "ลายนิ้วมือผิด"
     mySerial.println("ZZZZZZZZZZZZZZZZZZZZZZZZZZ");
-    
+
     showUIx(UI_FINGER_FAIL, "บันทึกลายนิ้วมือไม่สำเร็จ", TR_NONE);
 
     delay(1000);
@@ -2079,10 +2079,10 @@ void registerCardAndFingerprint() {
     returnToNormalMode("พร้อมให้บริการ", true);  // กลับโหมดปกติ + เสียง M (เฉพาะตอนออกจากโหมด)
   } else {
     Serial.println("EEPROM full. Cannot store new record.");
-    
+
     // ส่งสัญญาณให้ Arduino เล่นเสียง "error"
     mySerial.println("ZZZZZZZZZZZZZZZZZZZZZZZZZZ");
-    
+
     showUIx(UI_ERROR, "หน่วยความจำเต็ม", TR_NONE);
 
     finger.deleteModel(chosen_fp_id);  // roll back
@@ -2174,9 +2174,9 @@ void showDeleteMenu() {
 void deleteScoreFlow() {
   Serial.println("[DELETE] Starting delete score flow");
   showUIx(UI_SENDING, "กำลังลบคะแนนทั้งหมด...", TR_NONE);
-  
+
   bool success = false;
-  
+
   // 1. ส่ง HTTP POST ไปยัง ODROID เพื่อรีเซ็ตคะแนนในฐานข้อมูล
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
@@ -2185,47 +2185,46 @@ void deleteScoreFlow() {
     http.addHeader("Content-Type", "application/json");
     http.addHeader("X-API-KEY", API_TOKEN);
     http.setTimeout(5000);  // 5 วินาที
-    
+
     Serial.printf("[HTTP] Sending reset request to %s\n", url.c_str());
     int httpCode = http.POST("{}");  // ส่ง empty JSON body
-    
+
     if (httpCode == 200) {
       String response = http.getString();
       Serial.printf("[HTTP] Reset response: %s\n", response.c_str());
-      
+
       // 2. ส่งคำสั่ง X ไปยัง Arduino เพื่อลบคะแนนในหน่วยความจำ
       Serial.println("[UART2] Sending X (RESET SCORE) to Arduino");
       mySerial.println("XXXXXXXXXXXXXXXXXXXXXXXX");
-      
+
       // 3. รอ response จาก Arduino (รอสูงสุด 5 วินาที)
       uint32_t waitStart = millis();
       bool arduinoConfirmed = false;
       String arduinoResponse = "";
-      
+
       while (millis() - waitStart < 5000) {
         if (mySerial.available()) {
           String line = mySerial.readStringUntil('\n');
           line.trim();
           arduinoResponse = line;
           Serial.printf("[UART2] Arduino response: %s\n", line.c_str());
-          
+
           // ตรวจสอบ response ที่บ่งบอกว่าลบสำเร็จ
-          if (line.indexOf("RESET_OK") >= 0 || line.indexOf("CLEARED") >= 0 || 
-              line.indexOf("SUCCESS") >= 0 || line.indexOf("OK") >= 0) {
+          if (line.indexOf("RESET_OK") >= 0 || line.indexOf("CLEARED") >= 0 || line.indexOf("SUCCESS") >= 0 || line.indexOf("OK") >= 0) {
             arduinoConfirmed = true;
             break;
           }
         }
         delay(50);
       }
-      
+
       if (arduinoConfirmed) {
         success = true;
         Serial.println("[DELETE] Score reset confirmed by both ODROID and Arduino");
       } else {
         Serial.printf("[DELETE] Arduino did not confirm reset. Last response: '%s'\n", arduinoResponse.c_str());
       }
-      
+
     } else {
       Serial.printf("[HTTP] Reset failed with code: %d\n", httpCode);
       if (httpCode > 0) {
@@ -2233,20 +2232,20 @@ void deleteScoreFlow() {
         Serial.printf("[HTTP] Error response: %s\n", error.c_str());
       }
     }
-    
+
     http.end();
   } else {
     Serial.println("[ERROR] WiFi not connected - cannot reset scores on ODROID");
   }
-  
+
   // แสดงผลตามความสำเร็จ
   if (success) {
     // ส่งเสียงยืนยันความสำเร็จ
     mySerial.println("PLAY_SUCCESS");
-    
+
     showUIx(UI_FINGER_OK, "ลบคะแนนสำเร็จ", TR_NONE);
     delay(2000);
-    
+
     // กลับสู่โหมดปกติ
     inDeleteMode = false;
     inDeleteMenuMode = false;
@@ -2254,13 +2253,13 @@ void deleteScoreFlow() {
   } else {
     // ส่งเสียงแจ้งข้อผิดพลาด
     mySerial.println("PLAY_ERROR");
-    
+
     showUIx(UI_ERROR, "ลบคะแนนไม่สำเร็จ", TR_NONE);
     delay(3000);
-    
+
     showUIx(UI_ERROR, "กรุณาลองใหม่อีกครั้ง", TR_NONE);
     delay(2000);
-    
+
     // กลับไปที่เมนูลบ
     showDeleteMenu();
   }
@@ -2294,7 +2293,7 @@ void deleteCardFlowAfterPassword() {
 
   // แก้ไขการใช้ bus management
   int noCardCount = 0;  // นับจำนวนครั้งที่ไม่พบการ์ด
-  
+
   while (inDeleteMode) {
     // ตรวจสอบปุ่มเพื่อออกจาก delete mode
     int keyPressed = getKeyPressed();
@@ -2303,7 +2302,7 @@ void deleteCardFlowAfterPassword() {
       inDeleteMode = false;
       break;
     }
-    
+
     bool cardPresent = false;
     bus_acquire_for_rfid();
     if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
@@ -2311,26 +2310,26 @@ void deleteCardFlowAfterPassword() {
       noCardCount = 0;  // รีเซ็ตตัวนับ
     } else {
       noCardCount++;
-      
+
       // ถ้าไม่พบการ์ด 40 ครั้งติดต่อกัน (2 วินาที) ให้ลอง reset RFID
       if (noCardCount >= 40) {
         Serial.println("[DELETE] Too many failed attempts - checking RFID health...");
         bus_release_after_rfid();  // ปล่อย bus ก่อน reset
-        
+
         // ตรวจสอบสถานะ RFID
         if (!checkRFIDHealth()) {
           Serial.println("[DELETE] RFID health check failed - performing hard reset...");
-          
+
           // Hard reset RFID
           rc522_hard_reset();
           delay(100);
-          
+
           // Re-init RFID
           bus_acquire_for_rfid();
           rfid.PCD_Init();
           bus_release_after_rfid();
           delay(50);
-          
+
           // ตรวจสอบอีกครั้งหลัง reset
           if (checkRFIDHealth()) {
             Serial.println("[DELETE] RFID recovery successful");
@@ -2338,9 +2337,9 @@ void deleteCardFlowAfterPassword() {
             Serial.println("[DELETE] RFID recovery failed - may need hardware check");
           }
         }
-        
+
         noCardCount = 0;  // รีเซ็ตตัวนับ
-        continue;  // ข้ามการ release bus เพราะเราทำไปแล้ว
+        continue;         // ข้ามการ release bus เพราะเราทำไปแล้ว
       }
     }
     bus_release_after_rfid();
@@ -2348,7 +2347,7 @@ void deleteCardFlowAfterPassword() {
     if (cardPresent) {
       break;
     }
-    
+
     // เพิ่ม uiTick() เพื่อให้ UI ทำงานปกติ
     uiTick();
     delay(50);
@@ -2605,11 +2604,11 @@ void normalScanFlow() {
     while (mySerial.available()) {
       String line = mySerial.readStringUntil('\n');
       line.trim();
-      
+
       // ล้าง hidden characters เพิ่มเติม (carriage return, etc.)
       line.replace("\r", "");
       line.replace("\0", "");
-      
+
       // ทำความสะอาดข้อมูลที่อาจมี non-printable characters
       String cleanLine = "";
       for (int i = 0; i < line.length(); i++) {
@@ -2624,9 +2623,9 @@ void normalScanFlow() {
           Serial.printf("[UART2] Filtered non-printable char: 0x%02X at position %d\n", (unsigned char)c, i);
         }
       }
-      
+
       // ใช้ cleaned line แทน original line
-      line = cleanLine;      // ข้าม ข้อความขยะ/ไม่สมบูรณ์
+      line = cleanLine;  // ข้าม ข้อความขยะ/ไม่สมบูรณ์
       if (line.length() < 3 || line.startsWith("ESP")) {
         Serial.printf("[UART2] Ignoring: '%s'\n", line.c_str());
         continue;
@@ -2634,7 +2633,7 @@ void normalScanFlow() {
 
       Serial.printf("[UART2] Received during wait: '%s' (len=%d)\n", line.c_str(), line.length());
 
-        // จัดการ SEL: commands ระหว่างรอ (ทันที - ไม่ต้องรอ)
+      // จัดการ SEL: commands ระหว่างรอ (ทันที - ไม่ต้องรอ)
       if (line.startsWith("SEL:")) {
         Serial.printf("[URGENT] Processing SEL immediately: '%s'\n", line.c_str());
 
@@ -3477,7 +3476,7 @@ void setup() {
   // UART2: RX=16, TX=17 (บอร์ดลูก/ODROID)
   mySerial.begin(9600, SERIAL_8N1, 16, 17);
   Serial.println("[SETUP] UART2 initialized (RX=16, TX=17, 9600 baud)");
-  
+
   // Test UART2 connection
   delay(100);
   Serial.println("[SETUP] Sent ESP32_HELLO test message to Arduino");
@@ -3783,7 +3782,7 @@ void handleU2Line(const String &raw) {
     }
 
     if (!g_votePosted) {
-  bool sent = postVoteToServer(n);
+      bool sent = postVoteToServer(n);
 
       if (sent) {
         if (g_idxPending >= 0)
@@ -3839,59 +3838,60 @@ void handleU2Line(const String &raw) {
       showUIx(UI_PASSWORD_OK, "ยืนยันสำเร็จ", TR_NONE);
       delay(1500);
 
-  // เปลี่ยนเป็นโหมดลงทะเบียนจริง
-  showUIx(UI_REGISTER_SCAN, "แตะบัตรเพื่อลงทะเบียน", TR_NONE);
-    return;
-  } else if (m.equalsIgnoreCase("D")) {
-    // รับ D (Delete Password Success) จาก Arduino
-    Serial.println("[HANDLE] Received D - Delete Password confirmed");
-    Serial.printf("[HANDLE] Current state before D processing - waitingForDeletePassword:%s, inDeleteMode:%s\n",
-                  waitingForDeletePassword ? "YES" : "NO", inDeleteMode ? "YES" : "NO");
-
-    if (waitingForDeletePassword && inDeleteMode) {
-      Serial.println("[HANDLE] Conditions met - processing D response");
-      waitingForDeletePassword = false;
-      inDeleteMenuMode = true;  // เข้าโหมดเลือกเมนู
-
-      // แสดง UI ยืนยันสำเร็จ
-      Serial.println("[HANDLE] Showing password success UI");
-      showUIx(UI_PASSWORD_OK, "ยืนยันสำเร็จ", TR_NONE);
-      delay(1500);
-
-      // แสดงเมนูเลือกประเภทการลบ
-      Serial.println("[HANDLE] Showing delete menu");
-      showDeleteMenu();
-    } else {
-      Serial.println("[HANDLE] D received but not waiting for delete password");
-      Serial.printf("[HANDLE] Current state - waitingForDeletePassword:%s, inDeleteMode:%s\n",
+      // เปลี่ยนเป็นโหมดลงทะเบียนจริง
+      showUIx(UI_REGISTER_SCAN, "แตะบัตรเพื่อลงทะเบียน", TR_NONE);
+      return;
+    } else if (m.equalsIgnoreCase("D")) {
+      // รับ D (Delete Password Success) จาก Arduino
+      Serial.println("[HANDLE] Received D - Delete Password confirmed");
+      Serial.printf("[HANDLE] Current state before D processing - waitingForDeletePassword:%s, inDeleteMode:%s\n",
                     waitingForDeletePassword ? "YES" : "NO", inDeleteMode ? "YES" : "NO");
+
+      if (waitingForDeletePassword && inDeleteMode) {
+        Serial.println("[HANDLE] Conditions met - processing D response");
+        waitingForDeletePassword = false;
+        inDeleteMenuMode = true;  // เข้าโหมดเลือกเมนู
+
+        // แสดง UI ยืนยันสำเร็จ
+        Serial.println("[HANDLE] Showing password success UI");
+        showUIx(UI_PASSWORD_OK, "ยืนยันสำเร็จ", TR_NONE);
+        delay(1500);
+
+        // แสดงเมนูเลือกประเภทการลบ
+        Serial.println("[HANDLE] Showing delete menu");
+        showDeleteMenu();
+      } else {
+        Serial.println("[HANDLE] D received but not waiting for delete password");
+        Serial.printf("[HANDLE] Current state - waitingForDeletePassword:%s, inDeleteMode:%s\n",
+                      waitingForDeletePassword ? "YES" : "NO", inDeleteMode ? "YES" : "NO");
+      }
+      return;
+    } else if (m.equalsIgnoreCase("T")) {
+      if (waitingForScorePassword && inScoreMode) {
+        waitingForScorePassword = false;
+        showUIx(UI_PASSWORD_OK, "ยืนยันสำเร็จ", TR_NONE);
+        delay(1500);
+        showUIx(UI_SENDING, "โหมดเช็ค Score - กำลังดูคะแนน", TR_NONE);
+      }
+      return;
+    } else if (m.equalsIgnoreCase("SENDING")) {
+      // เปลี่ยนมาเป็นหลอดโหมดส่ง (จะวนทุก 1.2 วินาที)
+      barStart(1200, "กำลังส่ง");
+      showUIx(UI_SENDING, "กำลังส่งข้อมูล...", TR_NONE);
+      return;
+    } else if (m.equalsIgnoreCase("VOTE:OK")) {
+      barStop();
+      showUIx(UI_THANKS, "ทำรายการสำเร็จ", TR_NONE);
+      delay(700);
+      showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
+      return;
+    } else if (m.equalsIgnoreCase("VOTE:ERR")) {
+      barStop();
+      showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_NONE);
+      delay(700);
+      showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
+      return;
     }
-    return;
-  } else if (m.equalsIgnoreCase("T")) {
-    if (waitingForScorePassword && inScoreMode) {
-      waitingForScorePassword = false;
-      showUIx(UI_PASSWORD_OK, "ยืนยันสำเร็จ", TR_NONE);
-      delay(1500);
-      showUIx(UI_SENDING, "โหมดเช็ค Score - กำลังดูคะแนน", TR_NONE);
-    }
-    return;
-  } else if (m.equalsIgnoreCase("SENDING")) {
-    // เปลี่ยนมาเป็นหลอดโหมดส่ง (จะวนทุก 1.2 วินาที)
-    barStart(1200, "กำลังส่ง");
-    showUIx(UI_SENDING, "กำลังส่งข้อมูล...", TR_NONE);
-    return;
-  } else if (m.equalsIgnoreCase("VOTE:OK")) {
-    barStop();
-    showUIx(UI_THANKS, "ทำรายการสำเร็จ", TR_NONE);
-    delay(700);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
-    return;
-  } else if (m.equalsIgnoreCase("VOTE:ERR")) {
-    barStop();
-    showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_NONE);
-    delay(700);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
-    return;
   }
 }
 
@@ -3927,6 +3927,7 @@ void tftSoftRecoverIfBlank() {
   spi_deselect_all();
 }
 
+
 // ===== วางฟังก์ชันนี้ "ถัดจาก" ปิดวงเล็บของ setup() =====
 void loop() {
   // ===== ปุ่มโหมด (กดค้าง 3 วินาที) =====
@@ -3936,20 +3937,20 @@ void loop() {
   if (waitingForDeletePassword && inDeleteMode) {
     if (keyPressed == KEY_DELETE) {
       Serial.println("[DELETE] DELETE key pressed while waiting for password - exiting delete mode");
-      
+
       // รีเซ็ตสถานะทั้งหมด
       inDeleteMode = false;
       waitingForDeletePassword = false;
-      
+
       showUIx(UI_READY, "ยกเลิกโหมดลบข้อมูล", TR_NONE);
       delay(1000);
-      mySerial.println("DDDDDDDDDDDDDDDDDDDDDDDDDD"); // ส่ง DDDD เพื่อออกจากโหมดลบ
+      mySerial.println("DDDDDDDDDDDDDDDDDDDDDDDDDD");  // ส่ง DDDD เพื่อออกจากโหมดลบ
 
-      
-      
+
+
       // กลับโหมดปกติ → ส่งเสียงโหมดเลือกตั้ง
       returnToNormalMode("ยื่นบัตรใกล้เครื่องอ่าน", true);
-      
+
       waitForKeyRelease();
       return;
     }
@@ -3960,17 +3961,17 @@ void loop() {
   if (waitingForScorePassword && inScoreMode) {
     if (keyPressed == KEY_SCORE) {
       Serial.println("[SCORE] SCORE key pressed while waiting for password - exiting score mode");
-      
+
       // รีเซ็ตสถานะทั้งหมด
       inScoreMode = false;
       waitingForScorePassword = false;
-      
+
       showUIx(UI_READY, "ออกจากโหมดเช็ค Score", TR_NONE);
       delay(1000);
-      
+
       // กลับโหมดปกติ → ส่งเสียงโหมดเลือกตั้ง
       returnToNormalMode("ยื่นบัตรใกล้เครื่องอ่าน", true);
-      
+
       waitForKeyRelease();
       return;
     }
@@ -4071,12 +4072,12 @@ void loop() {
 
       // ส่ง PASSWORD ไป Arduino
       Serial.println("[DELETE] About to send password command to Arduino...");
-      Serial.printf("[DELETE] Current mySerial state - available for write: %s\n", 
+      Serial.printf("[DELETE] Current mySerial state - available for write: %s\n",
                     mySerial.availableForWrite() > 0 ? "YES" : "NO");
-      
+
       mySerial.println("DDDDDDDDDDDDDDDDDDDDDDDDDDDDDD");  // เพิ่มความยาวให้เท่า Register Mode
-      mySerial.flush();  // รอให้ส่งข้อมูลจริงๆ
-      
+      mySerial.flush();                                    // รอให้ส่งข้อมูลจริงๆ
+
       Serial.println("[UART2] Sent: D (DELETE PASSWORD)");
       Serial.printf("[DELETE] Password sent successfully. Now waiting for D response...\n");
       Serial.printf("[DELETE] Current waiting states - DeletePW:%s, InDeleteMode:%s\n",
@@ -4088,7 +4089,7 @@ void loop() {
     } else {
       // ออกจากโหมดลบ
       Serial.println("[KEYPAD] DELETE key held for 3 seconds - exiting delete mode");
-      
+
       // ส่ง D เพื่อบอก Arduino ว่าออกจากโหมดลบ
       mySerial.println("DDDDDDDDDDDDDDDDDDDDDDDDDDDDDD");  // เพิ่มความยาวให้เท่า Register Mode
       Serial.println("[UART2] Sent: D (exit delete mode)");
@@ -4118,18 +4119,18 @@ void loop() {
       // แสดง UI รอการยืนยัน
       showUIx(UI_WAIT_PASSWORD, "รอการยืนยันจากผู้ดูแล", TR_NONE);
 
-  // ส่ง PASSWORD ไป Arduino
-  Serial.println("[SCORE] About to send password command to Arduino...");
-  Serial.printf("[SCORE] Current mySerial state - available for write: %s\n",
-        mySerial.availableForWrite() > 0 ? "YES" : "NO");
+      // ส่ง PASSWORD ไป Arduino
+      Serial.println("[SCORE] About to send password command to Arduino...");
+      Serial.printf("[SCORE] Current mySerial state - available for write: %s\n",
+                    mySerial.availableForWrite() > 0 ? "YES" : "NO");
 
-  mySerial.println("TTTTTTTTTTTTTTTTTTTTTTTTTTTTTT");  // เพิ่มความยาวให้เท่า Register Mode
-  mySerial.flush();
+      mySerial.println("TTTTTTTTTTTTTTTTTTTTTTTTTTTTTT");  // เพิ่มความยาวให้เท่า Register Mode
+      mySerial.flush();
 
-  Serial.println("[UART2] Sent: T (SCORE PASSWORD)");
-  Serial.printf("[SCORE] Password sent successfully. Now waiting for T response...\n");
-  Serial.printf("[SCORE] Current waiting states - ScorePW:%s, InScoreMode:%s\n",
-        waitingForScorePassword ? "YES" : "NO", inScoreMode ? "YES" : "NO");
+      Serial.println("[UART2] Sent: T (SCORE PASSWORD)");
+      Serial.printf("[SCORE] Password sent successfully. Now waiting for T response...\n");
+      Serial.printf("[SCORE] Current waiting states - ScorePW:%s, InScoreMode:%s\n",
+                    waitingForScorePassword ? "YES" : "NO", inScoreMode ? "YES" : "NO");
 
       waitForKeyRelease();
 
@@ -4137,7 +4138,7 @@ void loop() {
     } else {
       // ออกจากโหมดเช็ค score
       Serial.println("[KEYPAD] SCORE key held for 3 seconds - exiting score mode");
-      
+
       // ส่ง T เพื่อบอก Arduino ว่าออกจากโหมด score
       mySerial.println("TTTTTTTTTTTTTTTTTTTTTTTTTTTTTT");  // เพิ่มความยาวให้เท่า Register Mode
       Serial.println("[UART2] Sent: T (exit score mode)");
@@ -4189,22 +4190,21 @@ void loop() {
   static uint32_t lastDebugStatus = 0;
   if (millis() - lastDebugStatus > 10000) {  // ทุก 10 วินาที
     if (waitingForDeletePassword || waitingForScorePassword || waitingForPassword) {
-      Serial.printf("[STATUS] Waiting states - Delete:%s, Score:%s, Register:%s, DeleteMenu:%s\n", 
+      Serial.printf("[STATUS] Waiting states - Delete:%s, Score:%s, Register:%s, DeleteMenu:%s\n",
                     waitingForDeletePassword ? "YES" : "NO",
-                    waitingForScorePassword ? "YES" : "NO", 
+                    waitingForScorePassword ? "YES" : "NO",
                     waitingForPassword ? "YES" : "NO",
                     inDeleteMenuMode ? "YES" : "NO");
       Serial.printf("[STATUS] Mode states - InDeleteMode:%s, InScoreMode:%s, InRegisterMode:%s\n",
                     inDeleteMode ? "YES" : "NO",
-                    inScoreMode ? "YES" : "NO", 
+                    inScoreMode ? "YES" : "NO",
                     inRegisterMode ? "YES" : "NO");
     }
     lastDebugStatus = millis();
   }
 
   // NEW: แสดง "สแกนบัตร" 1 ครั้ง เมื่อเข้าลูปว่างครั้งแรก (ยกเว้นในโหมดพิเศษ)
-  if (!uiShownScanCard && !inRegisterMode && !inDeleteMode && !inScoreMode && 
-      !waitingForPassword && !waitingForDeletePassword && !waitingForScorePassword && !inDeleteMenuMode) {
+  if (!uiShownScanCard && !inRegisterMode && !inDeleteMode && !inScoreMode && !waitingForPassword && !waitingForDeletePassword && !waitingForScorePassword && !inDeleteMenuMode) {
     showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_NONE);
     uiShownScanCard = true;
     uiScanCardShownAt = millis();
@@ -4224,8 +4224,7 @@ void loop() {
 
   // ตรวจสอบการ์ด (ยกเว้นใน score mode และขณะรอ password และใน delete menu)
   bool cardReady = false;
-  if (!inScoreMode && !waitingForPassword && !waitingForDeletePassword && 
-      !waitingForScorePassword && !inDeleteMenuMode) {
+  if (!inScoreMode && !waitingForPassword && !waitingForDeletePassword && !waitingForScorePassword && !inDeleteMenuMode) {
     rfid_bus_begin();
     if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
       cardReady = true;
@@ -4249,8 +4248,8 @@ void loop() {
   // Debug: แสดงสถานะ Serial connection อย่างต่อเนื่อง
   static uint32_t lastSerialCheck = 0;
   if (millis() - lastSerialCheck > 5000 && (waitingForDeletePassword || waitingForScorePassword)) {  // ทุก 5 วินาที
-    Serial.printf("[SERIAL] Checking UART2 - Available bytes: %d, Waiting states: D=%s S=%s\n", 
-                  mySerial.available(), 
+    Serial.printf("[SERIAL] Checking UART2 - Available bytes: %d, Waiting states: D=%s S=%s\n",
+                  mySerial.available(),
                   waitingForDeletePassword ? "YES" : "NO",
                   waitingForScorePassword ? "YES" : "NO");
     lastSerialCheck = millis();
@@ -4262,7 +4261,7 @@ void loop() {
     msg.trim();
 
     Serial.printf("[UART2] Received: '%s' (length=%d)\n", msg.c_str(), msg.length());
-    
+
     // Debug: แสดง hex ของข้อความที่ได้รับ
     Serial.print("[UART2] Hex: ");
     for (int i = 0; i < msg.length(); i++) {
@@ -4273,7 +4272,7 @@ void loop() {
     // Debug: แสดงสถานะก่อนส่งไป handleU2Line
     Serial.printf("[UART2] Before handleU2Line - DeletePW:%s, ScorePW:%s, RegisterPW:%s\n",
                   waitingForDeletePassword ? "YES" : "NO",
-                  waitingForScorePassword ? "YES" : "NO", 
+                  waitingForScorePassword ? "YES" : "NO",
                   waitingForPassword ? "YES" : "NO");
 
     if (msg.equalsIgnoreCase("SLEEP!")) {

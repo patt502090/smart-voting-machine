@@ -1342,8 +1342,8 @@ const int TRIG_PIN = 4;
 const int ECHO_PIN = 34;  // ต้องลดเป็น 3.3V ก่อนเข้า ESP32
 
 // เกณฑ์ "ใกล้"
-volatile float NEAR_ON_CM = 25.0;   // เข้าสถานะ NEAR เมื่อ <= 25 cm
-volatile float NEAR_OFF_CM = 35.0;  // กลับ FAR เมื่อ >= 35 cm (ฮิสเทอรีส)
+volatile float NEAR_ON_CM = 40.0;   // เข้าสถานะ NEAR เมื่อ <= 40 cm
+volatile float NEAR_OFF_CM = 50.0;  // กลับ FAR เมื่อ >= 50 cm (ฮิสเทอรีส)
 
 // รอบวัดและ timeout
 const uint16_t US_INTERVAL_MS = 100;     // วัดทุก ~100ms (เร็วขึ้น)
@@ -3816,8 +3816,11 @@ void handleU2Line(const String &raw) {
     g_waitingChoice = false;
     g_votePosted = true;
     return;
-  } else if (m.equalsIgnoreCase("D")) {
-    // รับ D (Delete Password Success) จาก Arduino
+  } else if (m.equalsIgnoreCase("VOTE:ERR")) {
+    barStop();
+    showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_NONE);
+    delay(700);
+    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
     return;
   } else if (m.equalsIgnoreCase("ESP S")) {
     return;
@@ -3841,57 +3844,41 @@ void handleU2Line(const String &raw) {
       // เปลี่ยนเป็นโหมดลงทะเบียนจริง
       showUIx(UI_REGISTER_SCAN, "แตะบัตรเพื่อลงทะเบียน", TR_NONE);
       return;
-    } else if (m.equalsIgnoreCase("D")) {
-      // รับ D (Delete Password Success) จาก Arduino
-      Serial.println("[HANDLE] Received D - Delete Password confirmed");
-      Serial.printf("[HANDLE] Current state before D processing - waitingForDeletePassword:%s, inDeleteMode:%s\n",
-                    waitingForDeletePassword ? "YES" : "NO", inDeleteMode ? "YES" : "NO");
-
-      if (waitingForDeletePassword && inDeleteMode) {
-        Serial.println("[HANDLE] Conditions met - processing D response");
-        waitingForDeletePassword = false;
-        inDeleteMenuMode = true;  // เข้าโหมดเลือกเมนู
-
-        // แสดง UI ยืนยันสำเร็จ
-        Serial.println("[HANDLE] Showing password success UI");
-        showUIx(UI_PASSWORD_OK, "ยืนยันสำเร็จ", TR_NONE);
-        delay(1500);
-
-        // แสดงเมนูเลือกประเภทการลบ
-        Serial.println("[HANDLE] Showing delete menu");
-        showDeleteMenu();
-      } else {
-        Serial.println("[HANDLE] D received but not waiting for delete password");
-        Serial.printf("[HANDLE] Current state - waitingForDeletePassword:%s, inDeleteMode:%s\n",
-                      waitingForDeletePassword ? "YES" : "NO", inDeleteMode ? "YES" : "NO");
-      }
-      return;
-    } else if (m.equalsIgnoreCase("T")) {
-      if (waitingForScorePassword && inScoreMode) {
-        waitingForScorePassword = false;
-        showUIx(UI_PASSWORD_OK, "ยืนยันสำเร็จ", TR_NONE);
-        delay(1500);
-        showUIx(UI_SENDING, "โหมดเช็ค Score - กำลังดูคะแนน", TR_NONE);
-      }
-      return;
-    } else if (m.equalsIgnoreCase("SENDING")) {
-      // เปลี่ยนมาเป็นหลอดโหมดส่ง (จะวนทุก 1.2 วินาที)
-      barStart(1200, "กำลังส่ง");
-      showUIx(UI_SENDING, "กำลังส่งข้อมูล...", TR_NONE);
-      return;
-    } else if (m.equalsIgnoreCase("VOTE:OK")) {
-      barStop();
-      showUIx(UI_THANKS, "ทำรายการสำเร็จ", TR_NONE);
-      delay(700);
-      showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
-      return;
-    } else if (m.equalsIgnoreCase("VOTE:ERR")) {
-      barStop();
-      showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_NONE);
-      delay(700);
-      showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
-      return;
     }
+    return;
+  } else if (m.equalsIgnoreCase("D")) {
+    // รับ D (Delete Password Success) จาก Arduino
+    Serial.println("[HANDLE] Received D - Delete Password confirmed");
+    Serial.printf("[HANDLE] Current state before D processing - waitingForDeletePassword:%s, inDeleteMode:%s\n",
+                  waitingForDeletePassword ? "YES" : "NO", inDeleteMode ? "YES" : "NO");
+
+    if (waitingForDeletePassword && inDeleteMode) {
+      Serial.println("[HANDLE] Conditions met - processing D response");
+      waitingForDeletePassword = false;
+      inDeleteMenuMode = true;  // เข้าโหมดเลือกเมนู
+
+      // แสดง UI ยืนยันสำเร็จ
+      Serial.println("[HANDLE] Showing password success UI");
+      showUIx(UI_PASSWORD_OK, "ยืนยันสำเร็จ", TR_NONE);
+      delay(1500);
+
+      // แสดงเมนูเลือกประเภทการลบ
+      Serial.println("[HANDLE] Showing delete menu");
+      showDeleteMenu();
+    } else {
+      Serial.println("[HANDLE] D received but not waiting for delete password");
+      Serial.printf("[HANDLE] Current state - waitingForDeletePassword:%s, inDeleteMode:%s\n",
+                    waitingForDeletePassword ? "YES" : "NO", inDeleteMode ? "YES" : "NO");
+    }
+    return;
+  } else if (m.equalsIgnoreCase("T")) {
+    if (waitingForScorePassword && inScoreMode) {
+      waitingForScorePassword = false;
+      showUIx(UI_PASSWORD_OK, "ยืนยันสำเร็จ", TR_NONE);
+      delay(1500);
+      showUIx(UI_SENDING, "โหมดเช็ค Score - กำลังดูคะแนน", TR_NONE);
+    }
+    return;
   }
 }
 

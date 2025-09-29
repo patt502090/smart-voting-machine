@@ -21,7 +21,6 @@
 #include <SD.h>
 #include <EEPROM.h>
 #include <avr/wdt.h>
-#include <avr/power.h>
 #include <avr/sleep.h>
 #include <avr/interrupt.h>
 #include <LiquidCrystal_I2C.h>
@@ -42,30 +41,18 @@
 #define KEYPAD_ADDR 0x20
 
 // =======================
-// 3) System & App Timers
-// =======================
-#define IDLE_SLEEP_MS 60000000000UL    // ว่าง 60s -> หลับลึก (คงค่าเดิมตามไฟล์ต้นฉบับ)
-const unsigned long interval = 100;  // กันสั่งเล่นถี่เกิน (มิลลิวินาที)
-
-// =======================
 // 4) Globals
 // =======================
 LiquidCrystal_I2C lcd(LCD_ADDR, 20, 4);
 TMRpcm tmrpcm;
 RTC_DS1307 rtc;
-
 unsigned long lastActivityMs = 0;
-unsigned long lastPlayTime = 0;
-
-
 volatile bool wokeFromEsp = false;
 volatile bool showingTally = false;
-
 bool waitRToExit = false;
 bool waitTToExit = false;
 bool waitDToExit = false;  // โหมดลบ ต้องกด D ซ้ำเพื่อออก
 bool waitXToExit = false;  // โหมดลบคะแนน ต้องกด X ซ้ำเพื่อออก
-
 
 // =======================
 // 5) Keypad Mapping
@@ -158,7 +145,6 @@ const char savedPass[] = "1234";
 // =======================
 // (ให้จัดลำดับเรียกใช้ได้ชัดเจน โดยไม่ต้องพึ่ง prototype ที่ Arduino สร้างอัตโนมัติ)
 inline void noteActivity();
-bool playIfIdle(const char* path);
 void drawVoteUI_base();
 void drawReadyUI_base();
 void drawConfirmUI();
@@ -170,6 +156,7 @@ void eeprom_vote_clear_all();
 void onConfirmVote(int choice);
 void afterWake();
 void clock_ready_tick(bool forceFirst = false);
+
 
 // =======================
 // 11) EEPROM Vote Helpers
@@ -509,22 +496,12 @@ public:
     phaseEnd = 0;
   }
 
-  void playClick() {
-    start(SEQ_CLICK, 1);
-  }
-  void playClickHi() {
-    start(SEQ_CLICK_HI, 1);
-  }
-  void playBack() {
-    start(SEQ_BACK, 2);
-  }
-  void playError() {
-    start(SEQ_ERROR, 3);
-  }
-
-  void playFanfare() {
-    start(SEQ_FANFARE, 4);
-  }
+  // เอฟเฟกต์ที่เรียกใช้ง่าย
+  void playClick()   { start(SEQ_CLICK,   1); }
+  void playClickHi() { start(SEQ_CLICK_HI,1); }
+  void playBack()    { start(SEQ_BACK,    2); }
+  void playError()   { start(SEQ_ERROR,   3); }
+  void playFanfare() { start(SEQ_FANFARE, 4); }
 
   void update() {
     if (!seq || idx >= count) return;
@@ -560,13 +537,10 @@ public:
   }
 
 private:
-  struct Step {
-    uint16_t freq;
-    uint16_t dur;
-    uint16_t gap;
-  };  // ms
+  // 1 สเต็ปของเสียง: ความถี่ (Hz), ระยะเปิด (ms), ระยะเงียบตามหลัง (ms)
+  struct Step { uint16_t freq, dur, gap; };
 
-  enum {  // โน้ต (Hz)
+  enum {  // โน้ตอ้างอิง (Hz)
     N_C5 = 523,
     N_D5 = 587,
     N_E5 = 659,
@@ -595,8 +569,6 @@ private:
   unsigned long phaseEnd;
 
   void start(const Step* s, uint8_t n) {
-    // ถ้ากำลังเล่น WAV อยู่ → ข้ามไม่เปิดบัซเซอร์ (กันชนกับ TMRpcm)  [คงตรรกะเดิม: ปลดคอมเมนต์ได้ตามต้องการ]
-    // if (tmrpcm.isPlaying()) return;
     seq = s;
     count = n;
     idx = 0;
@@ -646,14 +618,6 @@ void onConfirmVote(int choice) {
   noteActivity();
 }
 
-bool playIfIdle(const char* path) {
-  if (tmrpcm.isPlaying()) return false;
-  unsigned long now = millis();
-  if (now - lastPlayTime < interval) return false;
-  tmrpcm.play((char*)path);
-  lastPlayTime = now;
-  return true;
-}
 
 // vote() เรียกเมื่อมีคีย์ในหน้าโหวต/คอนเฟิร์ม
 void vote(char k) {
@@ -999,7 +963,6 @@ void setup() {
   // เสียงเปิดเครื่อง (ซ้ำสองครั้งตามเดิม ถ้าเล่นไม่ทัน)
   tmrpcm.play("sa.wav");
   if (!tmrpcm.isPlaying()) { tmrpcm.play("sa.wav"); }
-
   delay(500);
 
   buzzer.init();
@@ -1019,9 +982,6 @@ void setup() {
   // สายปลุกจาก Odroid -> D8 (PCINT rising)
   // แนะนำให้ Odroid idle = LOW, ปลุก = HIGH (pulse 10–100ms)
   pinMode(WAKE_PCINT_PIN, INPUT);  // ถ้ามี R pulldown ภายนอก 100k ไป GND ยิ่งดี
-
-
-
   noteActivity();
 }
 
@@ -1039,10 +999,6 @@ void loop() {
   char k = kpd.getKey();
   if (k) {
     noteActivity();
-    //if (k == 'A' || k == 'B' || k == 'C' || k == 'D') {
-    //buzzer.playClickHi();
-    //return;
-    // }
     if (!canVote && page != PAGE_REG_PASS) {
       buzzer.playError();
     } else {
@@ -1089,8 +1045,6 @@ void loop() {
       tmrpcm.play("z.wav");
     } else if (msg == 'A') {
       tmrpcm.play("a.wav");
-    } else if (msg == 'Y') {
-      Serial.print(F("Sleep"));
     }
     else if (msg == 'O') {  // ยืนยันตัวตนสำเร็จ
       canVote = true;
@@ -1170,6 +1124,14 @@ void loop() {
         showDeleteCardUI();
       }
     }
+    if (!tmrpcm.isPlaying()) {
+    else if (msg == 'Y') {
+      prepareBeforeSleep();
+      wokeFromEsp = false;
+      goSleepPowerDown();
+      afterWake();
+    }
+  }
   }
 
   // ===== 3) UI Animations =====
@@ -1187,14 +1149,7 @@ void loop() {
   buzzer.update();
 
   // ===== 6) Auto-sleep =====
-  if (!tmrpcm.isPlaying()) {
-    if ((millis() - lastActivityMs) >= IDLE_SLEEP_MS || msg == 'Y') {
-      prepareBeforeSleep();
-      wokeFromEsp = false;
-      goSleepPowerDown();
-      afterWake();
-    }
-  }
+
 
   // ===== 7) Ready UI clock tick =====
   clock_ready_tick();

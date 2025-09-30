@@ -3824,17 +3824,11 @@ void handleU2Line(const String &raw) {
   }
 
   if (m.equalsIgnoreCase("reset")) {
-    if (g_resetArmed && (now - g_lastResetCmdMs <= DOUBLE_RESET_WINDOW_MS)) {
-      Serial.println("[RESET] Double reset command detected. Restarting...");
+
       delay(100);
       esp_restart();
       return;
-    }
-
-    g_resetArmed = true;
-    g_lastResetCmdMs = now;
-    Serial.println("[RESET] Reset command armed. Awaiting second trigger within window.");
-    return;
+  
   }
 
   if (m.equalsIgnoreCase("AUTHOK")) {

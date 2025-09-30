@@ -22,6 +22,10 @@ static bool g_votePosted = false;  // กันยิงซ้ำในหนึ
 static bool g_receiptPrinted = false;  // กันพิมพ์ใบเสร็จซ้ำในหนึ่งรอบเลือก
 static int g_idxPending = -1;      // เก็บ index ของบัตรที่จะ mark voted
 
+static bool g_resetArmed = false;
+static uint32_t g_lastResetCmdMs = 0;
+static const uint32_t DOUBLE_RESET_WINDOW_MS = 3000;  // หน้าต่างเวลาสำหรับ double reset (ms)
+
 #define SD_CS 13
 #define TFT_CS 15
 #define SS_PIN 5
@@ -3799,6 +3803,25 @@ void handleU2Line(const String &raw) {
   }
   m = cleaned;
   m.trim();  // trim อีกครั้งหลังทำความสะอาด
+
+  uint32_t now = millis();
+  if (g_resetArmed && (now - g_lastResetCmdMs > DOUBLE_RESET_WINDOW_MS)) {
+    g_resetArmed = false;
+  }
+
+  if (m.equalsIgnoreCase("reset")) {
+    if (g_resetArmed && (now - g_lastResetCmdMs <= DOUBLE_RESET_WINDOW_MS)) {
+      Serial.println("[RESET] Double reset command detected. Restarting...");
+      delay(100);
+      esp_restart();
+      return;
+    }
+
+    g_resetArmed = true;
+    g_lastResetCmdMs = now;
+    Serial.println("[RESET] Reset command armed. Awaiting second trigger within window.");
+    return;
+  }
 
   if (m.equalsIgnoreCase("AUTHOK")) {
     // รับ AUTHOK จาก Arduino → เข้าโหมดรอเลือก (test mode)

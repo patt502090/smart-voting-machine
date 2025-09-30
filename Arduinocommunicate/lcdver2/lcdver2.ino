@@ -47,7 +47,7 @@ LiquidCrystal_I2C lcd(LCD_ADDR, 20, 4);
 TMRpcm tmrpcm;
 RTC_DS1307 rtc;
 unsigned long lastActivityMs = 0;
-volatile bool wokeFromEsp = false;
+volatile bool wokeFromOdroid = false;
 volatile bool showingTally = false;
 bool waitRToExit = false;
 bool waitTToExit = false;
@@ -80,7 +80,12 @@ enum AdminAction { ACT_NONE,
 enum Page { PAGE_WAIT,
             PAGE_VOTE,
             PAGE_CONFIRM,
-            PAGE_REG_PASS };
+            PAGE_REG_PASS,
+            PAGE_DELETE_READY,  // <--- ใหม่: รอคำสั่ง C
+            PAGE_DELETE_CARD    // <--- แสดง "Delete card"
+};
+
+bool deleteArmed = false;  // <--- ใหม่: PIN ผ่านแล้ว กำลังรอ 'C'
 
 AdminAction pendingAction = ACT_NONE;
 Page page = PAGE_WAIT;
@@ -497,11 +502,21 @@ public:
   }
 
   // เอฟเฟกต์ที่เรียกใช้ง่าย
-  void playClick()   { start(SEQ_CLICK,   1); }
-  void playClickHi() { start(SEQ_CLICK_HI,1); }
-  void playBack()    { start(SEQ_BACK,    2); }
-  void playError()   { start(SEQ_ERROR,   3); }
-  void playFanfare() { start(SEQ_FANFARE, 4); }
+  void playClick() {
+    start(SEQ_CLICK, 1);
+  }
+  void playClickHi() {
+    start(SEQ_CLICK_HI, 1);
+  }
+  void playBack() {
+    start(SEQ_BACK, 2);
+  }
+  void playError() {
+    start(SEQ_ERROR, 3);
+  }
+  void playFanfare() {
+    start(SEQ_FANFARE, 4);
+  }
 
   void update() {
     if (!seq || idx >= count) return;
@@ -538,7 +553,9 @@ public:
 
 private:
   // 1 สเต็ปของเสียง: ความถี่ (Hz), ระยะเปิด (ms), ระยะเงียบตามหลัง (ms)
-  struct Step { uint16_t freq, dur, gap; };
+  struct Step {
+    uint16_t freq, dur, gap;
+  };
 
   enum {  // โน้ตอ้างอิง (Hz)
     N_C5 = 523,
@@ -591,9 +608,6 @@ BuzzerSFX buzzer;
 // =======================
 // 15) Serial & Preview
 // =======================
-inline void noteActivity() {
-  lastActivityMs = millis();
-}
 
 void sendPreview() {
   if (currentChoice < 0) {
@@ -602,7 +616,7 @@ void sendPreview() {
     Serial.print(F("SEL:"));
     Serial.println(currentChoice);  // 0..9
   }
-  noteActivity();
+  
 }
 
 // =======================
@@ -615,7 +629,7 @@ void onConfirmVote(int choice) {
   Serial.print(F("CF:"));
   Serial.println(choice);
   buzzer.playFanfare();
-  noteActivity();
+  
 }
 
 
@@ -715,11 +729,16 @@ void regispage(char k) {
         case ACT_DELETE:
           lcd.clear();
           lcd.setCursor(4, 0);
-          lcd.print(F("Delete OK"));  // ขึ้นข้อความยืนยัน
-          Serial.print(F("D"));
-          page = PAGE_REG_PASS;
-          fregis = true;
+          lcd.print(F("Delete OK"));  // แจ้ง PIN ผ่าน
+          Serial.print(F("D"));       // แจ้ง ESP32 ว่าโหมดลบพร้อมแล้ว
+          // เตรียมรอคำสั่ง 'C' ก่อนเข้า Delete card
+          deleteArmed = true;        // <--- ตั้งแฟลก
+          fregis = false;            // <--- หยุดรับ PIN ต่อ
+          page = PAGE_DELETE_READY;  // <--- ไปหน้า "รอ C"
+          // แนะนำโชว์ hint เล็กน้อย
+
           break;
+
 
         case ACT_CLEAR:
           eeprom_vote_clear_all();
@@ -783,7 +802,7 @@ void startPass(AdminAction a) {
 // 17) Sleep & Watchdog
 // =======================
 void isrEsp() {
-  wokeFromEsp = true;
+  wokeFromOdroid = true;
 }
 
 // ===== PCINT (D8) สำหรับปลุกด้วยขอบขึ้น LOW->HIGH =====
@@ -791,7 +810,7 @@ ISR(PCINT0_vect) {
   // D8 อยู่ในกลุ่ม PCINT0 (PB0..PB5 = D8..D13)
   // ปลุกเฉพาะถ้าอ่านแล้วเป็น HIGH (rising edge)
   if (digitalRead(WAKE_PCINT_PIN) == HIGH) {
-    wokeFromEsp = true;  // ใช้แฟลกเดิมเพื่อไม่ต้องแก้ส่วนอื่น
+    wokeFromOdroid = true;  // ใช้แฟลกเดิมเพื่อไม่ต้องแก้ส่วนอื่น
   }
 }
 
@@ -846,7 +865,7 @@ void goSleepPowerDown() {
 
 void prepareBeforeSleep() {
   lcd.noBacklight();
-  if (tmrpcm.isPlaying()) tmrpcm.stopPlayback();
+  while (tmrpcm.isPlaying());
   delay(5);
 }
 
@@ -858,8 +877,8 @@ void afterWake() {
 
   delay(20);
   while (Serial.available()) { String s = Serial.readStringUntil('\n'); }
-  wokeFromEsp = false;  // เคลียร์แฟลกปลุก
-  noteActivity();
+  wokeFromOdroid = false;  // เคลียร์แฟลกปลุก
+  
 }
 
 
@@ -934,9 +953,9 @@ void setup() {
   /*const DateTime buildTime(F(__DATE__), F(__TIME__));
 
   // ถ้า RTC ยังไม่เดิน หรือเวลาเพี้ยนมาก (> 1 วัน) ให้ตั้งใหม่
-  if (!rtc.isrunning()) {
-    rtc.adjust(buildTime);
-  } else {
+  if (!rtc.isrunning()) {*/
+  // rtc.adjust(buildTime);
+  /*} else {
     DateTime now = rtc.now();
     uint32_t diff = (now.unixtime() > buildTime.unixtime())
                     ? now.unixtime() - buildTime.unixtime()
@@ -951,7 +970,7 @@ void setup() {
   Serial.begin(9600);
 
   tmrpcm.speakerPin = 9;  // UNO/Nano → D9
-  tmrpcm.setVolume(5);    // 0..7
+  tmrpcm.setVolume(3);    // 0..7
   tmrpcm.quality(1);
 
 
@@ -978,11 +997,10 @@ void setup() {
   kpd.setDebounceTime(25);
   kpd.setHoldTime(500);
 
-  // สายปลุกจาก ESP32
-  // สายปลุกจาก Odroid -> D8 (PCINT rising)
-  // แนะนำให้ Odroid idle = LOW, ปลุก = HIGH (pulse 10–100ms)
-  pinMode(WAKE_PCINT_PIN, INPUT);  // ถ้ามี R pulldown ภายนอก 100k ไป GND ยิ่งดี
-  noteActivity();
+
+  // สายปลุกจาก Odroid -> D8 (PCINT rising)  
+  pinMode(WAKE_PCINT_PIN, INPUT);  
+  
 }
 
 void showDeleteCardUI() {
@@ -998,8 +1016,11 @@ void loop() {
   // ===== 1) Keypad =====
   char k = kpd.getKey();
   if (k) {
-    noteActivity();
-    if (!canVote && page != PAGE_REG_PASS) {
+    
+    if (page == PAGE_DELETE_READY || page == PAGE_DELETE_CARD) {
+      buzzer.playError();  // หรือจะเงียบก็ได้
+      // ไม่ไป vote()/regispage()
+    } else if (!canVote && page != PAGE_REG_PASS) {
       buzzer.playError();
     } else {
       if (page == PAGE_VOTE || page == PAGE_CONFIRM) {
@@ -1013,15 +1034,15 @@ void loop() {
   // ===== 2) Serial from ESP32 (อักขระเดี่ยว) =====
   int msg = -1;
   while (Serial.available()) {
-    noteActivity();
+  
     msg = Serial.read();
     Serial.print(F("ESP "));
     Serial.println((char)msg);
   }
+  
 
-  if (wokeFromEsp) {
-    wokeFromEsp = false;
-    noteActivity();
+  if (wokeFromOdroid) {
+    wokeFromOdroid = false;
   }
 
   if (msg != -1) {
@@ -1045,8 +1066,7 @@ void loop() {
       tmrpcm.play("z.wav");
     } else if (msg == 'A') {
       tmrpcm.play("a.wav");
-    }
-    else if (msg == 'O') {  // ยืนยันตัวตนสำเร็จ
+    } else if (msg == 'O') {  // ยืนยันตัวตนสำเร็จ
       canVote = true;
       page = PAGE_VOTE;
       drawVoteUI_base();
@@ -1103,6 +1123,7 @@ void loop() {
       if (waitDToExit) {
         // ออกจากโหมดลบ
         waitDToExit = false;
+        deleteArmed = false;
         pendingAction = ACT_NONE;
         fregis = false;
         canVote = false;
@@ -1120,18 +1141,16 @@ void loop() {
       //tmrpcm.play("q.wav");
 
       // ถ้าอยู่ในโหมด D (ลบ) ให้แสดง "Delete card" บน LCD
-      if (waitDToExit) {
-        showDeleteCardUI();
+      if (waitDToExit && deleteArmed) {
+        showDeleteCardUI();  // จะ set page = PAGE_DELETE_CARD ข้างใน
       }
-    }
-    if (!tmrpcm.isPlaying()) {
-    else if (msg == 'Y') {
+    } else if (msg == 'Y') {
+      tmrpcm.play("y.wav");
       prepareBeforeSleep();
-      wokeFromEsp = false;
+      wokeFromOdroid = false;
       goSleepPowerDown();
       afterWake();
     }
-  }
   }
 
   // ===== 3) UI Animations =====

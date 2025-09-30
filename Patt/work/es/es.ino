@@ -9,7 +9,7 @@ const char *WIFI_PASS = "iot.coe.psu.ac.th";
 #include <algorithm>
 
 // ==== must be the very first lines ====
-const int UID_HEX_MAX = 16;const int UID_HEX_MAX = 16;
+const int UID_HEX_MAX = 16;
 struct Rec;
 
 void readRec(int idx, Rec &r);         // tell IDE not to autogenerate wrong prototypes
@@ -19,6 +19,7 @@ static int g_selectedCandidate = -1;
 static bool g_waitingChoice = false;  // อยู่ช่วงรอผู้ใช้เลือก
 
 static bool g_votePosted = false;  // กันยิงซ้ำในหนึ่งรอบเลือก
+static bool g_receiptPrinted = false;  // กันพิมพ์ใบเสร็จซ้ำในหนึ่งรอบเลือก
 static int g_idxPending = -1;      // เก็บ index ของบัตรที่จะ mark voted
 
 #define SD_CS 13
@@ -85,6 +86,7 @@ struct Rec {
 #include <MFRC522.h>
 #include <EEPROM.h>
 #include <Adafruit_Fingerprint.h>
+#include <SoftwareSerial.h>
 
 #include <HTTPClient.h>
 
@@ -1383,6 +1385,78 @@ HardwareSerial mySerial(2);      // UART2 : ใช้คุยกับบอร
 HardwareSerial FingerSerial(1);  // UART1 : ใช้คุยกับโมดูลลายนิ้วมือ
 Adafruit_Fingerprint finger = Adafruit_Fingerprint(&FingerSerial);
 
+// ---------- Thermal Printer ----------
+static constexpr int PRINTER_RX_PIN = 32;
+static constexpr int PRINTER_TX_PIN = 33;
+static constexpr unsigned long PRINTER_BAUD = 9600;
+
+SoftwareSerial printerSerial(PRINTER_RX_PIN, PRINTER_TX_PIN);
+static bool printerReady = false;
+
+static void printerEscInit() {
+  static const uint8_t cmd[] = { 0x1B, 0x40 };
+  printerSerial.write(cmd, sizeof(cmd));
+}
+
+static void printerEscAlignCenter() {
+  static const uint8_t cmd[] = { 0x1B, 0x61, 0x01 };
+  printerSerial.write(cmd, sizeof(cmd));
+}
+
+static void printerEscAlignLeft() {
+  static const uint8_t cmd[] = { 0x1B, 0x61, 0x00 };
+  printerSerial.write(cmd, sizeof(cmd));
+}
+
+static void printerFeedLines(uint8_t n) {
+  while (n--)
+    printerSerial.write('\n');
+}
+
+void initThermalPrinter() {
+  Serial.printf("[PRINTER] Initializing on RX=%d, TX=%d...\n", PRINTER_RX_PIN, PRINTER_TX_PIN);
+  printerSerial.begin(PRINTER_BAUD);
+  printerSerial.setTimeout(50);
+  delay(50);
+  printerEscInit();
+  printerEscAlignLeft();
+  printerSerial.println(F("THERMAL PRINTER READY"));
+  printerFeedLines(1);
+  printerSerial.flush();
+  printerReady = true;
+  Serial.println("[PRINTER] Thermal printer ready");
+}
+
+void printVoteReceipt(int candidateNumber) {
+  if (!printerReady) {
+    Serial.println("[PRINTER] Skipping receipt (printer not initialized)");
+    return;
+  }
+
+  if (candidateNumber < 0) {
+    Serial.println("[PRINTER] Skipping receipt (invalid candidate)");
+    return;
+  }
+
+  printerEscInit();
+  printerEscAlignCenter();
+  printerSerial.println(F("ระบบลงคะแนนอัจฉริยะ"));
+  printerSerial.println(F("--------------------"));
+  printerSerial.println();
+
+  printerEscAlignLeft();
+  printerSerial.println(F("ขอบคุณสำหรับการลงคะแนน"));
+  printerSerial.print(F("คุณเลือกผู้สมัครหมายเลข "));
+  printerSerial.println(candidateNumber);
+  printerSerial.println();
+  printerEscAlignCenter();
+  printerSerial.println(F("โปรดเก็บสลิปฉบับนี้ไว้เป็นหลักฐาน"));
+
+  printerFeedLines(4);
+  printerSerial.flush();
+  Serial.printf("[PRINTER] Receipt printed for candidate %d\n", candidateNumber);
+}
+
 
 // เข้าหลับทันที แล้วปลุกเมื่อ WAKE_PIN=HIGH จาก ODROID
 void goDeepSleepNow() {
@@ -1433,6 +1507,7 @@ void goDeepSleepNow() {
 
 // ฟังก์ชันรวมสำหรับกลับโหมดปกติ (ส่งเสียงและแสดง UI)
 void returnToNormalMode(const char *message = "พร้อมให้บริการ", bool playSound = false) {
+  g_receiptPrinted = false;
   showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_NONE);
 }
 
@@ -2460,6 +2535,7 @@ void startVotingMode(int idx = -1, bool isTestMode = false) {
   g_waitingChoice = true;
   g_selectedCandidate = -1;
   g_votePosted = false;
+  g_receiptPrinted = false;
   g_idxPending = idx;
 
   barStart(1500, "รอการเลือก");
@@ -2695,6 +2771,10 @@ void normalScanFlow() {
         restartToScanCard = true;
 
         showUIx(UI_THANKS, "โหวตเสร็จสิ้น", TR_NONE);
+        if (!g_receiptPrinted) {
+          printVoteReceipt(g_selectedCandidate);
+          g_receiptPrinted = true;
+        }
         delay(5000);
       } else if (line.equalsIgnoreCase("SENDING")) {
         barStart(1200, "กำลังส่ง");
@@ -2705,6 +2785,10 @@ void normalScanFlow() {
         if (g_idxPending >= 0)
           setVotedByIndex(g_idxPending, 1);
         isShowingPhoto = false;  // รีเซ็ตโหมดแสดงภาพ
+        if (!g_receiptPrinted) {
+          printVoteReceipt(g_selectedCandidate);
+          g_receiptPrinted = true;
+        }
         finished = true;
       } else if (line.equalsIgnoreCase("VOTE:ERR")) {
         showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_NONE);
@@ -3481,6 +3565,9 @@ void setup() {
   delay(100);
   Serial.println("[SETUP] Sent ESP32_HELLO test message to Arduino");
 
+  // --- Thermal printer ---
+  initThermalPrinter();
+
   // --- WiFi ---
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
@@ -3800,6 +3887,10 @@ void handleU2Line(const String &raw) {
     g_waitingChoice = false;
     g_votePosted = true;
     showUIx(UI_THANKS, "โหวตเสร็จสิ้น", TR_NONE);
+    if (!g_receiptPrinted) {
+      printVoteReceipt(g_selectedCandidate);
+      g_receiptPrinted = true;
+    }
     delay(5000);
     uiSetScanning(true);
     showUIx(UI_SCAN_CARD, "ยื่นบัตรใกล้เครื่องอ่าน", TR_NONE);
@@ -3815,6 +3906,10 @@ void handleU2Line(const String &raw) {
       setVotedByIndex(g_idxPending, 1);
     g_waitingChoice = false;
     g_votePosted = true;
+    if (!g_receiptPrinted) {
+      printVoteReceipt(g_selectedCandidate);
+      g_receiptPrinted = true;
+    }
     return;
   } else if (m.equalsIgnoreCase("VOTE:ERR")) {
     barStop();

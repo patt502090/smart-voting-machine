@@ -162,7 +162,7 @@ void eeprom_vote_clear_all();
 void onConfirmVote(int choice);
 void afterWake();
 void clock_ready_tick(bool forceFirst = false);
-void handleCResetPress();
+
 
 
 uint8_t cPressCount = 0;
@@ -897,27 +897,7 @@ void wdt_sanity_boot() {
 }
 
 
-void handleCResetPress() {
-  unsigned long now = millis();
 
-  // หากกดครั้งก่อนหน้าไม่เกิน 3 วิ เพิ่มเคาน์เตอร์, ไม่งั้นนับใหม่
-  if (now - lastCPressMs <= C_RESET_WINDOW_MS) {
-    cPressCount++;
-  } else {
-    cPressCount = 1;
-  }
-  lastCPressMs = now;
-
-
-  // ครบ 2 ครั้งภายในหน้าต่างเวลา -> รีเซ็ตผ่าน WDT
-  if (cPressCount >= 2) {
-    /*lcd.clear();
-    lcd.setCursor(4, 1);
-    lcd.print(F("Resetting..."));
-    delay(200);*/
-    reset_via_wdt();  // ใช้ฟังก์ชันที่คุณมีอยู่แล้ว
-  }
-}
 
 // =======================
 // 18) SD Init (with retry)
@@ -1068,10 +1048,9 @@ void loop() {
   // ===== 1) Keypad =====
   char k = kpd.getKey();
   if (k) {
-    if (k == 'C') {  // รีเซ็ตเมื่อกด C 2 ครั้งใน 3 วิ
-      //handleCResetPress();
+    if (k == 'C') {  
       int jj = 0;
-      while (jj < 100) jj++;
+      while (jj < 150) jj++;
       if (k == 'C')
         reset_via_wdt();
     }

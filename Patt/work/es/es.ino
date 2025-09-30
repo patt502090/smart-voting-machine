@@ -2321,6 +2321,7 @@ void deleteScoreFlow() {
   if (success) {
     // ส่งเสียงยืนยันความสำเร็จ
     mySerial.println("PLAY_SUCCESS");
+    mySerial.println("KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK");
 
     showUIx(UI_FINGER_OK, "ลบคะแนนสำเร็จ", TR_NONE);
     delay(2000);
@@ -2519,6 +2520,7 @@ void deleteCardFlowAfterPassword() {
   if (okToClear) {
     clearRec(idx);
     Serial.println("Card + Fingerprint deleted");
+    mySerial.println("KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK");
     showUIx(UI_FINGER_OK, "ลบข้อมูลสำเร็จ", TR_NONE);
     delay(150);
     returnToNormalMode();  // กลับโหมดปกติ + เสียง M

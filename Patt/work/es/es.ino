@@ -3962,6 +3962,24 @@ void handleU2Line(const String &raw) {
     return;
   } else if (m.equalsIgnoreCase("ESP")) {
     // รับ ESP จาก Arduino - ไม่ต้องทำอะไร
+  } else if (m.equalsIgnoreCase("R")) {
+    // รับ R (Register Password Success) จาก Arduino
+    Serial.println("[HANDLE] Received R - Register Password confirmed");
+
+    if (waitingForPassword && inRegisterMode) {
+      waitingForPassword = false;
+
+      // แสดง UI ยืนยันสำเร็จ
+      showUIx(UI_PASSWORD_OK, "ยืนยันสำเร็จ", TR_NONE);
+      delay(1500);
+
+      // เปลี่ยนเป็นโหมดลงทะเบียนจริง
+      showUIx(UI_REGISTER_SCAN, "แตะบัตรเพื่อลงทะเบียน", TR_NONE);
+      Serial.println("[HANDLE] Entering actual register mode");
+    } else {
+      Serial.println("[HANDLE] R received but not in register password state");
+    }
+    return;
   } else if (m.length() == 0) {
     // รับ empty string - ไม่ต้องทำอะไร
 

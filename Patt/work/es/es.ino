@@ -1412,6 +1412,11 @@ static void printerEscAlignLeft() {
   printerSerial.write(cmd, sizeof(cmd));
 }
 
+static void printerEscSetDoubleSize(bool on) {
+  uint8_t cmd[] = { 0x1D, 0x21, static_cast<uint8_t>(on ? 0x11 : 0x00) };
+  printerSerial.write(cmd, sizeof(cmd));
+}
+
 static void printerFeedLines(uint8_t n) {
   while (n--)
     printerSerial.write('\n');
@@ -1444,17 +1449,21 @@ void printVoteReceipt(int candidateNumber) {
 
   printerEscInit();
   printerEscAlignCenter();
-  printerSerial.println(F("ระบบลงคะแนนอัจฉริยะ"));
+  printerSerial.println(F("SMART VOTING SYSTEM"));
   printerSerial.println(F("--------------------"));
   printerSerial.println();
 
   printerEscAlignLeft();
-  printerSerial.println(F("ขอบคุณสำหรับการลงคะแนน"));
-  printerSerial.print(F("คุณเลือกผู้สมัครหมายเลข "));
-  printerSerial.println(candidateNumber);
+  printerSerial.println(F("Thank you for voting!"));
+  printerSerial.println(F("You selected candidate:"));
   printerSerial.println();
   printerEscAlignCenter();
-  printerSerial.println(F("โปรดเก็บสลิปฉบับนี้ไว้เป็นหลักฐาน"));
+  printerEscSetDoubleSize(true);
+  printerSerial.println(candidateNumber);
+  printerEscSetDoubleSize(false);
+  printerSerial.println();
+  printerEscAlignLeft();
+  printerSerial.println(F("Please keep this receipt."));
 
   printerFeedLines(4);
   printerSerial.flush();

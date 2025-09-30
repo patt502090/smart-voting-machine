@@ -37,7 +37,9 @@ int valmjoy = 0;
 // ค่า analog ที่อ่านได้จาก keypad (3 ปุ่ม จากการทดสอบจริง)
 const int KEY_NONE = 4095;    // ไม่กดปุ่ม (HIGH)
 const int KEY_REGISTER = 0;   // ปุ่มลงทะเบียน (0V) - ใช้ซ้ำเป็น "ลบบัตร" ใน delete menu
-const int KEY_DELETE = 1950;  // ปุ่มลบ (~1950)
+const int KEY_DELETE_MIN = 1500;
+const int KEY_DELETE_MAX = 2100;
+const int KEY_DELETE = (KEY_DELETE_MIN + KEY_DELETE_MAX) / 2;  // ปุ่มลบ (ช่วง 1500-2100)
 const int KEY_SCORE = 350;    // ปุ่มเช็ค score (300-400) - ใช้ซ้ำเป็น "ลบคะแนน" ใน delete menu
 
 const int KEY_TOLERANCE = 150;  // ความคลาดเคลื่อนที่ยอมรับได้ (เพิ่มเป็น 150)
@@ -2201,7 +2203,7 @@ int getKeyPressed() {
   int pressedKey = -1;
   if (abs(currentValue - KEY_REGISTER) <= KEY_TOLERANCE) {
     pressedKey = KEY_REGISTER;
-  } else if (abs(currentValue - KEY_DELETE) <= KEY_TOLERANCE) {
+  } else if (currentValue >= KEY_DELETE_MIN && currentValue <= KEY_DELETE_MAX) {
     pressedKey = KEY_DELETE;
   } else if (abs(currentValue - KEY_SCORE) <= KEY_TOLERANCE) {
     pressedKey = KEY_SCORE;
@@ -4604,7 +4606,7 @@ void loop() {
       Serial.println("=== Keypad Calibration ===");
       Serial.println("Press each key and observe values:");
       Serial.println("KEY_REGISTER should be ~0");
-      Serial.println("KEY_DELETE should be ~1950");
+  Serial.println("KEY_DELETE should be between 1500-2100");
       Serial.println("KEY_SCORE should be ~350 (sends T to Arduino for score check)");
       Serial.println("NONE should be ~4095");
       Serial.println("Press any key for 30 seconds...");

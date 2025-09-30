@@ -82,8 +82,8 @@ enum Page { PAGE_WAIT,
             PAGE_CONFIRM,
             PAGE_REG_PASS,
             PAGE_DELETE_READY,  // <--- ใหม่: รอคำสั่ง C
-            PAGE_DELETE_CARD,    // <--- แสดง "Delete card"
-            PAGE_TALLY   
+            PAGE_DELETE_CARD,   // <--- แสดง "Delete card"
+            PAGE_TALLY
 };
 
 bool deleteArmed = false;  // <--- ใหม่: PIN ผ่านแล้ว กำลังรอ 'C'
@@ -727,8 +727,8 @@ void regispage(char k) {
 
         case ACT_TALLY:
           eeprom_vote_dump();  // แสดงผลบน LCD/Serial
-          page = PAGE_TALLY;  
-          fregis = false;   
+          page = PAGE_TALLY;
+          fregis = false;
           break;
 
 
@@ -978,11 +978,11 @@ void setup() {
   rtc.writeSqwPinMode(DS1307_OFF);
   eeprom_vote_init();
 
-  /*const DateTime buildTime(F(__DATE__), F(__TIME__));
+  //const DateTime buildTime(F(__DATE__), F(__TIME__));
 
   // ถ้า RTC ยังไม่เดิน หรือเวลาเพี้ยนมาก (> 1 วัน) ให้ตั้งใหม่
-  if (!rtc.isrunning()) {*/
-  // rtc.adjust(buildTime);
+  // if (!rtc.isrunning()) {
+  //rtc.adjust(buildTime);
   /*} else {
     DateTime now = rtc.now();
     uint32_t diff = (now.unixtime() > buildTime.unixtime())
@@ -998,7 +998,7 @@ void setup() {
   Serial.begin(9600);
 
   tmrpcm.speakerPin = 9;  // UNO/Nano → D9
-  tmrpcm.setVolume(5);    // 0..7
+  tmrpcm.setVolume(3);    // 0..7
   tmrpcm.quality(1);
 
 
@@ -1128,6 +1128,8 @@ void loop() {
       tmrpcm.play("p.wav");
     } else if (msg == 'L') {
       tmrpcm.play("l.wav");
+    } else if (msg == 'K') {
+      tmrpcm.play("k.wav");
     } else if (msg == 'Z') {
       tmrpcm.play("z.wav");
     } else if (msg == 'A') {

@@ -9,7 +9,7 @@ const char *WIFI_PASS = "iot.coe.psu.ac.th";
 #include <algorithm>
 
 // ==== must be the very first lines ====
-const int UID_HEX_MAX = 16;
+const int UID_HEX_MAX = 16;const int UID_HEX_MAX = 16;
 struct Rec;
 
 void readRec(int idx, Rec &r);         // tell IDE not to autogenerate wrong prototypes
@@ -1947,7 +1947,7 @@ void registerCardAndFingerprint() {
       mySerial.println("SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS");
       break;
     }
-    uiTick();
+    uiTickuiTick();
     delay(50);
   }
 
@@ -3931,7 +3931,7 @@ void loop() {
 
       showUIx(UI_READY, "ยกเลิกโหมดลบข้อมูล", TR_NONE);
       delay(1000);
-      mySerial.println("DDDDDDDDDDDDDDDDDDDDDDDDDD");  // ส่ง DDDD เพื่อออกจากโหมดลบ
+      mySerial.println("IIIIIIIIIIIIIIIIIIIIIIII");  // ส่ง DDDD เพื่อออกจากโหมดลบ
 
 
 
@@ -4029,7 +4029,7 @@ void loop() {
                     inRegisterMode ? "true" : "false", waitingForPassword ? "true" : "false");
 
       // ส่ง R เพื่อบอก Arduino ว่าออกจากโหมดลงทะเบียน
-      mySerial.println("RRRRRRRRRRRRRRRRRRRRRRRRRRRRRR");
+      mySerial.println("IIIIIIIIIIIIIIIIIIIIIIIIIIIIII");
       Serial.println("[UART2] Sent: R (exit register mode)");
 
       // รีเซ็ตสถานะทั้งหมด
@@ -4078,7 +4078,7 @@ void loop() {
       Serial.println("[KEYPAD] DELETE key held for 3 seconds - exiting delete mode");
 
       // ส่ง D เพื่อบอก Arduino ว่าออกจากโหมดลบ
-      mySerial.println("DDDDDDDDDDDDDDDDDDDDDDDDDDDDDD");  // เพิ่มความยาวให้เท่า Register Mode
+      mySerial.println("IIIIIIIIIIIIIIIIIIIIIIIIIIIII");  // เพิ่มความยาวให้เท่า Register Mode
       Serial.println("[UART2] Sent: D (exit delete mode)");
 
       // รีเซ็ตสถานะทั้งหมด
@@ -4144,33 +4144,6 @@ void loop() {
     }
     return;
   }
-
-  // int switchReg = digitalRead(switchPin33);
-  // int switchDel = digitalRead(switchPin32);
-
-  // if (switchReg == LOW)
-  // {
-  //   showUIx(UI_CONFIRM, "โหมดลงทะเบียน", TR_SLIDE_UP);
-  //   delay(500); // ให้ผู้ใช้เห็น
-  //   while (digitalRead(switchPin33) == LOW)
-  //     delay(10);
-  //   registerCardAndFingerprint();
-  //   uiShownScanCard = false;
-  //   delay(300);
-  //   return;
-  // }
-  // else if (switchDel == LOW)
-  // {
-  //   showUIx(UI_ERROR, "โหมดลบข้อมูล", TR_SLIDE_UP);
-  //   delay(500);
-  //   while (digitalRead(switchPin32) == LOW)
-  //     delay(10);
-  //   deleteCardFlow();
-  //   uiShownScanCard = false;
-  //   delay(300);
-  //   return;
-  // }
-
   // ===== แตะการ์ด (ล็อคบัส RC522 เสมอ) =====
 
   // Debug: แสดงสถานะระบบทุก 10 วินาที (เฉพาะเมื่อรอ password)

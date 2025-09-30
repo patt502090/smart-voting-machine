@@ -2026,7 +2026,7 @@ void registerCardAndFingerprint() {
       mySerial.println("SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS");
       break;
     }
-    uiTickuiTick();
+    uiTick();
     delay(50);
   }
 

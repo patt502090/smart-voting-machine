@@ -2514,7 +2514,7 @@ void deleteCardFlowAfterPassword() {
   }
 
   // ส่งเสียงยืนยันตัวตนสำเร็จ - ใช้ฟังก์ชันเฉพาะ
-  sendAuthenticationSuccessSound();
+  //sendAuthenticationSuccessSound();
 
   // ===== ลบ fingerprint template ก่อน แล้วค่อยลบ EEPROM ถ้าสำเร็จ =====
   bool okToClear = true;
@@ -3983,18 +3983,6 @@ void handleU2Line(const String &raw) {
     return;
   } else if (m.length() == 0) {
     // รับ empty string - ไม่ต้องทำอะไร
-
-    if (waitingForPassword && inRegisterMode) {
-      waitingForPassword = false;
-
-      // แสดง UI ยืนยันสำเร็จ
-      showUIx(UI_PASSWORD_OK, "ยืนยันสำเร็จ", TR_NONE);
-      delay(1500);
-
-      // เปลี่ยนเป็นโหมดลงทะเบียนจริง
-      showUIx(UI_REGISTER_SCAN, "แตะบัตรเพื่อลงทะเบียน", TR_NONE);
-      return;
-    }
     return;
   } else if (m.equalsIgnoreCase("D")) {
     // รับ D (Delete Password Success) จาก Arduino
@@ -4137,6 +4125,7 @@ void loop() {
       inDeleteMode = false;
       inDeleteMenuMode = false;
       showUIx(UI_READY, "ยกเลิกโหมดลบ", TR_NONE);
+      mySerial.println("IIIIIIIIIIIIIIIIIIIIIIIIIIIIII");  // ส่ง DDDD เพื่อออกจากโหมดลบ
       delay(1000);
       returnToNormalMode("ยื่นบัตรใกล้เครื่องอ่าน", true);
       waitForKeyRelease();

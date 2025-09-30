@@ -2508,7 +2508,8 @@ void deleteCardFlowAfterPassword() {
     showUIx(UI_FINGER_FAIL, (matched < 0) ? "ไม่ตรวจพบลายนิ้ว" : "ลายนิ้วไม่ตรงเจ้าของบัตร", TR_NONE);
 
     delay(1000);
-    showUIx(UI_READY, "พร้อมให้บริการ", TR_NONE);
+    inDeleteMenuMode = true;
+    showDeleteMenu();
     return;
   }
 

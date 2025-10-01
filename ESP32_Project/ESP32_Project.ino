@@ -2539,10 +2539,10 @@ void deleteCardFlowAfterPassword() {
     clearRec(idx);
     Serial.println("Card + Fingerprint deleted");
 
-    mySerial.println("KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK");
+    mySerial.println("3333333333333333333333");
     showUIx(UI_FINGER_OK, "ลบข้อมูลสำเร็จ", TR_NONE);
     delay(150);
-    returnToNormalMode();  // กลับโหมดปกติ + เสียง M
+    //returnToNormalMode();  // กลับโหมดปกติ + เสียง M
   } else {
     // ถ้าอยากให้ย้อนกลับหน้าพร้อมใช้งาน
     returnToNormalMode();  // กลับโหมดปกติ + เสียง M
@@ -2785,7 +2785,7 @@ void normalScanFlow() {
             showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_NONE);
             delay(700);
             showUIx(UI_WAIT_CHOICE, "โปรดเลือกใหม่หรือลองอีกครั้ง", TR_NONE);
-            Serial.println("gg");
+            
             continue;  // ยังคงรอ CF ใหม่หลังแจ้งข้อผิดพลาด
           }
         }
@@ -4093,9 +4093,9 @@ void loop() {
       inScoreMode = false;
       waitingForScorePassword = false;
 
-      showUIx(UI_READY, "ออกจากโหมดเช็ค Score", TR_NONE);
+      showUIx(UI_READY, "ออกจากโห.มดเช็ค Score", TR_NONE);
       delay(1000);
-
+      mySerial.println("IIIIIIIIIIIIIIIIIIIIII");
       // กลับโหมดปกติ → ส่งเสียงโหมดเลือกตั้ง
       returnToNormalMode("ยื่นบัตรใกล้เครื่องอ่าน", true);
 
@@ -4268,7 +4268,7 @@ void loop() {
       Serial.println("[KEYPAD] SCORE key held for 3 seconds - exiting score mode");
 
       // ส่ง T เพื่อบอก Arduino ว่าออกจากโหมด score
-      mySerial.println("IIIIIIIIIIIIIIIIIIIIIIIIIIIIIII");  // เพิ่มความยาวให้เท่า Register Mode
+      mySerial.println("IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII");  // เพิ่มความยาวให้เท่า Register Mode
       Serial.println("[UART2] Sent: T (exit score mode)");
 
       // รีเซ็ตสถานะทั้งหมด

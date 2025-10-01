@@ -722,7 +722,7 @@ void regispage(char k) {
           lcd.setCursor(2, 0);
           lcd.print(F("Registration OK"));
           page = PAGE_REG_PASS;
-          fregis = true;
+          fregis = false;
           break;
 
         case ACT_TALLY:
@@ -752,7 +752,8 @@ void regispage(char k) {
           lcd.clear();
           lcd.setCursor(2, 0);
           lcd.print(F("Delete score OK"));
-          delay(800);
+          delay(2000);
+          fregis = false;
           break;
 
 
@@ -978,8 +979,10 @@ void setup() {
   Serial.begin(9600);
 
   tmrpcm.speakerPin = 9;  // UNO/Nano → D9
-  tmrpcm.setVolume(3);    // 0..7
+  tmrpcm.setVolume(4);    // 0..7
   tmrpcm.quality(1);
+
+
 
 
   Wire.begin();  // UNO: SDA=A4, SCL=A5
@@ -1048,7 +1051,7 @@ void loop() {
   // ===== 1) Keypad =====
   char k = kpd.getKey();
   if (k) {
-    if (k == 'C') {  
+    if (k == 'C') {
       int jj = 0;
       while (jj < 150) jj++;
       if (k == 'C')
@@ -1107,10 +1110,22 @@ void loop() {
       tmrpcm.play("p.wav");
     } else if (msg == 'L') {
       tmrpcm.play("l.wav");
-    } else if (msg == 'K') {
-      tmrpcm.play("k.wav");
     } else if (msg == 'Z') {
       tmrpcm.play("z.wav");
+    } else if (msg == '3') {
+      buzzer.playFanfare();
+      lcd.clear();
+      lcd.setCursor(4, 1);
+      lcd.print(F("Deleted"));
+      delay(1000);
+      showDeleteCardUI();
+    } else if (msg == 'K') {
+      buzzer.playFanfare();
+      lcd.clear();
+      lcd.setCursor(4, 1);
+      lcd.print(F("Deleted"));
+      delay(800);
+      drawReadyUI_base();
     } else if (msg == 'A') {
       tmrpcm.play("a.wav");
     } else if (msg == 'O') {  // ยืนยันตัวตนสำเร็จ -> เข้าโหมดโหวต
@@ -1138,18 +1153,10 @@ void loop() {
       // ล้างคะแนนใน EEPROM ทันที
       eeprom_vote_clear_all();
 
-      // แจ้งผลบน LCD สั้นๆ
-      lcd.clear();
-      lcd.setCursor(2, 0);
-      lcd.print(F("Delete score OK"));
-      lcd.setCursor(2, 2);
-      lcd.print(F("Scores reset"));
-
       // ส่งสัญญาณยืนยันกลับไปให้ ESP32 (เผื่อฝั่งนั้นรอ)
       Serial.println(F("RESET_OK"));
-
+      buzzer.playFanfare();
       // หน่วงให้ผู้ใช้เห็นข้อความสักพัก
-      delay(1200);
 
       // ออกจากโหมดทั้งหมดและกลับหน้า READY
       exitAllModes();

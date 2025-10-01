@@ -98,7 +98,7 @@ struct Rec {
 
 // ===== Web API (FastAPI) =====
 static const char *API_SCHEME = "http";         // ถ้าใช้ HTTPS ดูหมายเหตุท้าย
-static const char *API_HOST = "172.30.81.175";  // IP/โดเมนของเซิร์ฟเวอร์
+static const char *API_HOST = "172.30.81.228";  // IP/โดเมนของเซิร์ฟเวอร์
 static const uint16_t API_PORT = 8001;          // พอร์ต FastAPI
 static const char *API_TOKEN = "mysecret";      // ต้องตรงกับ API_TOKEN ฝั่ง FastAPI
 
@@ -1943,8 +1943,8 @@ bool checkRFIDHealth() {
 // ฟังก์ชันส่งเสียงยืนยันตัวตนสำเร็จ - สำคัญมาก!
 void sendAuthenticationSuccessSound() {
   // ส่งซ้ำ 2 ครั้งเพื่อให้แน่ใจ
-  for (int i = 0; i < 2; i++) {
-    mySerial.println("OOOOOOOOOOOOOOOOOOOOOO");
+  for (int i = 0; i < 1; i++) {
+    mySerial.println("OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO");
     mySerial.flush();  // บังคับส่งข้อมูลออกไปทันที
     delay(30);         // หน่วงสั้นๆ ระหว่างการส่ง
   }
@@ -2390,6 +2390,7 @@ void deleteCardFlowAfterPassword() {
     int keyPressed = getKeyPressed();
     if (keyPressed == KEY_DELETE) {
       Serial.println("[DELETE] DELETE key pressed - exiting delete mode");
+      mySerial.println("IIIIIIIIIIIIIIIIIIIIIIIIIIIIIII");
       inDeleteMode = false;
       break;
     }
@@ -2398,6 +2399,7 @@ void deleteCardFlowAfterPassword() {
     bus_acquire_for_rfid();
     if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
       cardPresent = true;
+      mySerial.println("SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS");
       noCardCount = 0;  // รีเซ็ตตัวนับ
     } else {
       noCardCount++;
@@ -2461,7 +2463,9 @@ void deleteCardFlowAfterPassword() {
 
   int idx = findByUID(uidHex);
   if (idx < 0) {
+
     Serial.println("Card not found");
+    mySerial.println("WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW");
     showUIx(UI_CARD_NOT_FOUND, "ไม่พบข้อมูลบัตรในระบบ", TR_NONE);
 
     delay(900);
@@ -2484,6 +2488,7 @@ void deleteCardFlowAfterPassword() {
   readRec(idx, r);
 
   // ✅ ขั้นตอน "ยืนยันลายนิ้วมือก่อนลบ"
+  mySerial.println("JJJJJJJJJJJJJJJJJJJJJJJJJJJJ");
   Serial.printf("Verify fingerprint to delete (expect FP_ID=%d)\n", r.fp_id);
   showUIx(UI_SCAN_FINGER, "วางนิ้วเพื่อยืนยันการลบ", TR_NONE);
   unsigned long t0 = millis();
@@ -2499,6 +2504,7 @@ void deleteCardFlowAfterPassword() {
   // ถ้าออกจากโหมดลบแล้ว ให้ return ทันที
   if (!inDeleteMode) {
     Serial.println("[DELETE] Exiting delete mode - stopping fingerprint verification");
+    mySerial.println("IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII");
     returnToNormalMode();
     return;
   }
@@ -2506,7 +2512,7 @@ void deleteCardFlowAfterPassword() {
   if (matched < 0 || matched != r.fp_id) {
     Serial.println("Fingerprint verify failed / timeout. Abort delete.");
     showUIx(UI_FINGER_FAIL, (matched < 0) ? "ไม่ตรวจพบลายนิ้ว" : "ลายนิ้วไม่ตรงเจ้าของบัตร", TR_NONE);
-
+    mySerial.println("ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZzz");
     delay(1000);
     inDeleteMenuMode = true;
     showDeleteMenu();
@@ -2532,6 +2538,7 @@ void deleteCardFlowAfterPassword() {
   if (okToClear) {
     clearRec(idx);
     Serial.println("Card + Fingerprint deleted");
+
     mySerial.println("KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK");
     showUIx(UI_FINGER_OK, "ลบข้อมูลสำเร็จ", TR_NONE);
     delay(150);
@@ -2778,6 +2785,7 @@ void normalScanFlow() {
             showUIx(UI_ERROR, "ส่งข้อมูลไม่สำเร็จ", TR_NONE);
             delay(700);
             showUIx(UI_WAIT_CHOICE, "โปรดเลือกใหม่หรือลองอีกครั้ง", TR_NONE);
+            Serial.println("gg");
             continue;  // ยังคงรอ CF ใหม่หลังแจ้งข้อผิดพลาด
           }
         }
@@ -4260,7 +4268,7 @@ void loop() {
       Serial.println("[KEYPAD] SCORE key held for 3 seconds - exiting score mode");
 
       // ส่ง T เพื่อบอก Arduino ว่าออกจากโหมด score
-      mySerial.println("TTTTTTTTTTTTTTTTTTTTTTTTTTTTTT");  // เพิ่มความยาวให้เท่า Register Mode
+      mySerial.println("IIIIIIIIIIIIIIIIIIIIIIIIIIIIIII");  // เพิ่มความยาวให้เท่า Register Mode
       Serial.println("[UART2] Sent: T (exit score mode)");
 
       // รีเซ็ตสถานะทั้งหมด

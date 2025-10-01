@@ -868,11 +868,11 @@ void goSleepPowerDown() {
 
 
 
-void prepareBeforeSleep() {
-  lcd.noBacklight();
+void prepareBeforeSleep() {  
   while (tmrpcm.isPlaying())
     ;
   delay(5);
+  lcd.noBacklight();
 }
 
 void afterWake() {
@@ -959,11 +959,11 @@ void setup() {
   rtc.writeSqwPinMode(DS1307_OFF);
   eeprom_vote_init();
 
-  //const DateTime buildTime(F(__DATE__), F(__TIME__));
+  const DateTime buildTime(F(__DATE__), F(__TIME__));
 
   // ถ้า RTC ยังไม่เดิน หรือเวลาเพี้ยนมาก (> 1 วัน) ให้ตั้งใหม่
   // if (!rtc.isrunning()) {
-  //rtc.adjust(buildTime);
+  rtc.adjust(buildTime);
   /*} else {
     DateTime now = rtc.now();
     uint32_t diff = (now.unixtime() > buildTime.unixtime())

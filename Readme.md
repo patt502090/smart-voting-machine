@@ -105,11 +105,11 @@
 
 ## รายวิชา
 240-319 Embedded System Developer Module  
-คณะวิศวกรรมศาสตร์ สาขาวิศวกรรมคอมพิวเตอร์  
-มหาวิทยาลัยสงขลานครินทร์  
-ภาคเรียนที่ 1 ปีการศึกษา 2568
+
 
 ## Reference / Datasheet
 - [ESP32 Datasheet (PDF)](https://www.espressif.com/sites/default/files/documentation/esp32_datasheet_en.pdf)
 - [Arduino UNO R3 Datasheet (PDF)]([https://docs.arduino.cc/static/8a9afcaa7e0b785c8e5e6039c0c76e8b/ABX00003-datasheet.pdf](https://en.wikipedia.org/wiki/Arduino_Uno))
 - [ODROID C4 Wiki]([https://wiki.odroid.com/odroid-n2/hardware/hardware](https://wikidevi.wi-cat.ru/ODROID-C4))
+
+## วิดีโอสาธิตการใช้งาน

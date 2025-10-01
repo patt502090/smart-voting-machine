@@ -1,0 +1,268 @@
+import os, re, sqlite3, threading, time, csv, io, collections
+from typing import Dict, List
+from fastapi import FastAPI, Request, HTTPException, UploadFile, File
+from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+import logging
+
+# Setup logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('voting.log')
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# App settings
+APP_NAME   = os.getenv("APP_NAME", "Smart Voting — Dashboard")
+DB_PATH    = os.getenv("VOTES_DB", "votes.db")
+INIT_OPTS  = [s.strip() for s in os.getenv("VOTE_OPTIONS", "0,1,2,3,4,5,6,7,8,9").split(",") if s.strip()]
+API_TOKEN  = os.getenv("API_TOKEN", "mysecret")
+CORS_ALLOW = os.getenv("CORS", "*").split(",")
+POLL_MS    = int(os.getenv("POLL_MS", "1000"))
+HIST_SIZE  = int(os.getenv("HIST_SIZE", "600"))
+DB_TIMEOUT = 30.0  # เพิ่ม timeout
+
+
+lock = threading.Lock()
+
+# Core app 
+app = FastAPI(title=APP_NAME)
+app.add_middleware(GZipMiddleware, minimum_size=512)
+app.add_middleware(CORSMiddleware, allow_origins=CORS_ALLOW, allow_methods=["*"], allow_headers=["*"])
+
+def init_db():
+    """Initialize database with tables and default values"""
+    logger.info("Initializing database...")
+    os.makedirs("static/img", exist_ok=True)
+    try:
+        with sqlite3.connect(DB_PATH, timeout=DB_TIMEOUT) as con:
+            # Enable WAL mode and set timeouts for better concurrency
+            con.execute('PRAGMA journal_mode=WAL')
+            con.execute('PRAGMA busy_timeout=5000')
+            con.execute('PRAGMA synchronous=NORMAL')  # Faster but still safe
+            con.execute('PRAGMA temp_store=MEMORY')
+            
+            # Create tables if they don't exist
+            con.execute("""CREATE TABLE IF NOT EXISTS votes (
+                option TEXT PRIMARY KEY, 
+                count INTEGER NOT NULL DEFAULT 0
+            )""")
+            con.execute("""CREATE TABLE IF NOT EXISTS names (
+                option TEXT PRIMARY KEY,
+                label TEXT NOT NULL
+            )""")
+            
+            # Insert default options
+            for opt in INIT_OPTS:
+                con.execute("INSERT OR IGNORE INTO votes(option,count) VALUES(?,0)", (opt,))
+                con.execute("INSERT OR IGNORE INTO names(option,label) VALUES(?,?)", (opt,opt))
+            
+            con.commit()
+        logger.info("Database initialized successfully")
+    except sqlite3.Error as e:
+        logger.error(f"Database initialization failed: {str(e)}", exc_info=True)
+        raise
+
+init_db()
+
+def tally_dict()->Dict[str,int]:
+    """Get current vote counts for all options"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=DB_TIMEOUT) as con:
+            con.execute('PRAGMA busy_timeout=5000')
+            rows = con.execute("SELECT option,count FROM votes ORDER BY option").fetchall()
+        return {k:v for k,v in rows}
+    except sqlite3.Error as e:
+        logger.error(f"Failed to get tally: {str(e)}", exc_info=True)
+        raise
+
+def names_dict()->Dict[str,str]:
+    """Get display names/labels for all options"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=DB_TIMEOUT) as con:
+            con.execute('PRAGMA busy_timeout=5000')
+            rows = con.execute("SELECT option,label FROM names ORDER BY option").fetchall()
+        return {k:v for k,v in rows}
+    except sqlite3.Error as e:
+        logger.error(f"Failed to get names: {str(e)}", exc_info=True)
+        raise
+
+# history (in-memory)
+HistoryPoint = dict
+history = collections.deque(maxlen=HIST_SIZE)
+def push_history():
+    snap = tally_dict()
+    history.append({"ts": int(time.time()), "total": sum(snap.values()), "counts": snap})
+if not history: push_history()
+
+class Vote(BaseModel):   option: str
+class OptName(BaseModel): option: str; label: str
+class OptOnly(BaseModel): option: str
+
+def guarded(req: Request):
+    if req.headers.get("X-API-KEY") != API_TOKEN:
+        raise HTTPException(401, "invalid token")
+
+@app.get("/config")
+def config(): return {"name": APP_NAME, "poll_ms": POLL_MS}
+
+@app.get("/tally")
+def tally():
+    t = tally_dict(); total = sum(t.values()); m = max(t.values()) if t else 1
+    return {"total": total, "max": m, "counts": t, "labels": names_dict()}
+
+@app.get("/history")
+def get_history(): return list(history)
+
+@app.get("/photos")
+def get_photos():
+    # คืนลิงก์รูป 0..9 ถ้าไม่มีไฟล์จะไม่ส่งคีย์นั้น
+    out={}
+    for i in range(10):
+        p = f"static/img/{i}.jpg"
+        if os.path.exists(p): out[str(i)] = f"/static/img/{i}.jpg?ts={int(os.path.getmtime(p))}"
+    return out
+
+@app.get("/export.csv")
+def export_csv():
+    buf=io.StringIO(); w=csv.writer(buf)
+    keys=list(tally_dict().keys()); w.writerow(["ts","total"]+keys)
+    for p in history: w.writerow([p["ts"],p["total"]]+[p["counts"].get(k,0) for k in keys])
+    buf.seek(0)
+    return StreamingResponse(iter([buf.read()]), media_type="text/csv",
+        headers={"Content-Disposition":"attachment; filename=votes.csv"})
+
+@app.post("/vote")
+def vote(req: Request, v: Vote):
+    """Increment count for a voting option."""
+    guarded(req)
+    try:
+        logger.debug(f"Starting vote request for option: {v.option}")
+        with lock:
+            logger.debug("Acquired lock")
+            with sqlite3.connect(DB_PATH, timeout=DB_TIMEOUT) as con:
+                # Enable foreign keys and WAL mode
+                con.execute("PRAGMA foreign_keys=ON")
+                con.execute("PRAGMA journal_mode=WAL")
+                con.execute("PRAGMA busy_timeout=5000")
+                
+                logger.debug(f"Checking current count for option {v.option}")
+                cur = con.execute("SELECT count FROM votes WHERE option=?", (v.option,))
+                row = cur.fetchone()
+                if not row:
+                    logger.error(f"Option not found: {v.option}")
+                    raise HTTPException(400, "unknown option (must be 0-9)")
+                
+                old_count = row[0]
+                logger.debug(f"Current count: {old_count}")
+                
+                logger.debug("Updating vote count")
+                cur = con.execute("""
+                    UPDATE votes 
+                    SET count = count + 1 
+                    WHERE option = ?
+                    RETURNING count
+                """, (v.option,))
+                
+                new_row = cur.fetchone()
+                if not new_row:
+                    logger.error("Update failed - no rows returned")
+                    raise HTTPException(500, "update failed")
+                
+                new_count = new_row[0]
+                logger.debug(f"New count: {new_count}")
+                
+                if new_count <= old_count:
+                    logger.error(f"Count not increased: {old_count} -> {new_count}")
+                    raise HTTPException(500, "update verification failed")
+                
+                con.commit()
+                logger.debug("Transaction committed")
+        
+        logger.debug("Pushing to history")
+        push_history()
+        logger.info(f"Vote recorded: option={v.option} count={new_count}")
+        return {"ok": True, "count": new_count}
+        
+    except sqlite3.Error as e:
+        logger.error(f"Database error: {str(e)}", exc_info=True)
+        raise HTTPException(500, f"database error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}", exc_info=True)
+        raise HTTPException(500, f"unexpected error: {str(e)}")
+    finally:
+        logger.debug("Vote request completed")
+
+# ---------- Admin ----------
+@app.post("/admin/reset")
+def reset(req: Request):
+    """Reset all vote counts to zero"""
+    guarded(req)
+    logger.info("Resetting all vote counts")
+    try:
+        with lock:
+            with sqlite3.connect(DB_PATH, timeout=DB_TIMEOUT) as con:
+                con.execute('PRAGMA busy_timeout=5000')
+                con.execute("UPDATE votes SET count=0")
+                con.commit()
+        push_history()
+        logger.info("Vote counts reset successfully")
+        return {"ok": True}
+    except sqlite3.Error as e:
+        logger.error(f"Failed to reset votes: {str(e)}", exc_info=True)
+        raise HTTPException(500, f"database error: {str(e)}")
+
+@app.get("/admin/options")
+def list_options(req: Request):
+    guarded(req)
+    t=tally_dict(); n=names_dict()
+    return {"options":[{"option":k,"label":n.get(k,k),"count":t[k]} for k in t.keys()]}
+
+@app.post("/admin/options/rename")
+def rename(req: Request, body: OptName):
+    guarded(req)
+    opt=body.option.strip(); lab=body.label.strip()
+    if not (opt and lab): raise HTTPException(400,"option/label required")
+    with lock, sqlite3.connect(DB_PATH) as con:
+        con.execute("UPDATE names SET label=? WHERE option=?", (lab,opt))
+    return {"ok": True}
+
+# อัปโหลดรูปหลายไฟล์: ชื่อไฟล์ต้องเป็น 0.jpg..9.jpg (แนะนำ .jpg)
+@app.post("/admin/upload")
+async def upload(req: Request, files: List[UploadFile]=File(...)):
+    guarded(req)
+    os.makedirs("static/img", exist_ok=True)
+    saved=[]
+    for f in files:
+        name=os.path.basename(f.filename)
+        m=re.match(r'^([0-9])\.(jpg|jpeg|png)$', name, re.IGNORECASE)
+        if not m: continue
+        idx=m.group(1); ext=m.group(2).lower()
+        if ext=="jpeg": ext="jpg"
+        if ext=="png":  ext="jpg"  # บังคับบันทึกเป็น .jpg ชื่อเดียวกัน (แนะนำอัปโหลดเป็น jpg อยู่แล้ว)
+        dest=f"static/img/{idx}.jpg"
+        with open(dest,"wb") as o: o.write(await f.read())
+        saved.append(dest)
+    return {"ok": True, "saved": saved}
+
+# Static & Pages
+# Static & Pages
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+@app.get("/", response_class=HTMLResponse)
+def page_index():
+    return FileResponse("static/index.html")
+
+@app.get("/admin", response_class=HTMLResponse)
+def page_admin():
+    return FileResponse("static/admin.html")
+
+
+

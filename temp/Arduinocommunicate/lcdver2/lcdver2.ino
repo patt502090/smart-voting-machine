@@ -1,0 +1,1196 @@
+/*
+  UNO + LCD 20x4 I2C (HW-061) + Keypad 4x4 via PCF8574 (I2C) + Buzzer "Arcade" SFX
+  - 0..9 เลือก, '*'=ล้าง (เสียงลง), '#'=ยืนยัน (แฟนแฟร์ 4 โน้ต)
+  - A/B/C/D = คลิกโทนสูง
+  - ยืนยันแล้วส่ง "CF:X" ทาง Serial (ไป ESP32/PC)
+
+  Wiring:
+    I2C: A4=SDA, A5=SCL → LCD(0x27/0x3F) + PCF8574(keypad=0x20)
+    Buzzer (2 ขา):
+      Passive piezo: + → D5 (ผ่าน R 100–220Ω แนะนำ), − → GND
+      Active buzzer : + → D5 (ตั้ง BUZZER_PASSIVE เป็น 0),       − → GND
+    Speaker (TMRpcm): D9 → ขา + ของลำโพง (มี R 100–220Ω), − → GND
+    SD: CS=4 (ตามบอร์ด SD card module)
+*/
+
+// =======================
+// 1) Includes & Libraries
+// =======================
+#include <Wire.h>
+#include <SPI.h>
+#include <SD.h>
+#include <EEPROM.h>
+#include <avr/wdt.h>
+#include <avr/sleep.h>
+#include <avr/interrupt.h>
+#include <LiquidCrystal_I2C.h>
+#include <Keypad.h>
+#include <Keypad_I2C.h>
+#include <TMRpcm.h>
+#include <RTClib.h>
+
+// =======================
+// 2) Hardware Config
+// =======================
+
+#define WAKE_PCINT_PIN 8    // ใช้ D8 เป็นสัญญาณปลุกแบบ PCINT
+#define SD_ChipSelectPin 4  // SD CS
+#define BUZZER_PIN 5        // D5
+#define BUZZER_PASSIVE 1    // 1=Passive piezo (tone/noTone), 0=Active buzzer (on/off)
+#define LCD_ADDR 0x27
+#define KEYPAD_ADDR 0x20
+
+// =======================
+// 4) Globals
+// =======================
+LiquidCrystal_I2C lcd(LCD_ADDR, 20, 4);
+TMRpcm tmrpcm;
+RTC_DS1307 rtc;
+unsigned long lastActivityMs = 0;
+volatile bool wokeFromOdroid = false;
+volatile bool showingTally = false;
+bool waitRToExit = false;
+bool waitTToExit = false;
+bool waitDToExit = false;  // โหมดลบ ต้องกด D ซ้ำเพื่อออก
+bool waitXToExit = false;  // โหมดลบคะแนน ต้องกด X ซ้ำเพื่อออก
+
+// =======================
+// 5) Keypad Mapping
+// =======================
+const byte ROWS = 4, COLS = 4;
+char keys[ROWS][COLS] = {
+  { '1', '2', '3', 'A' },
+  { '4', '5', '6', 'B' },
+  { '7', '8', '9', 'C' },
+  { '*', '0', '#', 'D' }
+};
+byte rowPins[ROWS] = { 0, 1, 2, 3 };  // PCF8574 P0..P3
+byte colPins[COLS] = { 4, 5, 6, 7 };  // PCF8574 P4..P7
+Keypad_I2C kpd(makeKeymap(keys), rowPins, colPins, ROWS, COLS, KEYPAD_ADDR);
+
+// =======================
+// 6) App State Machine
+// =======================
+enum AdminAction { ACT_NONE,
+                   ACT_REG,
+                   ACT_TALLY,
+                   ACT_CLEAR,
+                   ACT_DELETE };
+
+enum Page { PAGE_WAIT,
+            PAGE_VOTE,
+            PAGE_CONFIRM,
+            PAGE_REG_PASS,
+            PAGE_DELETE_READY,  // <--- ใหม่: รอคำสั่ง C
+            PAGE_DELETE_CARD,   // <--- แสดง "Delete card"
+            PAGE_TALLY
+};
+
+bool deleteArmed = false;  // <--- ใหม่: PIN ผ่านแล้ว กำลังรอ 'C'
+
+AdminAction pendingAction = ACT_NONE;
+Page page = PAGE_WAIT;
+
+bool canVote = false;            // true เมื่อได้รับ 'O' จาก ESP32
+int currentChoice = -1;          // -1=ยังไม่เลือก, 0=งด, 1..9=ผู้สมัคร
+unsigned long confirmUntil = 0;  // แสดงหน้า Confirm แบบ non-blocking
+
+// =======================
+// 7) EEPROM Vote Tally
+// =======================
+// โครงสร้าง:
+// [0..3]   : MAGIC 'VOTE' (0x564F5445) ไว้เช็คว่ามีการ init แล้ว
+// [4..43]  : ตัวนับ 10 ช่อง (0..9) อย่างละ uint32_t → รวม 40 ไบต์
+static const uint32_t EE_MAGIC = 0x564F5445UL;  // 'VOTE'
+static const int EE_MAGIC_ADDR = 0;
+static const int EE_COUNTS_ADDR = 4;  // เริ่มเก็บตัวนับที่นี่
+static inline int ee_ofs(uint8_t idx) {
+  return EE_COUNTS_ADDR + (idx * 4);
+}
+
+// =======================
+// 8) UI & Animation State
+// =======================
+// Spinner
+const char spinFrames[4] = { '|', '/', '-', '\\' };
+uint8_t spinIdx = 0;
+unsigned long lastSpinMs = 0;
+const unsigned long SPIN_MS = 160;
+
+// กระพริบกรอบเลข
+bool boxOn = true;
+unsigned long lastBlinkMs = 0;
+const unsigned long BLINK_MS = 380;
+
+// Ready .. จุดต่อท้าย
+uint8_t readyDots = 0;
+unsigned long lastReadyMs = 0;
+const unsigned long READY_MS = 350;
+
+// ตำแหน่ง UI
+const uint8_t POS_SPINNER_X = 18, POS_SPINNER_Y = 0;
+const uint8_t POS_ARROW_X = 1, POS_ARROW_Y = 2;
+const uint8_t POS_HINT_X = 2, POS_HINT_Y = 2;
+const uint8_t POS_TITLE_X = 2, POS_TITLE_Y = 1;
+const uint8_t BOX_LEFT_X = 10;
+const uint8_t BOX_TOP_Y = 0;
+
+// =======================
+// 9) Admin PIN State
+// =======================
+bool fregis = false;
+bool regisstatus = false;
+bool passMsgShown = false;
+static const uint8_t PIN_MAX = 8;
+char passBuf[PIN_MAX + 1] = { 0 };  // 4 หลัก + '\0'
+uint8_t passLen = 0;                // 0..4
+const char savedPass[] = "1234";
+
+// =======================
+// 10) Forward Declarations
+// =======================
+// (ให้จัดลำดับเรียกใช้ได้ชัดเจน โดยไม่ต้องพึ่ง prototype ที่ Arduino สร้างอัตโนมัติ)
+inline void noteActivity();
+void drawVoteUI_base();
+void drawReadyUI_base();
+void drawConfirmUI();
+void animateDuringSelect();
+void startPass(AdminAction a);
+void regispage(char k);
+void eeprom_vote_dump();
+void eeprom_vote_clear_all();
+void onConfirmVote(int choice);
+void afterWake();
+void clock_ready_tick(bool forceFirst = false);
+
+
+
+uint8_t cPressCount = 0;
+unsigned long lastCPressMs = 0;
+const unsigned long C_RESET_WINDOW_MS = 2500UL;
+
+
+
+
+
+// =======================
+// 11) EEPROM Vote Helpers
+// =======================
+void eeprom_vote_init() {
+  uint32_t m;
+  EEPROM.get(EE_MAGIC_ADDR, m);
+  if (m != EE_MAGIC) {
+    EEPROM.put(EE_MAGIC_ADDR, EE_MAGIC);
+    for (uint8_t i = 0; i < 10; ++i) {
+      uint32_t z = 0;
+      EEPROM.put(ee_ofs(i), z);
+    }
+  }
+}
+
+uint32_t eeprom_vote_get(uint8_t idx) {
+  uint32_t v = 0;
+  if (idx < 10) EEPROM.get(ee_ofs(idx), v);
+  return v;
+}
+
+void eeprom_vote_add(uint8_t idx, uint32_t delta = 1) {
+  if (idx >= 10) return;
+  uint32_t v = 0;
+  EEPROM.get(ee_ofs(idx), v);
+  v += delta;
+  EEPROM.put(ee_ofs(idx), v);  // EEPROM.put ลด wear
+}
+
+void eeprom_vote_dump() {
+  showingTally = true;
+  Serial.println(F("[VOTE TALLY]"));
+
+  lcd.clear();
+
+  // หาแชมป์
+  uint8_t winner = 0;
+  uint32_t maxv = 0;
+  bool tie = false;
+
+  for (uint8_t i = 0; i < 10; ++i) {
+    uint32_t v = eeprom_vote_get(i);
+
+    // --- Serial ---
+    Serial.print(F("No."));
+    Serial.print(i);
+    Serial.print(F(" = "));
+    Serial.println(v);
+
+    // --- หา winner ---
+    if (i == 0 || v > maxv) {
+      maxv = v;
+      winner = i;
+      tie = false;
+    } else if (v == maxv) {
+      tie = true;  // คะแนนเท่ากันกับ max ปัจจุบัน
+    }
+
+    // --- LCD: วาง 3 คอลัมน์ต่อแถว (0,7,14) และ N9 อยู่แถวล่างซ้าย ---
+
+    uint8_t row = (i <= 8) ? (i / 3) : 3;
+    uint8_t col = (i <= 8) ? (i % 3) : 0;
+    uint8_t x = (col == 0) ? 0 : (col == 1) ? 7
+                                            : 14;
+
+    lcd.setCursor(x, row);
+    lcd.print('N');
+    lcd.print(i);
+    lcd.print('=');
+    lcd.print(v);
+    lcd.print(' ');
+    lcd.print(' ');
+  }
+
+  // แสดง Winner ข้างๆ N9 (คอลัมน์ 7 ของแถวล่าง)
+  // ถ้ามีคะแนนเสมอหลายหมายเลข จะแสดง "Tie"
+  lcd.setCursor(7, 3);  // ช่องกลางของแถวสุดท้าย
+  lcd.print(F("Winner="));
+  if (tie) {
+    lcd.print(F("Tie"));
+  } else {
+    lcd.print(winner);
+  }
+}
+
+
+void eeprom_vote_clear_all() {
+  for (uint8_t i = 0; i < 10; ++i) {
+    uint32_t z = 0;
+    EEPROM.put(ee_ofs(i), z);
+  }
+  Serial.println(F("TALLY CLEARED"));
+}
+
+// =======================
+// 12) LCD Icons & Frame
+// =======================
+byte I_TL[8] = { B11100, B10000, B10000, B10000, B10000, B10000, B10000, B10000 };
+byte I_TR[8] = { B00111, B00001, B00001, B00001, B00001, B00001, B00001, B00001 };
+byte I_BL[8] = { B10000, B10000, B10000, B10000, B10000, B10000, B10000, B11100 };
+byte I_BR[8] = { B00001, B00001, B00001, B00001, B00001, B00001, B00001, B00111 };
+byte I_H[8] = { B11111, B00000, B00000, B00000, B00000, B00000, B00000, B11111 };
+byte I_V[8] = { B10001, B10001, B10001, B10001, B10001, B10001, B10001, B10001 };
+byte I_AR[8] = { B00100, B00110, B00111, B11111, B00111, B00110, B00100, B00000 };   // ▶
+byte I_CHK[8] = { B00000, B00001, B00011, B10110, B11100, B01000, B00000, B00000 };  // ✓
+
+void loadIcons() {
+  lcd.createChar(0, I_TL);
+  lcd.createChar(1, I_TR);
+  lcd.createChar(2, I_BL);
+  lcd.createChar(3, I_BR);
+  lcd.createChar(4, I_H);
+  lcd.createChar(5, I_V);
+  lcd.createChar(6, I_AR);
+  lcd.createChar(7, I_CHK);
+}
+
+void drawFrame() {
+  lcd.clear();
+  // มุม
+  lcd.setCursor(0, 0);
+  lcd.write((byte)0);
+  lcd.setCursor(19, 0);
+  lcd.write((byte)1);
+  lcd.setCursor(0, 3);
+  lcd.write((byte)2);
+  lcd.setCursor(19, 3);
+  lcd.write((byte)3);
+  // ขอบบน/ล่าง
+  for (int x = 1; x < 19; x++) {
+    lcd.setCursor(x, 0);
+    lcd.write((byte)4);
+    lcd.setCursor(x, 3);
+    lcd.write((byte)4);
+  }
+  // ขอบซ้าย/ขวา
+  for (int y = 1; y < 3; y++) {
+    lcd.setCursor(0, y);
+    lcd.write((byte)5);
+    lcd.setCursor(19, y);
+    lcd.write((byte)5);
+  }
+}
+
+// =======================
+// 13) UI Helpers
+// =======================
+inline void lcd2(uint8_t v) {
+  lcd.print(v / 10);
+  lcd.print(v % 10);
+}
+
+void drawChoiceBox(bool show) {
+  // เคลียร์พื้นที่ 10..14 x 0..2 ก่อน
+  for (uint8_t y = 0; y <= 2; y++) {
+    lcd.setCursor(BOX_LEFT_X, BOX_TOP_Y + y);
+    lcd.print(F("     "));
+  }
+
+  if (currentChoice <= 0) {
+    lcd.setCursor(12, 1);
+    if (show) lcd.print(F("0"));
+    else lcd.print(F("  "));
+    return;
+  }
+
+  if (show) {
+    // วาดกรอบ
+    lcd.setCursor(10, 0);
+    lcd.write((byte)0);
+    for (int x = 11; x <= 13; x++) {
+      lcd.setCursor(x, 0);
+      lcd.write((byte)4);
+    }
+    lcd.setCursor(14, 0);
+    lcd.write((byte)1);
+    lcd.setCursor(10, 1);
+    lcd.write((byte)5);
+    lcd.setCursor(14, 1);
+    lcd.write((byte)5);
+    lcd.setCursor(10, 2);
+    lcd.write((byte)2);
+    for (int x = 11; x <= 13; x++) {
+      lcd.setCursor(x, 2);
+      lcd.write((byte)4);
+    }
+    lcd.setCursor(14, 2);
+    lcd.write((byte)3);
+
+    lcd.setCursor(12, 1);
+    lcd.print(currentChoice);
+  } else {
+    lcd.setCursor(12, 1);
+    lcd.print(currentChoice);
+  }
+}
+
+void drawVoteUI_base() {
+  loadIcons();
+  drawFrame();
+
+  // หัวข้อ + arrow + hint
+  lcd.setCursor(POS_TITLE_X, POS_TITLE_Y);
+  lcd.print(F("Select: 0=Abstain"));
+  lcd.setCursor(POS_ARROW_X, POS_ARROW_Y);
+  lcd.write((byte)6);  // ▶
+  lcd.setCursor(POS_HINT_X, POS_HINT_Y);
+  lcd.print(F("#=Confirm  *=Clear"));
+
+  // เคอร์เซอร์กระพริบตรงบรรทัดคำสั่ง
+  lcd.setCursor(POS_HINT_X, POS_HINT_Y);
+  lcd.blink();
+
+  // ข้อความสถานะ
+  if (currentChoice < 0) {
+    lcd.setCursor(2, 0);
+    lcd.print(F("Choose 1..9     "));
+  } else if (currentChoice == 0) {
+    lcd.setCursor(2, 0);
+    lcd.print(F("Choice: Abstain "));
+  } else {
+    lcd.setCursor(2, 0);
+    lcd.print(F("Choice:         "));
+  }
+  drawChoiceBox(currentChoice >= 0);
+
+  // รีเซ็ตอนิเมชัน
+  spinIdx = 0;
+  lastSpinMs = millis();
+  boxOn = true;
+  lastBlinkMs = millis();
+  lcd.setCursor(POS_SPINNER_X, POS_SPINNER_Y);
+  lcd.print(spinFrames[spinIdx]);
+}
+
+void animateDuringSelect() {
+  unsigned long now = millis();
+  // spinner
+  if (now - lastSpinMs >= SPIN_MS) {
+    lastSpinMs = now;
+    spinIdx = (spinIdx + 1) & 0x03;
+    lcd.setCursor(POS_SPINNER_X, POS_SPINNER_Y);
+    lcd.print(spinFrames[spinIdx]);
+  }
+  // blink กล่องเลข
+  if (currentChoice >= 0 && now - lastBlinkMs >= BLINK_MS) {
+    lastBlinkMs = now;
+    boxOn = !boxOn;
+    drawChoiceBox(boxOn);
+  }
+}
+
+void drawConfirmUI() {
+  lcd.noBlink();
+  loadIcons();
+  drawFrame();
+  lcd.setCursor(2, 1);
+  lcd.print(F("Confirmed:"));
+  if (currentChoice == 0) {
+    lcd.setCursor(13, 1);
+    lcd.print(F("Abstain"));
+  } else {
+    lcd.setCursor(13, 1);
+    lcd.print(F("No."));
+    lcd.print(currentChoice);
+  }
+  lcd.setCursor(1, 2);
+  lcd.write((byte)7);
+  lcd.setCursor(18, 2);
+  lcd.write((byte)7);
+  lcd.setCursor(5, 3);
+  lcd.print(F("Saved! Thank you"));
+}
+
+// หน้า Ready: แสดงวันที่/เวลา + "Ready to vote"
+void clock_ready_tick(bool forceFirst) {
+  static uint8_t lastSec = 255;
+  if (showingTally) return;
+  if (page != PAGE_WAIT) return;
+  if (tmrpcm.isPlaying()) return;
+
+  DateTime t = rtc.now();
+  if (!forceFirst) {
+    if (t.second() == lastSec) return;
+  }
+  lastSec = t.second();
+
+  // บรรทัด 0: วันที่ → dd/mm/yyyy
+  lcd.setCursor(5, 0);
+  lcd2(t.day());
+  lcd.print('/');
+  lcd2(t.month());
+  lcd.print('/');
+  lcd.print(t.year());
+  lcd.print(F("       "));
+
+  // บรรทัด 1: เวลา → hh:mm:ss
+  lcd.setCursor(5, 1);
+  lcd2(t.hour());
+  lcd.print(':');
+  lcd2(t.minute());
+  lcd.print(':');
+  lcd2(t.second());
+  lcd.print(F("             "));
+}
+
+void drawReadyUI_base() {
+  lcd.noBlink();
+  lcd.clear();
+
+  // บรรทัด 2: ข้อความสถานะคงที่
+  lcd.setCursor(4, 2);
+  lcd.print(F("Ready to vote"));
+
+  // เคลียร์บรรทัดวันที่/เวลา (บรรทัด 0 และ 1)
+  lcd.setCursor(0, 0);
+  lcd.print(F("                    "));
+  lcd.setCursor(0, 1);
+  lcd.print(F("                    "));
+
+  // อัปเดตนาฬิกาครั้งแรกทันที
+  clock_ready_tick(true);
+}
+
+// =======================
+// 14) Buzzer SFX (Arcade)
+// =======================
+class BuzzerSFX {
+public:
+  void init() {
+    pinMode(BUZZER_PIN, OUTPUT);
+    digitalWrite(BUZZER_PIN, LOW);
+    seq = nullptr;
+    count = idx = phase = 0;
+    phaseEnd = 0;
+  }
+
+  // เอฟเฟกต์ที่เรียกใช้ง่าย
+  void playClick() {
+    start(SEQ_CLICK, 1);
+  }
+  void playClickHi() {
+    start(SEQ_CLICK_HI, 1);
+  }
+  void playBack() {
+    start(SEQ_BACK, 2);
+  }
+  void playError() {
+    start(SEQ_ERROR, 3);
+  }
+  void playFanfare() {
+    start(SEQ_FANFARE, 4);
+  }
+
+  void update() {
+    if (!seq || idx >= count) return;
+    unsigned long now = millis();
+    const Step& st = seq[idx];
+
+    if (phase == 0) {  // start ON
+#if BUZZER_PASSIVE
+      if (st.freq == 0) noTone(BUZZER_PIN);
+      else tone(BUZZER_PIN, st.freq);
+#else
+      digitalWrite(BUZZER_PIN, HIGH);
+#endif
+      phase = 1;
+      phaseEnd = now + st.dur;
+      return;
+    }
+    if (phase == 1 && (long)(now - phaseEnd) >= 0) {  // end ON -> GAP
+#if BUZZER_PASSIVE
+      noTone(BUZZER_PIN);
+#else
+      digitalWrite(BUZZER_PIN, LOW);
+#endif
+      phase = 2;
+      phaseEnd = now + st.gap;
+      return;
+    }
+    if (phase == 2 && (long)(now - phaseEnd) >= 0) {  // next
+      idx++;
+      phase = 0;
+      if (idx >= count) { seq = nullptr; }
+    }
+  }
+
+private:
+  // 1 สเต็ปของเสียง: ความถี่ (Hz), ระยะเปิด (ms), ระยะเงียบตามหลัง (ms)
+  struct Step {
+    uint16_t freq, dur, gap;
+  };
+
+  enum {  // โน้ตอ้างอิง (Hz)
+    N_C5 = 523,
+    N_D5 = 587,
+    N_E5 = 659,
+    N_F5 = 698,
+    N_G5 = 784,
+    N_A5 = 880,
+    N_B5 = 988,
+    N_C6 = 1047,
+    N_D6 = 1175,
+    N_E6 = 1319,
+    N_F6 = 1397,
+    N_G6 = 1568,
+    N_A6 = 1760
+  };
+
+  static const Step SEQ_BOOT[4];
+  static const Step SEQ_CLICK[1];
+  static const Step SEQ_CLICK_HI[1];
+  static const Step SEQ_BACK[2];
+  static const Step SEQ_ERROR[3];
+  static const Step SEQ_CONFIRM[2];
+  static const Step SEQ_FANFARE[4];
+
+  const Step* seq;
+  uint8_t count, idx, phase;
+  unsigned long phaseEnd;
+
+  void start(const Step* s, uint8_t n) {
+    seq = s;
+    count = n;
+    idx = 0;
+    phase = 0;
+    phaseEnd = 0;
+  }
+};
+
+// นิยามแพตเทิร์นเสียง
+const BuzzerSFX::Step BuzzerSFX::SEQ_BOOT[4] = { { BuzzerSFX::N_C5, 90, 15 }, { BuzzerSFX::N_E5, 90, 15 }, { BuzzerSFX::N_G5, 110, 15 }, { BuzzerSFX::N_C6, 150, 0 } };
+const BuzzerSFX::Step BuzzerSFX::SEQ_CLICK[1] = { { 1500, 25, 8 } };
+const BuzzerSFX::Step BuzzerSFX::SEQ_CLICK_HI[1] = { { 1900, 18, 5 } };
+const BuzzerSFX::Step BuzzerSFX::SEQ_BACK[2] = { { BuzzerSFX::N_E5, 70, 15 }, { BuzzerSFX::N_C5, 110, 0 } };
+const BuzzerSFX::Step BuzzerSFX::SEQ_ERROR[3] = { { 400, 140, 35 }, { 320, 140, 35 }, { 250, 180, 0 } };
+const BuzzerSFX::Step BuzzerSFX::SEQ_CONFIRM[2] = { { BuzzerSFX::N_A5, 120, 25 }, { BuzzerSFX::N_C6, 140, 0 } };
+const BuzzerSFX::Step BuzzerSFX::SEQ_FANFARE[4] = { { BuzzerSFX::N_G5, 90, 15 }, { BuzzerSFX::N_B5, 90, 15 }, { BuzzerSFX::N_D6, 110, 15 }, { BuzzerSFX::N_G6, 160, 0 } };
+
+BuzzerSFX buzzer;
+
+// =======================
+// 15) Serial & Preview
+// =======================
+
+void sendPreview() {
+  if (currentChoice < 0) {
+    Serial.println(F("SEL:CLEAR"));
+  } else {
+    Serial.print(F("SEL:"));
+    Serial.println(currentChoice);  // 0..9
+  }
+}
+
+// =======================
+// 16) Voting & Admin Flow
+// =======================
+void onConfirmVote(int choice) {
+  if (choice >= 0 && choice <= 9) {
+    eeprom_vote_add((uint8_t)choice, 1);
+  }
+  Serial.print(F("CF:"));
+  Serial.println(choice);
+  buzzer.playFanfare();
+}
+
+
+// vote() เรียกเมื่อมีคีย์ในหน้าโหวต/คอนเฟิร์ม
+void vote(char k) {
+  if (!canVote) {
+    buzzer.playError();
+    return;
+  }
+
+  if (k >= '0' && k <= '9') {
+    currentChoice = k - '0';
+    drawVoteUI_base();
+    buzzer.playClick();
+    Serial.write(currentChoice);
+    sendPreview();
+  } else if (k == '*') {
+    if (currentChoice >= 0) buzzer.playBack();
+    currentChoice = -1;
+    drawVoteUI_base();
+    sendPreview();
+  } else if (k == '#') {
+    if (currentChoice >= 0) {
+      page = PAGE_CONFIRM;
+      drawConfirmUI();
+      onConfirmVote(currentChoice);       // ส่ง CF:<n>
+      confirmUntil = millis() + 10000UL;  // คงเดิม
+      currentChoice = -1;
+      canVote = false;
+      //.stopPlayback();
+      tmrpcm.play("fv.wav");
+    } else {
+      buzzer.playError();
+    }
+  }
+}
+
+// Admin PIN helpers
+void lcdClearLine(uint8_t y) {
+  lcd.setCursor(0, y);
+  lcd.print(F("                    "));  // 20 ช่อง
+}
+
+void printMaskedAt(uint8_t x, uint8_t y, uint8_t len) {
+  lcd.setCursor(x, y);
+  for (uint8_t i = 0; i < PIN_MAX; i++) lcd.write(i < len ? '*' : ' ');
+}
+
+void regispage(char k) {
+  if (!k) return;
+
+  if (k >= '0' && k <= '9') {
+    if (passMsgShown) {
+      lcdClearLine(3);
+      passMsgShown = false;
+    }
+    if (passLen < PIN_MAX) {
+      buzzer.playClick();
+      passBuf[passLen++] = k;
+      passBuf[passLen] = '\0';
+      printMaskedAt(4, 2, passLen);
+    }
+  } else if (k == '*') {
+    if (passMsgShown) {
+      lcdClearLine(3);
+      passMsgShown = false;
+    }
+    if (passLen > 0) {
+      buzzer.playBack();
+      passLen--;
+      passBuf[passLen] = '\0';
+      printMaskedAt(4, 2, passLen);
+    }
+  } else if (k == '#') {
+
+    if (strcmp(passBuf, savedPass) == 0) {
+      buzzer.playFanfare();
+      // รหัสถูก → ทำงานตาม pendingAction
+      switch (pendingAction) {
+        case ACT_REG:
+          lcd.clear();
+          Serial.print(F("R"));
+          lcd.setCursor(2, 0);
+          lcd.print(F("Registration OK"));
+          page = PAGE_REG_PASS;
+          fregis = true;
+          break;
+
+        case ACT_TALLY:
+          eeprom_vote_dump();  // แสดงผลบน LCD/Serial
+          page = PAGE_TALLY;
+          fregis = false;
+          break;
+
+
+
+        case ACT_DELETE:
+          lcd.clear();
+          lcd.setCursor(4, 0);
+          lcd.print(F("Delete OK"));  // แจ้ง PIN ผ่าน
+          Serial.print(F("D"));       // แจ้ง ESP32 ว่าโหมดลบพร้อมแล้ว
+          // เตรียมรอคำสั่ง 'C' ก่อนเข้า Delete card
+          deleteArmed = true;        // <--- ตั้งแฟลก
+          fregis = false;            // <--- หยุดรับ PIN ต่อ
+          page = PAGE_DELETE_READY;  // <--- ไปหน้า "รอ C"
+          // แนะนำโชว์ hint เล็กน้อย
+
+          break;
+
+
+        case ACT_CLEAR:
+          eeprom_vote_clear_all();
+          lcd.clear();
+          lcd.setCursor(2, 0);
+          lcd.print(F("Delete score OK"));
+          delay(800);
+          break;
+
+
+        default: break;
+      }
+
+      // ออกจากโหมดใส่รหัส กลับหน้า READY (ยกเว้นกรณีค้างรอ R/T รอบถัดไป)
+      if (!waitRToExit && !waitTToExit && !waitDToExit && !waitXToExit) {
+
+        pendingAction = ACT_NONE;
+        fregis = false;
+        canVote = false;
+        page = PAGE_WAIT;
+        drawReadyUI_base();
+      }
+    } else {
+      // รหัสผิด
+      buzzer.playError();
+      lcd.setCursor(0, 3);
+      lcd.print(F("   Wrong Password  "));
+      passLen = 0;
+      passMsgShown = true;
+      passBuf[0] = '\0';
+      printMaskedAt(4, 2, passLen);
+    }
+  }
+}
+
+void startPass(AdminAction a) {
+  pendingAction = a;
+  fregis = true;
+  passLen = 0;
+  passBuf[0] = '\0';
+  page = PAGE_REG_PASS;
+
+  lcd.noBlink();
+  lcd.clear();
+  lcd.setCursor(2, 0);
+  switch (a) {
+    case ACT_REG: lcd.print(F("Registration (PIN)")); break;
+    case ACT_TALLY: lcd.print(F("Show Tally (PIN)")); break;
+
+    case ACT_DELETE: lcd.print(F("Delete (PIN)")); break;
+    case ACT_CLEAR: lcd.print(F("Delete score (PIN)")); break;
+    default: lcd.print(F("Admin (PIN)")); break;
+  }
+
+  lcd.setCursor(2, 1);
+  lcd.print(F("Enter Password :"));
+  printMaskedAt(4, 2, passLen);
+}
+
+// =======================
+// 17) Sleep & Watchdog
+// =======================
+
+// ===== PCINT (D8) สำหรับปลุกด้วยขอบขึ้น LOW->HIGH =====
+ISR(PCINT0_vect) {
+  // D8 อยู่ในกลุ่ม PCINT0 (PB0..PB5 = D8..D13)
+  // ปลุกเฉพาะถ้าอ่านแล้วเป็น HIGH (rising edge)
+  if (digitalRead(WAKE_PCINT_PIN) == HIGH) {
+    wokeFromOdroid = true;  // ใช้แฟลกเดิมเพื่อไม่ต้องแก้ส่วนอื่น
+  }
+}
+
+// คืนค่า true = พร้อมปลุก (สายเป็น LOW แล้ว), false = ไม่พร้อม
+bool enablePcintWake() {
+  pinMode(WAKE_PCINT_PIN, INPUT);
+
+  // ถ้ายัง HIGH อยู่ แปลว่าไม่พร้อมหลับด้วย edge → ไม่เปิด PCINT และแจ้งกลับ
+  if (digitalRead(WAKE_PCINT_PIN) == HIGH) {
+    return false;
+  }
+
+  PCIFR |= _BV(PCIF0);    // เคลียร์ธงกลุ่ม PCINT0
+  PCICR |= _BV(PCIE0);    // เปิดกลุ่ม PCINT0 (D8..D13)
+  PCMSK0 |= _BV(PCINT0);  // เปิดบิตของ D8
+  return true;
+}
+
+void disablePcintWake() {
+  PCMSK0 &= ~_BV(PCINT0);
+  if (PCMSK0 == 0) PCICR &= ~_BV(PCIE0);
+}
+
+
+
+
+void goSleepPowerDown() {
+  // ถ้าสายปลุกยัง HIGH อยู่ → ไม่หลับในรอบนี้ (กันหลับแล้วตื่นทันที)
+  if (!enablePcintWake()) {
+    // เลือกอย่างใดอย่างหนึ่ง: (1) ข้ามการหลับ, (2) หน่วงรอให้ Odroid ปล่อย LOW แล้วค่อยหลับ
+    // ที่ง่ายสุด: ข้ามการหลับรอบนี้ไปก่อน
+    return;
+  }
+
+  set_sleep_mode(SLEEP_MODE_PWR_DOWN);
+  sleep_enable();
+
+  noInterrupts();
+#if defined(BODS) && defined(BODSE)
+  MCUCR |= _BV(BODS) | _BV(BODSE);
+  MCUCR = (MCUCR & ~_BV(BODSE)) | _BV(BODS);
+#endif
+  interrupts();
+
+  sleep_cpu();      // หลับจริง
+  sleep_disable();  // ตื่นแล้ว
+
+  disablePcintWake();  // กันยิงซ้ำถ้าสายยัง HIGH
+}
+
+
+
+void prepareBeforeSleep() {
+  lcd.noBacklight();
+  while (tmrpcm.isPlaying())
+    ;
+  delay(5);
+}
+
+void afterWake() {
+  lcd.backlight();
+  tmrpcm.play("sa.wav");
+  page = canVote ? PAGE_VOTE : PAGE_WAIT;
+  if (page == PAGE_VOTE) drawVoteUI_base();
+  else drawReadyUI_base();
+
+  delay(20);
+  while (Serial.available()) { String s = Serial.readStringUntil('\n'); }
+  wokeFromOdroid = false;  // เคลียร์แฟลกปลุก
+}
+
+
+void wdt_sanity_boot() {
+  MCUSR = 0;
+  wdt_disable();
+}
+[[noreturn]] void reset_via_wdt() {
+  wdt_enable(WDTO_15MS);
+  while (true) {}
+}
+
+
+
+
+// =======================
+// 18) SD Init (with retry)
+// =======================
+const uint8_t SD_RETRIES = 3;
+void initSD_orReset() {
+  lcd.clear();
+  lcd.setCursor(2, 0);
+  lcd.print(F("Storage Setup"));
+  lcd.setCursor(2, 1);
+  lcd.print(F("Initializing SD"));
+  lcd.setCursor(0, 2);
+  lcd.print(F("Status: "));
+  lcd.setCursor(0, 3);
+  lcd.print(F("Try 1/"));
+  lcd.print(SD_RETRIES);
+
+  for (uint8_t i = 0; i < SD_RETRIES; ++i) {
+    // อัปเดตเลขครั้งลองบน LCD
+    lcd.setCursor(4, 3);  // ตำแหน่งหลังคำว่า "Try "
+    lcd.print(i + 1);
+    lcd.print('/');
+    lcd.print(SD_RETRIES);
+    lcd.print(F("   "));  // เคลียร์ต่อท้าย
+
+    if (SD.begin(SD_ChipSelectPin)) {
+      Serial.println(F("SD init OK"));
+      lcd.setCursor(8, 2);
+      lcd.print(F("OK       "));  // เคลียร์ท้ายด้วยช่องว่าง
+      delay(450);
+      return;
+    }
+
+    Serial.println(F("SD init failed, retrying..."));
+    lcd.setCursor(8, 2);
+    lcd.print(F("Failed   "));
+
+    // เล็ก ๆ น้อย ๆ ให้เห็นว่ากำลังพักก่อนลองใหม่
+    delay(100);
+  }
+
+  // ล้มเหลวครบทุกครั้ง → แจ้งเตือนและรีเซ็ต
+  Serial.println(F("SD init failed -> resetting via WDT"));
+  lcd.clear();
+  lcd.setCursor(1, 1);
+  lcd.print(F("SD init failed"));
+  lcd.setCursor(2, 2);
+  lcd.print(F("Resetting..."));
+  delay(700);
+  reset_via_wdt();
+}
+
+// =======================
+// 19) Setup / Loop
+// =======================
+void setup() {
+  rtc.begin();
+  rtc.writeSqwPinMode(DS1307_OFF);
+  eeprom_vote_init();
+
+  //const DateTime buildTime(F(__DATE__), F(__TIME__));
+
+  // ถ้า RTC ยังไม่เดิน หรือเวลาเพี้ยนมาก (> 1 วัน) ให้ตั้งใหม่
+  // if (!rtc.isrunning()) {
+  //rtc.adjust(buildTime);
+  /*} else {
+    DateTime now = rtc.now();
+    uint32_t diff = (now.unixtime() > buildTime.unixtime())
+                    ? now.unixtime() - buildTime.unixtime()
+                    : buildTime.unixtime() - now.unixtime();
+    if (diff > 24UL * 60UL * 60UL) {         // เพี้ยนเกิน 1 วัน → ตั้งใหม่
+      rtc.adjust(buildTime);
+    }
+  }*/
+
+  wdt_sanity_boot();
+  pinMode(10, OUTPUT);  // คงไว้ตามของเดิม
+  Serial.begin(9600);
+
+  tmrpcm.speakerPin = 9;  // UNO/Nano → D9
+  tmrpcm.setVolume(3);    // 0..7
+  tmrpcm.quality(1);
+
+
+  Wire.begin();  // UNO: SDA=A4, SCL=A5
+  lcd.init();
+  lcd.backlight();
+  initSD_orReset();
+
+  // เสียงเปิดเครื่อง (ซ้ำสองครั้งตามเดิม ถ้าเล่นไม่ทัน)
+  tmrpcm.play("sa.wav");
+  if (!tmrpcm.isPlaying()) { tmrpcm.play("sa.wav"); }
+  delay(500);
+
+  buzzer.init();
+
+  // เริ่มที่หน้า WAIT (Ready)
+  canVote = false;
+  currentChoice = -1;
+  page = PAGE_WAIT;
+  drawReadyUI_base();
+
+  // Keypad
+  kpd.begin(makeKeymap(keys));
+  kpd.setDebounceTime(25);
+  kpd.setHoldTime(500);
+
+
+  // สายปลุกจาก Odroid -> D8 (PCINT rising)
+  pinMode(WAKE_PCINT_PIN, INPUT);
+}
+
+// === Exit helper: ออกจากโหมดแอดมิน/ตารางคะแนน/ลบรอ C/กำลังใส่รหัส ฯลฯ ===
+void exitAllModes() {
+  // ปิดแฟลกสถานะโหมดทั้งหมด
+  waitRToExit = false;
+  waitTToExit = false;
+  waitDToExit = false;
+  waitXToExit = false;
+  deleteArmed = false;
+  showingTally = false;
+
+  // รีเซ็ตสถานะแอดมิน
+  pendingAction = ACT_NONE;
+  fregis = false;
+
+  // ปิดสิทธิ์โหวต และกลับหน้า READY
+  canVote = false;
+  page = PAGE_WAIT;
+
+  // เสียงออกจากโหมด + วาด READY
+  tmrpcm.play("m.wav");
+  drawReadyUI_base();
+}
+
+
+void showDeleteCardUI() {
+  page = PAGE_DELETE_CARD;
+  lcd.noBlink();
+  lcd.clear();
+  lcd.setCursor(4, 1);
+  lcd.print(F("Delete card"));
+  lcd.setCursor(1, 3);
+  lcd.print(F("Tap/scan to proceed"));
+}
+
+void loop() {
+  // ===== 1) Keypad =====
+  char k = kpd.getKey();
+  if (k) {
+    if (k == 'C') {  
+      int jj = 0;
+      while (jj < 150) jj++;
+      if (k == 'C')
+        reset_via_wdt();
+    }
+    if (k == 'D') {
+      Serial.print(F("reset"));
+      return;
+    }
+    if (page == PAGE_DELETE_READY || page == PAGE_DELETE_CARD) {
+      buzzer.playError();  // หรือจะเงียบก็ได้
+      // ไม่ไป vote()/regispage()
+    } else if (!canVote && page != PAGE_REG_PASS) {
+      buzzer.playError();
+    } else {
+      if (page == PAGE_VOTE || page == PAGE_CONFIRM) {
+        vote(k);
+      } else if (page == PAGE_REG_PASS) {
+        // จัดการใน regispage ด้านล่าง
+      }
+    }
+  }
+
+  // ===== 2) Serial from ESP32 (อักขระเดี่ยว) =====
+  int msg = -1;
+  while (Serial.available()) {
+
+    msg = Serial.read();
+    Serial.print(F("ESP "));
+    Serial.println((char)msg);
+  }
+
+
+  if (wokeFromOdroid) {
+    wokeFromOdroid = false;
+  }
+
+  if (msg != -1) {
+
+    if (msg == 'S') {  // อ่านบัตร
+      tmrpcm.play("re.wav");
+
+    } else if (msg == 'W') {  // ยังไม่ลงทะเบียน/ถูกเพิกถอน
+      canVote = false;
+      page = PAGE_WAIT;
+      drawReadyUI_base();
+      tmrpcm.play("n.wav");
+
+    } else if (msg == 'G') {
+      tmrpcm.play("f.wav");
+    } else if (msg == '1') {
+      tmrpcm.play("1.wav");
+    } else if (msg == 'J') {
+      tmrpcm.play("q.wav");
+    } else if (msg == 'P') {
+      tmrpcm.play("p.wav");
+    } else if (msg == 'L') {
+      tmrpcm.play("l.wav");
+    } else if (msg == 'K') {
+      tmrpcm.play("k.wav");
+    } else if (msg == 'Z') {
+      tmrpcm.play("z.wav");
+    } else if (msg == 'A') {
+      tmrpcm.play("a.wav");
+    } else if (msg == 'O') {  // ยืนยันตัวตนสำเร็จ -> เข้าโหมดโหวต
+      canVote = true;
+      page = PAGE_VOTE;
+      drawVoteUI_base();
+      tmrpcm.play("c.wav");
+      while (tmrpcm.isPlaying())
+        ;
+      tmrpcm.play("ch.wav");
+
+    } else if (msg == 'R') {  // เข้าโหมด REG (ต้องออกด้วย 'I')
+      tmrpcm.play("b.wav");
+      startPass(ACT_REG);
+      waitRToExit = true;
+
+    } else if (msg == 'T') {  // เข้าโหมดดูคะแนน (ต้องออกด้วย 'I')
+      tmrpcm.play("h.wav");
+      startPass(ACT_TALLY);
+      waitTToExit = true;
+    } else if (msg == 'X') {  // ลบคะแนนทั้งหมดแบบไม่ต้องใส่รหัส
+      // เล่นเสียงตามต้องการ (ถ้าไม่มี x.wav จะข้ามได้)
+      // tmrpcm.play("x.wav");
+
+      // ล้างคะแนนใน EEPROM ทันที
+      eeprom_vote_clear_all();
+
+      // แจ้งผลบน LCD สั้นๆ
+      lcd.clear();
+      lcd.setCursor(2, 0);
+      lcd.print(F("Delete score OK"));
+      lcd.setCursor(2, 2);
+      lcd.print(F("Scores reset"));
+
+      // ส่งสัญญาณยืนยันกลับไปให้ ESP32 (เผื่อฝั่งนั้นรอ)
+      Serial.println(F("RESET_OK"));
+
+      // หน่วงให้ผู้ใช้เห็นข้อความสักพัก
+      delay(1200);
+
+      // ออกจากโหมดทั้งหมดและกลับหน้า READY
+      exitAllModes();
+    } else if (msg == 'D') {  // เข้าโหมดลบการ์ด (ต้องออกด้วย 'I')
+      tmrpcm.play("d.wav");
+      startPass(ACT_DELETE);
+      waitDToExit = true;
+    } else if (msg == 'C') {  // ในโหมดลบ: แสดงหน้า "Delete card"
+      if (waitDToExit && deleteArmed) {
+        showDeleteCardUI();
+      }
+    } else if (msg == 'Y') {  // สั่งหลับ/ปลุก
+      tmrpcm.play("y.wav");
+      prepareBeforeSleep();
+      wokeFromOdroid = false;
+      goSleepPowerDown();
+      afterWake();
+    } else if (msg == 'I') {  // << ใหม่: ปุ่ม “ออกจากทุกโหมด”
+      // ใช้ 'I' ที่มาจาก ESP32 เพียงตัวเดียว
+      exitAllModes();
+    }
+  }
+
+
+  // ===== 3) UI Animations =====
+  if (page == PAGE_VOTE) animateDuringSelect();
+  if (page == PAGE_CONFIRM && (long)(millis() - confirmUntil) >= 0) {
+    page = canVote ? PAGE_VOTE : PAGE_WAIT;
+    if (page == PAGE_VOTE) drawVoteUI_base();
+    else drawReadyUI_base();
+  }
+
+  // ===== 4) Admin PIN Page =====
+  if (fregis && page == PAGE_REG_PASS) { regispage(k); }
+
+  // ===== 5) Buzzer tick =====
+  buzzer.update();
+
+  // ===== 6) Auto-sleep =====
+
+
+  // ===== 7) Ready UI clock tick =====
+  clock_ready_tick();
+}

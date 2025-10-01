@@ -23,10 +23,10 @@
 
 - **2. Arduino UNO R3 (UI/Keypad)**
     - รับอินพุตจาก Matrix Keypad
-    - แสดงข้อความบน LCD 16x2
+    - แสดงข้อความบน LCD 20x4
     - สื่อสารกับ ESP32 ด้วย UART
 
-- **3. ODROID N2+ (Backend & Dashboard)**
+- **3. ODROID C4 (Backend & Dashboard)**
     - รัน Flask/FastAPI รับข้อมูลโหวตจาก ESP32
     - บันทึกผลลงฐานข้อมูล SQLite
     - แสดง Dashboard web (real-time)
@@ -36,9 +36,9 @@
     - RFID RC522 (SPI)
     - Fingerprint AS608 (UART)
     - TFT LCD ILI9341 (SPI)
-    - Ultrasonic Sensor HC-SR04 (GPIO)
-    - EEPROM 24C32 (I2C)
+    - Ultrasonic Sensor HC-SR04 (GPIO)  
     - Power Supply
+    - Thermal Printer
 
 **การเชื่อมต่อหลัก:**
 - ESP32 <-> Arduino UNO R3 : UART (Serial)
@@ -51,9 +51,9 @@
 **ตัวอย่างภาพรวม (Flow):**
 
 1. **User** เริ่มต้น ➡ แตะบัตร ➡ วางนิ้ว ➡ เลือกผู้สมัคร ➡ กดยืนยัน  
-2. **ESP32** ประมวลผล ➡ ส่งผลไปยัง **ODROID N2+** ➡ บันทึกผล/อัปเดต Dashboard  
-3. **Arduino Mega** รับอินพุต/แสดงผลข้อความ  
-4. **ODROID N2+** ตรวจจับผู้ใช้ด้วย AI Camera ➡ ปลุก ESP32 เมื่อมีคนเข้าใกล้  
+2. **ESP32** ประมวลผล ➡ ส่งผลไปยัง **ODROID C4** ➡ บันทึกผล/อัปเดต Dashboard  
+3. **Arduino UNO R3** รับอินพุต/แสดงผลข้อความ  
+4. **ODROID C4** ตรวจจับผู้ใช้ด้วย AI Camera ➡ ปลุก ESP32 เมื่อมีคนเข้าใกล้  
 5. **Web Dashboard** แสดงผลคะแนน/กิจกรรมแบบ real-time
 
 ---
@@ -66,7 +66,7 @@
 - AS608 Fingerprint Sensor
 - TFT ILI9341 2.4"
 - Ultrasonic Sensor HC-SR04
-- LCD 16x2 + Keypad 4x4
+- LCD 20x4 + Keypad 4x4
 
 ## ซอฟต์แวร์และไลบรารี
 - PlatformIO, Arduino IDE
